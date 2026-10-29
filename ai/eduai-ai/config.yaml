@@ -1,0 +1,117 @@
+# EduAI AI configuration
+#
+# IMPORTANT: every threshold below is a PROVISIONAL starting value chosen by the
+# team for a first prototype. None of them comes from a research paper and none
+# has been calibrated yet. Calibrate them on pilot recordings (scripts/evaluate.py)
+# and agree the final values with the users. Change values here, never in code,
+# and bump `version` every time an evaluation result is recorded.
+version: "0.2-provisional"
+
+sampling:
+  analysis_fps: 5          # frames analysed per second per student
+  phone_every_s: 0.5       # run the object detector at most every 0.5 s
+  work_width: 640          # frames are resized to this width before analysis
+
+models:
+  # Paths are relative to the eduai-ai folder (or absolute).
+  # Download with scripts/download_models.py (or .sh / .ps1).
+  face_detector:
+    path: models/blaze_face_short_range.tflite
+    # Same BlazeFace short-range network shipped inside the official
+    # `mediapipe` wheel; used only if the file above is missing.
+    fallback_paths: [models/face_detection_short_range.tflite]
+    min_confidence: 0.5
+  face_landmarker:
+    path: models/face_landmarker.task
+    enabled: true          # optional: needed for head-pose indicators
+  object_detector:
+    path: models/efficientdet_lite0.tflite
+    enabled: true          # optional: needed for phone / extra-person signals
+    min_score: 0.4
+  audio_classifier:
+    # YAMNet (MediaPipe Audio Classifier). It runs in the STUDENT'S BROWSER; the backend only serves
+    # the file and receives scores. Download: scripts/download_models.py or the URL in the README.
+    path: models/yamnet.tflite
+
+quality:
+  min_brightness: 40       # mean grey level 0-255; below = too dark
+  max_brightness: 245      # above = over-exposed / camera washed out
+  min_sharpness: 30.0      # variance of Laplacian; below = too blurry
+  # Mean abs grey-level diff between consecutive frames. A frozen stream repeats identical
+  # frames (diff ~0). Compressed video of a very still scene measured 0.09-0.25 in development,
+  # so the threshold is kept well below that to avoid flagging still students.
+  freeze_diff: 0.05
+  freeze_s: 5.0
+  min_width: 160           # frames narrower than this cannot be analysed
+  min_face_width_ratio: 0.06  # face narrower than 6% of frame: head pose not analysed
+
+baseline:
+  duration_s: 45           # learn each student's normal head position first
+  min_samples: 20
+
+indicators:
+  FACE_ABSENT:
+    min_duration_s: 5.0
+    release_s: 1.0
+    cooldown_s: 30.0
+  MULTIPLE_PERSONS:
+    min_duration_s: 2.0
+    release_s: 1.0
+    cooldown_s: 30.0
+  HEAD_TURN:
+    open_deg: 30.0         # deviation from the student's own baseline
+    release_deg: 20.0      # hysteresis: must drop below this to end
+    min_duration_s: 3.0
+    release_s: 1.0
+    cooldown_s: 20.0
+    # Face found but landmarks failed (often an extreme head turn). Off by
+    # default because it is unvalidated and glasses/lighting can cause it.
+    count_landmark_failure: false
+  HEAD_TURN_REPEATED:
+    episode_min_s: 1.0     # a short look-away counts as one episode
+    count: 5               # N episodes ...
+    window_s: 120.0        # ... within M seconds
+    cooldown_s: 120.0
+  PHONE_VISIBLE:
+    min_score: 0.5
+    min_duration_s: 1.5
+    release_s: 1.5
+    cooldown_s: 30.0
+  CANNOT_ANALYZE:
+    min_duration_s: 2.0    # bad frames for this long -> "cannot analyse" status
+    release_s: 1.0
+  OTHER_VOICE:
+    # Speech sound (YAMNet scores from the student's browser, audio never leaves the device) while
+    # exactly one face is visible and its mouth looks still -> maybe someone else is talking.
+    # Unvalidated, provisional values. Only works with the browser frame path (EDUAI_ANALYSIS_SOURCE=browser).
+    enabled: true
+    speech_min: 0.30
+    whisper_min: 0.20
+    media_min: 0.30
+    mouth_still_max: 0.08
+    mouth_window_s: 2.0
+    mouth_min_samples: 2
+    audio_max_age_s: 2.5
+    min_duration_s: 2.0
+    release_s: 1.0
+    cooldown_s: 30.0
+
+# Supervisor rules on top of the detection thresholds above (read by the backend: grouping, pop-up,
+# exam summary). One indication EVENT = one qualifying episode. A rule is "met" when at least
+# min_count episodes start within window_s seconds (no window_s = anywhere in the exam). Episodes are
+# always recorded and shown; only the pop-up waits for the rule. Initial product values, NOT validated.
+summary_rules:
+  PHONE_VISIBLE:      {min_count: 1}
+  MULTIPLE_PERSONS:   {min_count: 1}
+  OTHER_VOICE:        {min_count: 1}          # needs audio consent + browser-frame mode
+  FACE_ABSENT:        {min_count: 1}
+  HEAD_TURN:          {min_count: 1}
+  HEAD_TURN_REPEATED: {min_count: 4, window_s: 3600}   # 1 episode = 5 look-aways within 120 s (above)
+  # Book/unauthorized reference (3 episodes per hour) has NO detector yet; add a rule when one exists.
+
+evidence:
+  seconds_before: 5
+  seconds_after: 5
+  max_frames: 12           # JPEG snapshots per indication (privacy: no audio, no full video)
+  max_width: 480
+  jpeg_quality: 70

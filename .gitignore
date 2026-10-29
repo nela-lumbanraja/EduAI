@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+backend/.env
+backend/data/
+frontend/node_modules/
+frontend/dist/
+ai/eduai-ai/models/*.tflite
+ai/eduai-ai/models/*.task
+*.y4m
+e2e-screenshots/
+
+# personal camera captures and local test outputs (faces): never upload
+ai/eduai-ai/dataset_raw/
+ai/eduai-ai/evidence/
+ai/eduai-ai/*.csv
+ai/eduai-ai/config_st12.yaml
+ai/eduai-ai/smoke.txt

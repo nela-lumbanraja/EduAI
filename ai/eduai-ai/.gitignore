@@ -1,0 +1,8 @@
+models/*.tflite
+models/*.task
+clips/
+pilot/
+preds/
+*.jsonl
+.venv/
+__pycache__/

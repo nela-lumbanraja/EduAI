@@ -1,0 +1,1047 @@
+"""EduAI REST API. All routes are under /api. See docs/API.md for examples."""
+import asyncio
+import json
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi.responses import FileResponse
+
+from . import cases as casing
+from . import store, summary
+from .db import now_iso
+from .livekit_service import make_token, room_name, student_identity
+from .schemas import (ConsentIn, EventsIn, ExamIn, ExamPatch, HeartbeatIn, LoginIn, MonitoringStartIn, NoteIn,
+                      PresenceIn, RegisterIn, ReviewIn, CaseReviewIn, StatusIn, AudioScoresIn)
+from .security import (STAFF, create_token, get_current_user, hash_password, public_user, require_roles,
+                       require_service_key, verify_password)
+
+log = logging.getLogger("eduai.api")
+router = APIRouter(prefix="/api")
+ONLINE_S = 20.0
+REVIEWERS = ("pengawas", "penyelenggara", "admin")
+MONITOR_ROLES = ("pengawas", "penyelenggara", "admin")
+
+
+# ---------------------------------------------------------------- helpers
+def _st(request: Request):
+    return request.app.state
+
+
+def _age_s(iso: Optional[str]) -> Optional[float]:
+    if not iso:
+        return None
+    return (datetime.now(timezone.utc) - datetime.fromisoformat(iso)).total_seconds()
+
+
+def _exam_or_404(db, exam_id: int) -> dict:
+    e = db.one("SELECT * FROM exams WHERE id = ?", (exam_id,))
+    if not e:
+        raise HTTPException(404, "Ujian tidak ditemukan.")
+    return e
+
+
+def _enrolled(db, exam_id: int, student_id: int) -> bool:
+    return bool(db.one("SELECT 1 FROM exam_students WHERE exam_id=? AND student_id=?", (exam_id, student_id)))
+
+
+def _can_view(db, user: dict, exam: dict) -> bool:
+    r = user["role"]
+    if r in ("admin", "penyelenggara", "sekolah"):
+        return True
+    if r == "pengawas":
+        return exam["supervisor_id"] == user["id"]
+    return _enrolled(db, exam["id"], user["id"])
+
+
+def _view_exam(db, user, exam_id) -> dict:
+    exam = _exam_or_404(db, exam_id)
+    if not _can_view(db, user, exam):
+        raise HTTPException(403, "Anda tidak memiliki akses ke sesi ujian ini.")
+    return exam
+
+
+def _monitor_exam(db, user, exam_id) -> dict:
+    """Live monitoring data (status, video token, start/stop): assigned supervisor, organiser, admin."""
+    exam = _view_exam(db, user, exam_id)
+    if user["role"] not in MONITOR_ROLES:
+        raise HTTPException(403, "Anda tidak memiliki izin pemantauan untuk sesi ini.")
+    return exam
+
+
+def _accessible_exam_ids(db, user) -> List[int]:
+    if user["role"] in ("admin", "penyelenggara", "sekolah"):
+        return [r["id"] for r in db.all("SELECT id FROM exams")]
+    if user["role"] == "pengawas":
+        return [r["id"] for r in db.all("SELECT id FROM exams WHERE supervisor_id = ?", (user["id"],))]
+    return []
+
+
+def _exam_out(db, e: dict, user: dict) -> dict:
+    sup = db.one("SELECT id, name FROM users WHERE id = ?", (e["supervisor_id"],)) if e["supervisor_id"] else None
+    out = {k: e[k] for k in ("id", "name", "description", "subject", "class_name", "date", "start_time",
+                             "duration_min", "status", "monitoring_active", "analysis_source", "monitoring_started_at")}
+    out["monitoring_active"] = bool(e["monitoring_active"])
+    out["supervisor"] = sup
+    out["student_count"] = db.one("SELECT COUNT(*) n FROM exam_students WHERE exam_id=?", (e["id"],))["n"]
+    if user["role"] in STAFF:
+        c = db.one("SELECT COUNT(*) total, SUM(review_status IS NULL) unreviewed FROM events"
+                   " WHERE exam_id=? AND category='indication'", (e["id"],))
+        out["indications"] = {"total": c["total"] or 0, "unreviewed": c["unreviewed"] or 0}
+        out["online"] = sum(1 for p in db.all("SELECT last_seen, left_at FROM presence WHERE exam_id=?", (e["id"],))
+                            if not p["left_at"] and (_age_s(p["last_seen"]) or 1e9) < ONLINE_S)
+    if user["role"] == "siswa":
+        out["consent"] = bool(db.one("SELECT 1 FROM consents WHERE exam_id=? AND student_id=?", (e["id"], user["id"])))
+        out["audio_consent"] = _audio_consent(db, e["id"], user["id"])
+    return out
+
+
+def _audio_consent(db, exam_id: int, student_id: int) -> bool:
+    c = db.one("SELECT audio_accepted FROM consents WHERE exam_id=? AND student_id=?", (exam_id, student_id))
+    return bool(c and c["audio_accepted"])
+
+
+def _event_out(db, ev: dict, with_detail=False) -> dict:
+    stu = db.one("SELECT id, name, nis, class_name FROM users WHERE id=?", (ev["student_id"],))
+    exam = db.one("SELECT id, name FROM exams WHERE id=?", (ev["exam_id"],))
+    out = dict(ev)
+    out["student"] = stu
+    out["exam"] = exam
+    try:
+        s, e = datetime.fromisoformat(ev["start_ts"]), datetime.fromisoformat(ev["end_ts"] or now_iso())
+        out["duration_s"] = round((e - s).total_seconds(), 1)
+    except (TypeError, ValueError):
+        out["duration_s"] = None
+    last = db.one("SELECT r.decision, r.note, r.created_at, u.name reviewer FROM reviews r JOIN users u ON u.id=r.reviewer_id"
+                  " WHERE r.event_id=? ORDER BY r.id DESC LIMIT 1", (ev["event_id"],))
+    out["last_review"] = last
+    if with_detail:
+        out["reviews"] = db.all("SELECT r.id, r.decision, r.note, r.created_at, u.name reviewer, u.role reviewer_role"
+                                " FROM reviews r JOIN users u ON u.id=r.reviewer_id WHERE r.event_id=? ORDER BY r.id",
+                                (ev["event_id"],))
+    return out
+
+
+def _events_query(db, exam_ids, user, *, student_id=None, category=None, since=None, review=None, limit=200):
+    if not exam_ids:
+        return []
+    sql = f"SELECT * FROM events WHERE exam_id IN ({','.join('?' * len(exam_ids))})"
+    params = list(exam_ids)
+    if user["role"] == "sekolah":                       # school sees reviewed indications only
+        sql += " AND category='indication' AND review_status IS NOT NULL"
+    if student_id is not None:
+        sql += " AND student_id = ?"; params.append(student_id)
+    if category:
+        sql += " AND category = ?"; params.append(category)
+    if since:
+        sql += " AND updated_at > ?"; params.append(since)
+    if review == "unreviewed":
+        sql += " AND review_status IS NULL"
+    elif review:
+        sql += " AND review_status = ?"; params.append(review)
+    sql += " ORDER BY start_ts DESC LIMIT ?"; params.append(max(1, min(limit, 500)))
+    return [_event_out(db, r) for r in db.all(sql, params)]
+
+
+# ---------------------------------------------------------------- health
+@router.get("/health")
+def health(request: Request):
+    st = _st(request)
+    return {"status": "ok", "time": now_iso(), "ai": {"available": st.ai.available, "reason": st.ai.reason},
+            "livekit": {"configured": st.settings.livekit_configured}, "analysis_source": st.settings.analysis_source}
+
+
+@router.get("/ai/health")
+def ai_health(request: Request):
+    st = _st(request)
+    workers = st.db.all("SELECT exam_id, last_heartbeat, students FROM workers")
+    return {**st.ai.health(), "evidence_retention_hours": st.settings.evidence_retention_hours,
+            "evidence_encrypted": st.evidence_store.encrypted,
+            "livekit_workers": [{**w, "alive": (_age_s(w["last_heartbeat"]) or 1e9) < 20} for w in workers]}
+
+
+# ---------------------------------------------------------------- auth
+@router.post("/auth/login")
+def login(body: LoginIn, request: Request):
+    st = _st(request)
+    email = body.email.strip().lower()
+    if st.limiter.blocked(email):
+        raise HTTPException(429, "Terlalu banyak percobaan masuk. Coba lagi dalam 5 menit.")
+    user = st.db.one("SELECT * FROM users WHERE email = ? AND active = 1", (email,))
+    if not user or not verify_password(body.password, user["password_hash"]):
+        st.limiter.fail(email)
+        raise HTTPException(401, "Email atau kata sandi salah.")
+    st.limiter.reset(email)
+    store.audit(st.db, user, "Login", "Portal EduAI")
+    return {"token": create_token(st.settings, user), "user": public_user(user)}
+
+
+@router.post("/auth/register", status_code=201)
+def register(body: RegisterIn, request: Request):
+    st = _st(request)
+    if not st.settings.allow_self_register:
+        raise HTTPException(403, "Pendaftaran mandiri dinonaktifkan. Hubungi admin sekolah.")
+    email = body.email.strip().lower()
+    if not email.startswith("siswa") or "@" not in email:
+        raise HTTPException(400, "Pendaftaran mandiri hanya untuk akun siswa (email diawali 'siswa'). "
+                                 "Akun pengawas, penyelenggara, admin, dan sekolah dibuat oleh Admin.")
+    if st.db.one("SELECT 1 FROM users WHERE email=?", (email,)):
+        raise HTTPException(409, "Email ini sudah terdaftar.")
+    uid = st.db.run("INSERT INTO users (email,name,role,password_hash,created_at) VALUES (?,?,?,?,?)",
+                    (email, body.name.strip() or email.split("@")[0], "siswa", hash_password(body.password), now_iso()))
+    user = st.db.one("SELECT * FROM users WHERE id=?", (uid,))
+    store.audit(st.db, user, "Mendaftar akun", "Portal EduAI")
+    return {"token": create_token(st.settings, user), "user": public_user(user)}
+
+
+@router.get("/auth/me")
+def me(user=Depends(get_current_user)):
+    return public_user(user)
+
+
+@router.get("/users")
+def list_users(request: Request, role: Optional[str] = None, user=Depends(require_roles("admin", "penyelenggara"))):
+    db = _st(request).db
+    rows = db.all("SELECT * FROM users WHERE (? IS NULL OR role = ?) ORDER BY role, name", (role, role))
+    return [{**public_user(r), "active": bool(r["active"]), "created_at": r["created_at"]} for r in rows]
+
+
+# ---------------------------------------------------------------- exams
+@router.get("/exams")
+def list_exams(request: Request, user=Depends(get_current_user)):
+    db = _st(request).db
+    if user["role"] == "siswa":
+        rows = db.all("SELECT e.* FROM exams e JOIN exam_students s ON s.exam_id=e.id WHERE s.student_id=?"
+                      " AND e.status != 'Draft' ORDER BY e.date DESC, e.start_time", (user["id"],))
+    elif user["role"] == "pengawas":
+        rows = db.all("SELECT * FROM exams WHERE supervisor_id=? ORDER BY date DESC, start_time", (user["id"],))
+    else:
+        rows = db.all("SELECT * FROM exams ORDER BY date DESC, start_time")
+    return [_exam_out(db, e, user) for e in rows]
+
+
+@router.post("/exams", status_code=201)
+def create_exam(body: ExamIn, request: Request, user=Depends(require_roles("admin"))):
+    db = _st(request).db
+    sup = db.one("SELECT id FROM users WHERE id=? AND role='pengawas' AND active=1", (body.supervisor_id,))
+    if not sup:
+        raise HTTPException(400, "Pengawas tidak valid.")
+    ids = sorted(set(body.student_ids))
+    found = db.all(f"SELECT id FROM users WHERE role='siswa' AND id IN ({','.join('?' * len(ids))})", ids)
+    if len(found) != len(ids):
+        raise HTTPException(400, "Daftar peserta berisi akun yang bukan siswa.")
+    eid = db.run("INSERT INTO exams (name,description,subject,class_name,date,start_time,duration_min,status,"
+                 "supervisor_id,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                 (body.name, body.description, body.subject, body.class_name, body.date, body.start_time,
+                  body.duration_min, body.status, body.supervisor_id, user["id"], now_iso()))
+    db.many("INSERT INTO exam_students (exam_id, student_id) VALUES (?,?)", [(eid, s) for s in ids])
+    store.audit(db, user, "Membuat ujian", f"exam:{eid}")
+    return _exam_out(db, _exam_or_404(db, eid), user)
+
+
+@router.get("/exams/{exam_id}")
+def get_exam(exam_id: int, request: Request, user=Depends(get_current_user)):
+    db = _st(request).db
+    return _exam_out(db, _view_exam(db, user, exam_id), user)
+
+
+@router.patch("/exams/{exam_id}")
+async def patch_exam(exam_id: int, body: ExamPatch, request: Request, user=Depends(require_roles("admin", "penyelenggara"))):
+    st = _st(request)
+    _exam_or_404(st.db, exam_id)
+    if body.status:
+        st.db.run("UPDATE exams SET status=? WHERE id=?", (body.status, exam_id))
+        if body.status == "Selesai":
+            await _stop_monitoring(st, exam_id)
+            # exam closed: the final consolidated summary, unless the 10-minute summary already exists
+            if summary.check_exam(st.db, _exam_or_404(st.db, exam_id), tz_name=st.settings.exam_timezone):
+                store.audit(st.db, user, "Ringkasan indikasi dibuat (final)", f"exam:{exam_id}")
+        store.audit(st.db, user, f"Mengubah status ujian menjadi {body.status}", f"exam:{exam_id}")
+    return _exam_out(st.db, _exam_or_404(st.db, exam_id), user)
+
+
+@router.get("/exams/{exam_id}/students")
+def exam_students(exam_id: int, request: Request, user=Depends(require_roles(*STAFF))):
+    db = _st(request).db
+    exam = _view_exam(db, user, exam_id)
+    detailed = user["role"] in MONITOR_ROLES
+    out = []
+    session_start = exam["monitoring_started_at"] or ""        # current (or last) monitoring session
+    ai_down = detailed and _analysis_down(_st(request), exam)
+    for s in db.all("SELECT u.id, u.name, u.nis, u.class_name FROM exam_students es JOIN users u ON u.id=es.student_id"
+                    " WHERE es.exam_id=? ORDER BY u.name", (exam_id,)):
+        row = dict(s)
+        if detailed:
+            p = db.one("SELECT * FROM presence WHERE exam_id=? AND student_id=?", (exam_id, s["id"])) or {}
+            a = db.one("SELECT * FROM ai_status WHERE exam_id=? AND student_id=?", (exam_id, s["id"])) or {}
+            online = bool(p) and not p.get("left_at") and (_age_s(p.get("last_seen")) or 1e9) < ONLINE_S
+            ai_age = _age_s(a.get("updated_at"))
+            stale = ai_age is None or ai_age > 10
+            c = db.one("SELECT SUM(category='indication') ind, SUM(category='indication' AND review_status IS NULL) unrev,"
+                       " SUM(category='indication' AND status='open') open_ind,"
+                       " SUM(category='indication' AND start_ts >= ?) sess_ind,"
+                       " SUM(category='cannot_analyze' AND status='open') open_ca FROM events WHERE exam_id=? AND student_id=?",
+                       (session_start, exam_id, s["id"]))
+            # An open indication comes first so the card names what is happening now, not an older event.
+            last_ind = db.one("SELECT label, indicator, start_ts, end_ts, status FROM events WHERE exam_id=? AND student_id=?"
+                              " AND category='indication' ORDER BY (status='open') DESC, start_ts DESC LIMIT 1",
+                              (exam_id, s["id"]))
+            if last_ind:
+                last_ind["current_session"] = bool(session_start) and last_ind["start_ts"] >= session_start
+            if not exam["monitoring_active"]:
+                state = "not_started"                  # AI monitoring is off (video may still be live)
+            elif not stale:
+                state = a.get("state")                 # fresh analysis result (<= 10 s old)
+            else:
+                state = "ai_offline" if ai_down else "no_data"   # no result yet vs. analysis down
+            row.update({
+                "consent": bool(db.one("SELECT 1 FROM consents WHERE exam_id=? AND student_id=?", (exam_id, s["id"]))),
+                "audio": _audio_state(_st(request), exam, s["id"], _audio_consent(db, exam_id, s["id"]),
+                                      None if not p else bool(p.get("mic_on"))),
+                "presence": {"joined": bool(p.get("joined_at")), "online": online, "joined_at": p.get("joined_at"),
+                             "last_seen": p.get("last_seen"), "camera_on": None if not p else bool(p.get("camera_on")),
+                             "mic_on": None if not p else bool(p.get("mic_on")), "connection": p.get("connection"),
+                             "rtt_ms": p.get("rtt_ms")},
+                "ai": {"state": state,
+                       "last_state": a.get("state"), "frame_status": a.get("frame_status"), "reason": a.get("reason"),
+                       "face_count": a.get("face_count"), "latency_ms": a.get("latency_ms"),
+                       "updated_at": a.get("updated_at"), "source": a.get("source")},
+                "counts": {"indications": c["ind"] or 0, "unreviewed": c["unrev"] or 0,
+                           "session_indications": c["sess_ind"] or 0,
+                           "open_indications": c["open_ind"] or 0, "open_cannot_analyze": c["open_ca"] or 0},
+                "last_indication": last_ind,
+            })
+        out.append(row)
+    return out
+
+
+@router.get("/exams/{exam_id}/students/{student_id}/timeline")
+def student_timeline(exam_id: int, student_id: int, request: Request, user=Depends(require_roles(*MONITOR_ROLES))):
+    db = _st(request).db
+    _monitor_exam(db, user, exam_id)
+    if not _enrolled(db, exam_id, student_id):
+        raise HTTPException(404, "Siswa tidak terdaftar pada ujian ini.")
+    items = []
+    p = db.one("SELECT * FROM presence WHERE exam_id=? AND student_id=?", (exam_id, student_id))
+    c = db.one("SELECT accepted_at FROM consents WHERE exam_id=? AND student_id=?", (exam_id, student_id))
+    if c:
+        items.append({"ts": c["accepted_at"], "kind": "consent", "title": "Persetujuan perekaman diberikan"})
+    if p and p.get("joined_at"):
+        items.append({"ts": p["joined_at"], "kind": "presence", "title": "Siswa bergabung ke ruang ujian"})
+    if p and p.get("left_at"):
+        items.append({"ts": p["left_at"], "kind": "presence", "title": "Siswa keluar dari ruang ujian"})
+    for ev in db.all("SELECT * FROM events WHERE exam_id=? AND student_id=? ORDER BY start_ts", (exam_id, student_id)):
+        items.append({"ts": ev["start_ts"], "kind": ev["category"], "title": ev["label"] or ev["indicator"],
+                      "event_id": ev["event_id"], "status": ev["status"], "review_status": ev["review_status"],
+                      "reason": ev["reason"], "end_ts": ev["end_ts"], "evidence_id": ev["evidence_id"]})
+    for r in db.all("SELECT r.*, u.name reviewer FROM reviews r JOIN users u ON u.id=r.reviewer_id JOIN events e"
+                    " ON e.event_id=r.event_id WHERE e.exam_id=? AND e.student_id=?", (exam_id, student_id)):
+        items.append({"ts": r["created_at"], "kind": "review", "title": f"Indikasi ditinjau oleh {r['reviewer']}: {r['decision']}",
+                      "event_id": r["event_id"], "note": r["note"]})
+    for n in db.all("SELECT * FROM manual_notes WHERE exam_id=? AND student_id=?", (exam_id, student_id)):
+        items.append({"ts": n["created_at"], "kind": "note", "title": f"Catatan manual: {n['kind'] or 'kejadian'}",
+                      "note": n["note"], "time_text": n["time_text"]})
+    return sorted(items, key=lambda x: x["ts"])
+
+
+# ---------------------------------------------------------------- student flow
+@router.post("/exams/{exam_id}/consent")
+def give_consent(exam_id: int, body: ConsentIn, request: Request, user=Depends(require_roles("siswa"))):
+    db = _st(request).db
+    _view_exam(db, user, exam_id)
+    if not body.accepted:
+        raise HTTPException(400, "Persetujuan diperlukan untuk mengikuti ujian ini.")
+    db.run("INSERT INTO consents (exam_id,student_id,accepted_at,notice_version,audio_accepted) VALUES (?,?,?,?,?)"
+           " ON CONFLICT(exam_id,student_id) DO UPDATE SET accepted_at=excluded.accepted_at,"
+           " notice_version=excluded.notice_version, audio_accepted=excluded.audio_accepted",
+           (exam_id, user["id"], now_iso(), body.notice_version, int(body.audio)))
+    store.audit(db, user, "Memberikan persetujuan perekaman" + (" (termasuk analisis suara)" if body.audio else ""),
+                f"exam:{exam_id}")
+    return {"ok": True, "audio": body.audio}
+
+
+def _audio_block(st, exam) -> Optional[str]:
+    """Why speech-sound analysis cannot run for this exam, or None when it can (browser frame path,
+    enabled, AI loaded, model file present). Monitoring on/off is checked separately by the callers."""
+    voice = ((st.ai.cfg or {}).get("indicators", {}).get("OTHER_VOICE") or {})
+    if not st.settings.audio_analysis or not voice.get("enabled", True):
+        return "disabled"                      # EDUAI_AUDIO_ANALYSIS=false or OTHER_VOICE disabled in config.yaml
+    if not st.ai.available:
+        return "ai_unavailable"
+    if not st.ai.audio_model_path():
+        return "model_missing"                 # ai/eduai-ai/models/yamnet.tflite not found
+    if exam["analysis_source"] == "livekit":
+        return "worker_mode"                   # the OpenVidu worker analyses video only (no audio path)
+    if exam["analysis_source"] != "browser":
+        return "monitoring_off"                # monitoring never started: no analysis mode chosen yet
+    return None
+
+
+def _audio_available(st, exam) -> bool:
+    """Speech-sound analysis can run for this exam (browser frame path, enabled, model file present)."""
+    return _audio_block(st, exam) is None
+
+
+def _audio_state(st, exam, student_id: int, consented: bool, mic_on) -> dict:
+    """Audio status for the Pengawas: active only when scores actually arrived in the last 5 s;
+    otherwise the reason it is not running."""
+    active = st.ai.audio_active(exam["id"], student_id)
+    if not consented:
+        reason = "not_consented"
+    elif not exam["monitoring_active"]:
+        reason = "monitoring_off"
+    elif (block := _audio_block(st, exam)):
+        reason = block
+    elif active:
+        reason = None
+    elif mic_on is False:
+        reason = "mic_off"
+    else:
+        reason = "no_scores"                   # allowed, but the student's browser is not sending scores
+    return {"consented": consented, "active": active and reason is None, "reason": reason}
+
+
+def _monitoring_info(st, exam, user=None) -> dict:
+    cfg = st.ai.cfg or {}
+    consented = bool(user and user["role"] == "siswa" and _audio_consent(st.db, exam["id"], user["id"]))
+    return {"active": bool(exam["monitoring_active"]), "source": exam["analysis_source"],
+            "upload_fps": st.settings.upload_fps,
+            "max_width": int(cfg.get("sampling", {}).get("work_width", 640)),
+            "jpeg_quality": 0.8,
+            "audio": {"available": _audio_available(st, exam), "consented": consented, "reason": _audio_block(st, exam),
+                      "model_url": "/api/ai/models/yamnet.tflite", "interval_ms": 500}}
+
+
+@router.post("/exams/{exam_id}/join")
+def join_exam(exam_id: int, request: Request, user=Depends(get_current_user)):
+    st = _st(request)
+    db = st.db
+    if user["role"] == "siswa":
+        exam = _view_exam(db, user, exam_id)
+        if exam["status"] != "Sedang Berlangsung":
+            raise HTTPException(409, "Ujian belum dimulai atau sudah selesai.")
+        if not db.one("SELECT 1 FROM consents WHERE exam_id=? AND student_id=?", (exam_id, user["id"])):
+            raise HTTPException(409, "Persetujuan perekaman belum diberikan.")
+        ts = now_iso()
+        db.run("INSERT INTO presence (exam_id,student_id,joined_at,last_seen) VALUES (?,?,?,?)"
+               " ON CONFLICT(exam_id,student_id) DO UPDATE SET last_seen=excluded.last_seen, left_at=NULL,"
+               " joined_at=COALESCE(presence.joined_at, excluded.joined_at)", (exam_id, user["id"], ts, ts))
+        store.audit(db, user, "Masuk ruang ujian", f"exam:{exam_id}")
+        identity, publish, subscribe = student_identity(user["id"]), True, False
+    else:
+        exam = _monitor_exam(db, user, exam_id)
+        identity, publish, subscribe = f"staff-{user['id']}", False, True
+    lk = None
+    if st.settings.livekit_configured:
+        lk = {"url": st.settings.livekit_public_url, "room": room_name(exam_id),
+              "token": make_token(st.settings, identity, user["name"], room_name(exam_id),
+                                  publish=publish, subscribe=subscribe)}
+    return {"exam": _exam_out(db, exam, user), "identity": identity, "livekit": lk,
+            "livekit_reason": None if lk else "OpenVidu/LiveKit belum dikonfigurasi di backend",
+            "monitoring": _monitoring_info(st, exam, user)}
+
+
+@router.get("/exams/{exam_id}/session-state")
+def session_state(exam_id: int, request: Request, user=Depends(require_roles("siswa"))):
+    st = _st(request)
+    exam = _view_exam(st.db, user, exam_id)
+    return {"status": exam["status"], "monitoring": _monitoring_info(st, exam, user)}
+
+
+@router.post("/exams/{exam_id}/presence")
+def presence(exam_id: int, body: PresenceIn, request: Request, user=Depends(require_roles("siswa"))):
+    db = _st(request).db
+    _view_exam(db, user, exam_id)
+    db.run("INSERT INTO presence (exam_id,student_id,joined_at,last_seen,camera_on,mic_on,connection,rtt_ms)"
+           " VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(exam_id,student_id) DO UPDATE SET last_seen=excluded.last_seen,"
+           " left_at=NULL, camera_on=excluded.camera_on, mic_on=excluded.mic_on, connection=excluded.connection,"
+           " rtt_ms=excluded.rtt_ms", (exam_id, user["id"], now_iso(), now_iso(), int(body.camera_on),
+                                        int(body.mic_on), body.connection, body.rtt_ms))
+    return {"ok": True}
+
+
+@router.post("/exams/{exam_id}/leave")
+async def leave(exam_id: int, request: Request, user=Depends(require_roles("siswa"))):
+    st = _st(request)
+    _view_exam(st.db, user, exam_id)
+    st.db.run("UPDATE presence SET left_at=? WHERE exam_id=? AND student_id=?", (now_iso(), exam_id, user["id"]))
+    await st.ai.stop_student(exam_id, user["id"])
+    store.audit(st.db, user, "Keluar ruang ujian", f"exam:{exam_id}")
+    return {"ok": True}
+
+
+WORKER_STATUS_FRESH_S = 10.0
+
+
+def _worker_sees_student(db, exam_id: int, student_id: int) -> bool:
+    s = db.one("SELECT source, updated_at FROM ai_status WHERE exam_id=? AND student_id=?", (exam_id, student_id))
+    return bool(s and s["source"] == "livekit" and (_age_s(s["updated_at"]) or 1e9) < WORKER_STATUS_FRESH_S)
+
+
+WORKER_ALIVE_S = 20.0        # same limit as the "alive" flag of GET /monitoring
+START_GRACE_S = 15.0         # a freshly started worker needs a few seconds before its first heartbeat
+
+
+def _analysis_down(st, exam) -> bool:
+    """True when monitoring is on but the analysis itself cannot run, so a student without results is
+    shown as "AI terputus/tidak tersedia" rather than "waiting for results"."""
+    if not exam["monitoring_active"]:
+        return False
+    if exam["analysis_source"] == "livekit":
+        if (_age_s(exam["monitoring_started_at"]) or 0) < START_GRACE_S:
+            return False
+        w = st.db.one("SELECT last_heartbeat FROM workers WHERE exam_id=?", (exam["id"],))
+        alive = bool(w) and (_age_s(w["last_heartbeat"]) or 1e9) < WORKER_ALIVE_S
+        return not (alive and st.workers.running(exam["id"]))
+    return not st.ai.available             # browser frames: the backend's own AI must be loaded
+
+
+@router.post("/exams/{exam_id}/frames", status_code=202)
+async def upload_frame(exam_id: int, request: Request, frame: UploadFile = File(...),
+                       user=Depends(require_roles("siswa"))):
+    """Browser frame path: one JPEG from the student's camera. Analysed asynchronously-safe,
+    at most one in flight per student; extra frames are dropped (accepted=false, reason=busy)."""
+    st = _st(request)
+    exam = _view_exam(st.db, user, exam_id)
+    if exam["status"] != "Sedang Berlangsung":
+        raise HTTPException(409, "Ujian tidak sedang berlangsung.")
+    if not st.db.one("SELECT 1 FROM consents WHERE exam_id=? AND student_id=?", (exam_id, user["id"])):
+        raise HTTPException(409, "Persetujuan perekaman belum diberikan.")
+    if not exam["monitoring_active"]:
+        return {"accepted": False, "reason": "monitoring_inactive"}
+    if exam["analysis_source"] != "browser":
+        # OpenVidu worker mode: browser frames are only a fallback for a student whose camera is not
+        # reaching the worker (e.g. the browser could not connect to OpenVidu). If the worker reported
+        # this student recently, the worker analyses them and the frame is not needed.
+        if exam["analysis_source"] != "livekit" or _worker_sees_student(st.db, exam_id, user["id"]):
+            return {"accepted": False, "reason": "worker_active" if exam["analysis_source"] == "livekit"
+                    else "monitoring_inactive"}
+    if frame.content_type not in ("image/jpeg", "image/jpg"):
+        raise HTTPException(415, "Frame harus berupa JPEG.")
+    data = await frame.read(st.settings.frame_max_bytes + 1)
+    if len(data) > st.settings.frame_max_bytes:
+        raise HTTPException(413, "Ukuran frame terlalu besar.")
+    st.db.run("UPDATE presence SET last_seen=? WHERE exam_id=? AND student_id=?", (now_iso(), exam_id, user["id"]))
+    return await st.ai.submit_jpeg(exam_id, user["id"], data)
+
+
+@router.post("/exams/{exam_id}/audio", status_code=202)
+def upload_audio_scores(exam_id: int, body: AudioScoresIn, request: Request, user=Depends(require_roles("siswa"))):
+    """Speech-sound scores computed by YAMNet in the student's browser. Only three numbers arrive here;
+    audio never leaves the student's device and nothing about it is stored except resulting indications."""
+    st = _st(request)
+    exam = _view_exam(st.db, user, exam_id)
+    if exam["status"] != "Sedang Berlangsung":
+        raise HTTPException(409, "Ujian tidak sedang berlangsung.")
+    if not _audio_consent(st.db, exam_id, user["id"]):
+        raise HTTPException(403, "Analisis suara tidak disetujui untuk ujian ini.")
+    if not exam["monitoring_active"] or not _audio_available(st, exam):
+        return {"accepted": False, "reason": "audio_inactive"}
+    return st.ai.submit_audio(exam_id, user["id"], body.speech, body.whisper, body.media)
+
+
+@router.get("/ai/models/yamnet.tflite")
+def audio_model(request: Request):
+    """Public pretrained YAMNet file (Google, AudioSet) used by the student's browser. No user data."""
+    p = _st(request).ai.audio_model_path()
+    if not p:
+        raise HTTPException(404, "Model YAMNet belum tersedia (jalankan scripts/download_models).")
+    return FileResponse(p, media_type="application/octet-stream", headers={"Cache-Control": "public, max-age=86400"})
+
+
+# ---------------------------------------------------------------- monitoring control
+def _stop_worker(st, exam_id: int):
+    """Stop the OpenVidu worker gracefully (it closes its own events), then close anything it could not
+    close itself (worker killed / crashed). Blocking: up to STOP_GRACE_S."""
+    st.workers.stop(exam_id)
+    n = store.close_open_events(st.db, exam_id, "livekit")
+    if n:
+        log.warning("closed %d event(s) left open by the AI worker for exam %s", n, exam_id)
+
+
+async def _stop_monitoring(st, exam_id: int):
+    st.db.run("UPDATE exams SET monitoring_active=0 WHERE id=?", (exam_id,))
+    await asyncio.to_thread(_stop_worker, st, exam_id)
+    await st.ai.stop_exam(exam_id)
+
+
+@router.post("/exams/{exam_id}/monitoring/start")
+def start_monitoring(exam_id: int, body: MonitoringStartIn, request: Request, user=Depends(require_roles(*MONITOR_ROLES))):
+    st = _st(request)
+    exam = _monitor_exam(st.db, user, exam_id)
+    if exam["status"] != "Sedang Berlangsung":
+        raise HTTPException(409, "Pemantauan hanya dapat dimulai saat ujian sedang berlangsung.")
+    source = body.source or st.settings.analysis_source
+    note = None
+    if source == "livekit":
+        # mark monitoring active first: the worker's first heartbeat must not be told to stop
+        st.db.run("UPDATE exams SET monitoring_active=1, analysis_source='livekit' WHERE id=?", (exam_id,))
+        res = st.workers.start(exam_id)
+        if not res["started"] and res.get("reason") != "already running":
+            note = f"Worker OpenVidu tidak berjalan ({res['reason']}). Analisis memakai frame dari browser siswa."
+            source = "browser"
+    if source == "browser":
+        _stop_worker(st, exam_id)                    # switching from the OpenVidu worker to browser frames
+    if source == "browser" and not st.ai.available:
+        note = (note or "") + f" Layanan AI belum siap: {st.ai.reason}."
+    st.db.run("UPDATE exams SET monitoring_active=1, analysis_source=?, monitoring_started_at=? WHERE id=?",
+              (source, now_iso(), exam_id))
+    store.audit(st.db, user, "Memulai pemantauan", f"exam:{exam_id} ({source})")
+    return {"active": True, "source": source, "note": note.strip() if note else None}
+
+
+@router.post("/exams/{exam_id}/monitoring/stop")
+async def stop_monitoring(exam_id: int, request: Request, user=Depends(require_roles(*MONITOR_ROLES))):
+    st = _st(request)
+    _monitor_exam(st.db, user, exam_id)
+    await _stop_monitoring(st, exam_id)
+    store.audit(st.db, user, "Menghentikan pemantauan", f"exam:{exam_id}")
+    return {"active": False}
+
+
+@router.get("/exams/{exam_id}/monitoring")
+def monitoring_state(exam_id: int, request: Request, user=Depends(require_roles(*MONITOR_ROLES))):
+    st = _st(request)
+    exam = _monitor_exam(st.db, user, exam_id)
+    w = st.db.one("SELECT * FROM workers WHERE exam_id=?", (exam_id,))
+    return {"active": bool(exam["monitoring_active"]), "source": exam["analysis_source"],
+            "started_at": exam["monitoring_started_at"],
+            "ai": {"available": st.ai.available, "reason": st.ai.reason},
+            "worker": {"process_running": st.workers.running(exam_id),
+                       "last_heartbeat": w["last_heartbeat"] if w else None,
+                       "alive": bool(w) and (_age_s(w["last_heartbeat"]) or 1e9) < 20,
+                       "students": w["students"] if w else 0},
+            "livekit_configured": st.settings.livekit_configured}
+
+
+# ---------------------------------------------------------------- events & reviews
+@router.get("/exams/{exam_id}/events")
+def exam_events(exam_id: int, request: Request, student_id: Optional[int] = None,
+                category: Optional[str] = Query(default=None, pattern="^(indication|cannot_analyze)$"),
+                since: Optional[str] = None, review: Optional[str] = None, limit: int = 200,
+                user=Depends(require_roles(*STAFF))):
+    db = _st(request).db
+    _view_exam(db, user, exam_id)
+    return {"server_time": now_iso(), "events": _events_query(db, [exam_id], user, student_id=student_id,
+                                                              category=category, since=since, review=review, limit=limit)}
+
+
+@router.get("/events")
+def all_events(request: Request, category: Optional[str] = Query(default=None, pattern="^(indication|cannot_analyze)$"),
+               since: Optional[str] = None, review: Optional[str] = None, limit: int = 200,
+               user=Depends(require_roles(*STAFF))):
+    """Events from every exam the user may see. Used for notifications and the Indikasi page."""
+    db = _st(request).db
+    return {"server_time": now_iso(), "events": _events_query(db, _accessible_exam_ids(db, user), user,
+                                                              category=category, since=since, review=review, limit=limit)}
+
+
+def _event_for(db, user, event_id) -> dict:
+    ev = db.one("SELECT * FROM events WHERE event_id=?", (event_id,))
+    if not ev:
+        raise HTTPException(404, "Indikasi tidak ditemukan.")
+    _view_exam(db, user, ev["exam_id"])
+    if user["role"] == "siswa":
+        raise HTTPException(403, "Anda tidak memiliki izin untuk aksi ini.")
+    if user["role"] == "sekolah" and (ev["category"] != "indication" or ev["review_status"] is None):
+        raise HTTPException(403, "Pihak sekolah hanya dapat melihat indikasi yang sudah divalidasi.")
+    return ev
+
+
+@router.get("/events/{event_id}")
+def get_event(event_id: str, request: Request, user=Depends(require_roles(*STAFF))):
+    db = _st(request).db
+    return _event_out(db, _event_for(db, user, event_id), with_detail=True)
+
+
+@router.post("/events/{event_id}/reviews", status_code=201)
+def review_event(event_id: str, body: ReviewIn, request: Request, user=Depends(require_roles(*REVIEWERS))):
+    db = _st(request).db
+    ev = _event_for(db, user, event_id)
+    if ev["category"] != "indication":
+        raise HTTPException(400, "Status 'tidak dapat dianalisis' bukan indikasi dan tidak divalidasi.")
+    db.run("INSERT INTO reviews (event_id,reviewer_id,decision,note,created_at) VALUES (?,?,?,?,?)",
+           (event_id, user["id"], body.decision, body.note.strip(), now_iso()))
+    db.run("UPDATE events SET review_status=?, updated_at=? WHERE event_id=?", (body.decision, now_iso(), event_id))
+    store.audit(db, user, f"Melakukan validasi ({body.decision})", f"exam:{ev['exam_id']} event:{event_id[:8]}")
+    return _event_out(db, db.one("SELECT * FROM events WHERE event_id=?", (event_id,)), with_detail=True)
+
+
+# ---------------------------------------------------------------- grouped cases (see app/cases.py)
+# A case = repeated indication events of one student, one exam and one indicator type (whole exam by
+# default; split by gap only when settings.case_gap_s > 0). Cases are computed from the events table;
+# the original events, reviews and evidence are unchanged and still reachable through
+# /events/{event_id} and /evidence/{evidence_id}. Each case carries its distinct episodes and whether
+# the configured rule is met (the supervisor pop-up waits for the rule).
+def _indication_rows(db, exam_ids, user, student_id=None) -> List[dict]:
+    if not exam_ids:
+        return []
+    sql = f"SELECT * FROM events WHERE category='indication' AND exam_id IN ({','.join('?' * len(exam_ids))})"
+    params = list(exam_ids)
+    if user["role"] == "sekolah":                       # school sees reviewed indications only (same rule as /events)
+        sql += " AND review_status IS NOT NULL"
+    if student_id is not None:
+        sql += " AND student_id = ?"; params.append(student_id)
+    return db.all(sql, params)
+
+
+def _case_out(db, group: List[dict], lookup: dict) -> dict:
+    out = casing.summarize(group)
+    sid, eid = out["student_id"], out["exam_id"]
+    if ("u", sid) not in lookup:
+        lookup[("u", sid)] = db.one("SELECT id, name, nis, class_name FROM users WHERE id=?", (sid,))
+    if ("e", eid) not in lookup:
+        lookup[("e", eid)] = db.one("SELECT id, name FROM exams WHERE id=?", (eid,))
+    out["student"], out["exam"] = lookup[("u", sid)], lookup[("e", eid)]
+    return out
+
+
+def _case_list(db, user, exam_ids, gap_s, *, student_id=None, review=None) -> dict:
+    rows = _indication_rows(db, exam_ids, user, student_id)
+    lookup: dict = {}
+    items = [_case_out(db, g, lookup) for g in casing.group_events(rows, gap_s)]
+    if review == "unreviewed":                          # at least one event of the case still unreviewed
+        items = [c for c in items if c["unreviewed_count"] > 0]
+    elif review:
+        items = [c for c in items if c["review_status"] == review]
+    items.sort(key=lambda c: c["last_start_ts"], reverse=True)
+    return {"server_time": now_iso(), "gap_s": gap_s, "total_events": sum(c["event_count"] for c in items),
+            "cases": items}
+
+
+def _case_for(db, user, case_id: str, gap_s):
+    """The case and its events, with the same access checks as a single event."""
+    first_id = casing.event_id_from_case(case_id)
+    if not first_id:
+        raise HTTPException(404, "Kasus tidak ditemukan.")
+    ev = _event_for(db, user, first_id)                 # 404 / 403 exactly like /events/{id}
+    if ev["category"] != "indication":
+        raise HTTPException(404, "Kasus tidak ditemukan.")
+    rows = [r for r in _indication_rows(db, [ev["exam_id"]], user, ev["student_id"]) if r["indicator"] == ev["indicator"]]
+    group = casing.find_case(casing.group_events(rows, gap_s), first_id)
+    if not group:
+        raise HTTPException(404, "Kasus tidak ditemukan.")
+    return group
+
+
+def _case_detail(db, group, gap_s) -> dict:
+    return {"server_time": now_iso(), "gap_s": gap_s, "case": _case_out(db, group, {}),
+            "events": [_event_out(db, e, with_detail=True) for e in group]}
+
+
+@router.get("/cases")
+def all_cases(request: Request, review: Optional[str] = None, student_id: Optional[int] = None,
+              exam_id: Optional[int] = None, user=Depends(require_roles(*STAFF))):
+    """Grouped indication cases from every exam the user may see (Indikasi page and notifications)."""
+    st = _st(request)
+    ids = _accessible_exam_ids(st.db, user)
+    if exam_id is not None:
+        _view_exam(st.db, user, exam_id)
+        ids = [exam_id]
+    return _case_list(st.db, user, ids, st.settings.case_gap_s, student_id=student_id, review=review)
+
+
+@router.get("/exams/{exam_id}/cases")
+def exam_cases(exam_id: int, request: Request, review: Optional[str] = None, student_id: Optional[int] = None,
+               user=Depends(require_roles(*STAFF))):
+    st = _st(request)
+    _view_exam(st.db, user, exam_id)
+    return _case_list(st.db, user, [exam_id], st.settings.case_gap_s, student_id=student_id, review=review)
+
+
+@router.get("/cases/{case_id}")
+def get_case(case_id: str, request: Request, user=Depends(require_roles(*STAFF))):
+    st = _st(request)
+    return _case_detail(st.db, _case_for(st.db, user, case_id, st.settings.case_gap_s), st.settings.case_gap_s)
+
+
+@router.post("/cases/{case_id}/reviews", status_code=201)
+def review_case(case_id: str, body: CaseReviewIn, request: Request, user=Depends(require_roles(*REVIEWERS))):
+    """One review decision for the events of a case. A normal review row is written for every event
+    (same table and decisions as /events/{id}/reviews), so each event keeps its own history.
+    Only the events listed in event_ids (the ones the reviewer saw) are reviewed; events that joined
+    the case later stay unreviewed until someone reviews them."""
+    st = _st(request)
+    db = st.db
+    group = _case_for(db, user, case_id, st.settings.case_gap_s)
+    members = [e["event_id"] for e in group]
+    if body.event_ids is None:
+        targets = members
+    else:
+        unknown = [i for i in body.event_ids if i not in members]
+        if unknown:
+            raise HTTPException(409, "Isi kasus berubah. Muat ulang halaman lalu tinjau kembali.")
+        targets = [i for i in members if i in set(body.event_ids)]
+    now, note = now_iso(), body.note.strip()
+    stmts = []
+    for eid in targets:
+        stmts.append(("INSERT INTO reviews (event_id,reviewer_id,decision,note,created_at) VALUES (?,?,?,?,?)",
+                      (eid, user["id"], body.decision, note, now)))
+        stmts.append(("UPDATE events SET review_status=?, updated_at=? WHERE event_id=?", (body.decision, now, eid)))
+    db.run_all(stmts)
+    store.audit(db, user, f"Melakukan validasi kasus ({body.decision}, {len(targets)} kejadian)",
+                f"exam:{group[0]['exam_id']} case:{case_id[:10]}")
+    out = _case_detail(db, _case_for(db, user, case_id, st.settings.case_gap_s), st.settings.case_gap_s)
+    out["reviewed_event_ids"] = targets
+    return out
+
+
+# ---------------------------------------------------------------- consolidated exam summary (app/summary.py)
+@router.get("/summaries")
+def list_summaries(request: Request, user=Depends(require_roles(*MONITOR_ROLES))):
+    """Generated summaries of the exams this user monitors (notifications: one per summary/student)."""
+    st = _st(request)
+    out = []
+    for exam_id in _accessible_exam_ids(st.db, user):
+        s = summary.stored(st.db, exam_id)
+        if s:
+            out.append(s)
+    out.sort(key=lambda s: s["created_at"], reverse=True)
+    return {"server_time": now_iso(), "summaries": out}
+
+
+@router.get("/exams/{exam_id}/summary")
+def exam_summary(exam_id: int, request: Request, user=Depends(require_roles(*MONITOR_ROLES))):
+    """The stored summary when it exists; otherwise a live preview (not stored, no notification) and
+    when the scheduled one is due."""
+    st = _st(request)
+    exam = _monitor_exam(st.db, user, exam_id)
+    s = summary.stored(st.db, exam_id)
+    if s:
+        return {**s, "preview": False}
+    win = summary.exam_window(exam, st.settings.exam_timezone)
+    return {"exam_id": exam_id, "kind": None, "preview": True, "created_at": None,
+            "scheduled_end": win[1].isoformat() if win else None,
+            "scheduled_at": (win[1] - timedelta(minutes=summary.PRE_END_MIN)).isoformat() if win else None,
+            "summary": summary.build(st.db, exam)}
+
+
+@router.post("/exams/{exam_id}/notes", status_code=201)
+def add_note(exam_id: int, body: NoteIn, request: Request, user=Depends(require_roles(*REVIEWERS))):
+    db = _st(request).db
+    _monitor_exam(db, user, exam_id)
+    if body.student_id is not None and not _enrolled(db, exam_id, body.student_id):
+        raise HTTPException(400, "Siswa tidak terdaftar pada ujian ini.")
+    nid = db.run("INSERT INTO manual_notes (exam_id,student_id,author_id,time_text,kind,note,created_at) VALUES (?,?,?,?,?,?,?)",
+                 (exam_id, body.student_id, user["id"], body.time_text, body.kind, body.note, now_iso()))
+    store.audit(db, user, "Menambah catatan manual", f"exam:{exam_id}")
+    return db.one("SELECT * FROM manual_notes WHERE id=?", (nid,))
+
+
+# ---------------------------------------------------------------- evidence (authorised + audited)
+def _evidence_for(st, user, evidence_id: str) -> dict:
+    row = st.db.one("SELECT * FROM evidence WHERE evidence_id=?", (evidence_id,))
+    if not row:
+        raise HTTPException(404, "Evidence tidak ditemukan atau sudah melewati masa simpan.")
+    _event_for(st.db, user, row["event_id"])
+    try:
+        meta = st.evidence_store.meta(evidence_id)
+    except ValueError:
+        raise HTTPException(404, "Evidence tidak ditemukan.")
+    if meta is None:
+        raise HTTPException(410, "Evidence sudah melewati masa simpan dan dihapus.")
+    return {**row, "frame_ts": meta.get("frame_ts", []), "key_index": meta.get("key_index", 0),
+            "encrypted": meta.get("encrypted", False), "expires_at": row["expires_at"]}
+
+
+@router.get("/evidence/{evidence_id}")
+def evidence_meta(evidence_id: str, request: Request, response: Response, user=Depends(require_roles(*STAFF))):
+    st = _st(request)
+    out = _evidence_for(st, user, evidence_id)
+    store.audit(st.db, user, "Melihat evidence", f"exam:{out['exam_id']} event:{out['event_id'][:8]}")
+    response.headers["Cache-Control"] = "no-store"
+    return out
+
+
+@router.get("/evidence/{evidence_id}/frames/{index}")
+def evidence_frame(evidence_id: str, index: int, request: Request, user=Depends(require_roles(*STAFF))):
+    st = _st(request)
+    _evidence_for(st, user, evidence_id)
+    data = st.evidence_store.read_frame(evidence_id, index)
+    if data is None:
+        raise HTTPException(404, "Frame tidak ditemukan.")
+    return Response(content=data, media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+
+# ---------------------------------------------------------------- reports, dashboard, audit
+@router.get("/exams/{exam_id}/report")
+def report(exam_id: int, request: Request, user=Depends(require_roles(*STAFF))):
+    db = _st(request).db
+    exam = _view_exam(db, user, exam_id)
+    enrolled = db.one("SELECT COUNT(*) n FROM exam_students WHERE exam_id=?", (exam_id,))["n"]
+    joined = db.one("SELECT COUNT(*) n FROM presence WHERE exam_id=? AND joined_at IS NOT NULL", (exam_id,))["n"]
+    c = db.one("SELECT SUM(category='indication') total, SUM(review_status='Valid') valid,"
+               " SUM(review_status='Tidak Valid') invalid, SUM(review_status='Perlu Tinjauan Lanjut') further,"
+               " SUM(category='indication' AND review_status IS NULL) unreviewed,"
+               " SUM(category='cannot_analyze') cannot_analyze FROM events WHERE exam_id=?", (exam_id,))
+    return {"exam": _exam_out(db, exam, user),
+            "attendance": {"enrolled": enrolled, "joined": joined, "not_joined": enrolled - joined},
+            "indications": {k: (c[k] or 0) for k in ("total", "valid", "invalid", "further", "unreviewed", "cannot_analyze")},
+            "events": _events_query(db, [exam_id], user, category="indication", limit=500),
+            "activity": db.all("SELECT ts, user_name, role, action, target, status FROM audit WHERE target LIKE ?"
+                               " AND role != 'siswa' ORDER BY id DESC LIMIT 100", (f"exam:{exam_id}%",))}
+
+
+def _case_counts(db, user, ids, gap_s) -> dict:
+    groups = casing.group_events(_indication_rows(db, ids, user), gap_s)
+    return {"detections_total": sum(len(g) for g in groups), "cases_total": len(groups),
+            "cases_unreviewed": sum(1 for g in groups if casing.review_status(g)[2] > 0)}
+
+
+def _recent_cases(db, user, ids, gap_s, n=5) -> List[dict]:
+    lookup: dict = {}
+    items = [_case_out(db, g, lookup) for g in casing.group_events(_indication_rows(db, ids, user), gap_s)]
+    return sorted(items, key=lambda c: c["last_start_ts"], reverse=True)[:n]
+
+
+@router.get("/dashboard")
+def dashboard(request: Request, user=Depends(get_current_user)):
+    db = _st(request).db
+    if user["role"] == "siswa":
+        return {"exams": list_exams(request, user)}
+    ids = _accessible_exam_ids(db, user)
+    exams = [_exam_out(db, e, user) for e in db.all(
+        f"SELECT * FROM exams WHERE id IN ({','.join('?' * len(ids)) or 'NULL'}) ORDER BY date DESC, start_time", ids)]
+    evs = _events_query(db, ids, user, category="indication", limit=500)
+    return {"exams": exams,
+            "summary": {"active_sessions": sum(1 for e in exams if e["status"] == "Sedang Berlangsung"),
+                        "students_online": sum(e.get("online", 0) for e in exams if e["status"] == "Sedang Berlangsung"),
+                        "unreviewed": sum(1 for e in evs if e["review_status"] is None),
+                        "valid": sum(1 for e in evs if e["review_status"] == "Valid"),
+                        "further": sum(1 for e in evs if e["review_status"] == "Perlu Tinjauan Lanjut"),
+                        # grouped cases vs. original detections, counted from the database (all indications)
+                        **_case_counts(db, user, ids, _st(request).settings.case_gap_s)},
+            "recent_indications": evs[:5],                 # unchanged (single events), kept for compatibility
+            "recent_cases": _recent_cases(db, user, ids, _st(request).settings.case_gap_s)}
+
+
+@router.get("/audit")
+def audit_log(request: Request, limit: int = 200, user=Depends(require_roles("admin"))):
+    return _st(request).db.all("SELECT * FROM audit ORDER BY id DESC LIMIT ?", (max(1, min(limit, 1000)),))
+
+
+# ---------------------------------------------------------------- AI: debug inference + worker ingest
+@router.post("/ai/infer")
+async def infer(request: Request, files: List[UploadFile] = File(...), user=Depends(require_roles("admin", "penyelenggara"))):
+    """Run perception on 1..10 JPEG/PNG images and return per-frame signals. Nothing is stored.
+    Images are treated as one short sequence (0.2 s apart)."""
+    st = _st(request)
+    if not st.ai.available:
+        raise HTTPException(503, f"Layanan AI belum siap: {st.ai.reason}")
+    if not 1 <= len(files) <= 10:
+        raise HTTPException(400, "Kirim 1 sampai 10 gambar.")
+    blobs = []
+    for f in files:
+        b = await f.read(st.settings.frame_max_bytes * 4 + 1)
+        if len(b) > st.settings.frame_max_bytes * 4:
+            raise HTTPException(413, "Ukuran gambar terlalu besar.")
+        blobs.append(b)
+
+    def run():
+        import cv2
+        import numpy as np
+        factory = st.ai._perception_factory
+        if factory is None:
+            from eduai_ai.perception import MediaPipePerception as factory
+        p = factory(st.ai.cfg)
+        try:
+            out = []
+            for i, b in enumerate(blobs):
+                img = cv2.imdecode(np.frombuffer(b, np.uint8), cv2.IMREAD_COLOR)
+                out.append(p.process(img, 1.0 + 0.2 * i).to_dict())
+            return out
+        finally:
+            getattr(p, "close", lambda: None)()
+
+    async with st.ai.sem:
+        results = await asyncio.to_thread(run)
+    return {"model_version": __import__("eduai_ai").MODEL_VERSION, "frames": results}
+
+
+def _ingest_ids(db, session_id: str, student_id: str):
+    try:
+        exam_id, sid = int(session_id), int(student_id)
+    except ValueError:
+        raise ValueError("session_id/student_id must be EduAI numeric ids")
+    if not _enrolled(db, exam_id, sid):
+        raise ValueError("student is not enrolled in this exam")
+    return exam_id, sid
+
+
+@router.post("/ai/events", dependencies=[Depends(require_service_key)])
+def ingest_events(body: EventsIn, request: Request):
+    db = _st(request).db
+    stored, rejected = 0, []
+    for ev in body.events:
+        try:
+            exam_id, sid = _ingest_ids(db, ev.session_id, ev.student_id)
+            store.upsert_event(db, ev.model_dump(), exam_id, sid, "livekit")
+            stored += 1
+        except ValueError as e:
+            rejected.append({"event_id": ev.event_id, "error": str(e)})
+    return {"stored": stored, "rejected": rejected}
+
+
+@router.post("/ai/evidence", status_code=201, dependencies=[Depends(require_service_key)])
+async def ingest_evidence(request: Request, meta: str = Form(...), frames: List[UploadFile] = File(...)):
+    st = _st(request)
+    from eduai_ai.evidence import EvidencePackage
+    try:
+        m = json.loads(meta)
+        exam_id, sid = _ingest_ids(st.db, str(m["session_id"]), str(m["student_id"]))
+        ts = [float(t) for t in m.get("frame_ts", [])]
+    except (ValueError, KeyError, TypeError) as e:
+        raise HTTPException(422, f"meta tidak valid: {e}")
+    if not 1 <= len(frames) <= 30:
+        raise HTTPException(422, "Jumlah frame evidence harus 1-30.")
+    blobs = []
+    for f in frames:
+        if f.content_type not in ("image/jpeg", "image/jpg"):
+            raise HTTPException(415, "Frame evidence harus JPEG.")
+        b = await f.read(st.settings.frame_max_bytes + 1)
+        if len(b) > st.settings.frame_max_bytes:
+            raise HTTPException(413, "Frame evidence terlalu besar.")
+        blobs.append(b)
+    ts = (ts + [0.0] * len(blobs))[:len(blobs)]
+    pkg = EvidencePackage(event_id=str(m.get("event_id", "")), frames=list(zip(ts, blobs)),
+                          key_index=int(m.get("key_index", 0)), event_ts=ts[0] if ts else 0.0)
+    try:
+        eid = store.save_evidence(st.db, st.evidence_store, exam_id, sid, pkg)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"evidence_id": eid}
+
+
+@router.post("/ai/status", dependencies=[Depends(require_service_key)])
+def ingest_status(body: StatusIn, request: Request):
+    db = _st(request).db
+    n = 0
+    for s in body.students:
+        try:
+            exam_id, sid = _ingest_ids(db, body.session_id, s.student_id)
+        except ValueError:
+            continue
+        store.upsert_status(db, exam_id, sid, s.model_dump(), "livekit")
+        n += 1
+    return {"updated": n}
+
+
+@router.post("/ai/heartbeat", dependencies=[Depends(require_service_key)])
+def heartbeat(body: HeartbeatIn, request: Request):
+    db = _st(request).db
+    try:
+        exam_id = int(body.session_id)
+    except ValueError:
+        raise HTTPException(422, "session_id tidak valid")
+    exam = _exam_or_404(db, exam_id)
+    active = bool(exam["monitoring_active"]) and exam["analysis_source"] == "livekit"
+    current = _st(request).workers.current_id(exam_id)
+    replaced = bool(body.worker_id) and body.worker_id != current      # e.g. left over from before a restart
+    if not replaced:
+        db.run("INSERT INTO workers (exam_id,last_heartbeat,models_json,students,started_at) VALUES (?,?,?,?,?)"
+               " ON CONFLICT(exam_id) DO UPDATE SET last_heartbeat=excluded.last_heartbeat,"
+               " models_json=excluded.models_json, students=excluded.students",
+               (exam_id, now_iso(), json.dumps(body.models)[:4000], body.students, now_iso()))
+    return {"ok": True, "monitoring_active": active, "stop": (not active) or replaced}

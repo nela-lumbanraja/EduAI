@@ -1,0 +1,9 @@
+# EduAI AI module. Versions are the ones tested in development (see docs/TEST_RESULTS.md).
+mediapipe>=0.10.14,<0.11      # tested with 0.10.32 (Tasks API: FaceDetector / FaceLandmarker / ObjectDetector)
+opencv-python>=4.8            # use opencv-python-headless on servers without a display
+numpy>=1.24
+pyyaml>=6.0
+httpx>=0.27                   # OpenVidu worker -> backend
+livekit==1.1.20               # OpenVidu/LiveKit worker (rtc.Room, rtc.VideoStream)
+cryptography>=42              # optional: evidence encryption at rest
+pytest>=8

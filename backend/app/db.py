@@ -1,0 +1,175 @@
+"""SQLite storage (standard library). One connection guarded by a lock: simple and
+adequate for a single backend process. For several processes, move to PostgreSQL."""
+import sqlite3
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('siswa','pengawas','penyelenggara','admin','sekolah')),
+  password_hash TEXT NOT NULL,
+  nis TEXT,
+  class_name TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS exams (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  subject TEXT NOT NULL DEFAULT '',
+  class_name TEXT NOT NULL DEFAULT '',
+  date TEXT NOT NULL,
+  start_time TEXT NOT NULL,
+  duration_min INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('Draft','Terjadwal','Sedang Berlangsung','Selesai')),
+  supervisor_id INTEGER REFERENCES users(id),
+  monitoring_active INTEGER NOT NULL DEFAULT 0,
+  analysis_source TEXT,
+  monitoring_started_at TEXT,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS exam_students (
+  exam_id INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+  student_id INTEGER NOT NULL REFERENCES users(id),
+  PRIMARY KEY (exam_id, student_id)
+);
+CREATE TABLE IF NOT EXISTS consents (
+  exam_id INTEGER NOT NULL, student_id INTEGER NOT NULL,
+  accepted_at TEXT NOT NULL, notice_version TEXT NOT NULL,
+  audio_accepted INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (exam_id, student_id)
+);
+CREATE TABLE IF NOT EXISTS presence (
+  exam_id INTEGER NOT NULL, student_id INTEGER NOT NULL,
+  joined_at TEXT, last_seen TEXT, left_at TEXT,
+  camera_on INTEGER, mic_on INTEGER, connection TEXT, rtt_ms REAL,
+  PRIMARY KEY (exam_id, student_id)
+);
+CREATE TABLE IF NOT EXISTS ai_status (
+  exam_id INTEGER NOT NULL, student_id INTEGER NOT NULL,
+  state TEXT, frame_status TEXT, reason TEXT, face_count INTEGER, latency_ms REAL,
+  source TEXT, updated_at TEXT,
+  PRIMARY KEY (exam_id, student_id)
+);
+CREATE TABLE IF NOT EXISTS events (
+  event_id TEXT PRIMARY KEY,
+  exam_id INTEGER NOT NULL, student_id INTEGER NOT NULL,
+  indicator TEXT NOT NULL, category TEXT NOT NULL CHECK (category IN ('indication','cannot_analyze')),
+  status TEXT NOT NULL CHECK (status IN ('open','closed')),
+  start_ts TEXT NOT NULL, end_ts TEXT, score REAL, reason TEXT, label TEXT,
+  evidence_id TEXT, model_version TEXT, config_version TEXT, schema_version TEXT,
+  source TEXT, review_status TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_events_exam ON events(exam_id, updated_at);
+CREATE TABLE IF NOT EXISTS reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id TEXT NOT NULL REFERENCES events(event_id),
+  reviewer_id INTEGER NOT NULL REFERENCES users(id),
+  decision TEXT NOT NULL CHECK (decision IN ('Valid','Tidak Valid','Perlu Tinjauan Lanjut')),
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS manual_notes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  exam_id INTEGER NOT NULL, student_id INTEGER, author_id INTEGER NOT NULL,
+  time_text TEXT, kind TEXT, note TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS evidence (
+  evidence_id TEXT PRIMARY KEY,
+  event_id TEXT NOT NULL, exam_id INTEGER NOT NULL, student_id INTEGER NOT NULL,
+  frame_count INTEGER NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL, user_id INTEGER, user_name TEXT, role TEXT,
+  action TEXT NOT NULL, target TEXT, status TEXT NOT NULL DEFAULT 'Berhasil'
+);
+-- One consolidated summary per exam (PRIMARY KEY = at most one, so restarts/concurrent checks cannot
+-- duplicate it). kind: 'pre_end' (10 min before the scheduled end) or 'final' (at/after the end).
+CREATE TABLE IF NOT EXISTS exam_summaries (
+  exam_id INTEGER PRIMARY KEY REFERENCES exams(id),
+  kind TEXT NOT NULL CHECK (kind IN ('pre_end','final')),
+  scheduled_end TEXT,
+  created_at TEXT NOT NULL,
+  payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workers (
+  exam_id INTEGER PRIMARY KEY, pid INTEGER, started_at TEXT, last_heartbeat TEXT,
+  models_json TEXT, students INTEGER
+);
+"""
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+class Database:
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        if str(path) != ":memory:":
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
+        self._conn.row_factory = sqlite3.Row
+        self._lock = threading.RLock()
+        with self._lock:
+            self._conn.execute("PRAGMA foreign_keys = ON")
+            if str(path) != ":memory:":
+                self._conn.execute("PRAGMA journal_mode = WAL")
+            self._conn.executescript(SCHEMA)
+            # Databases created before the audio option: add the column (existing consents = no audio).
+            cols = [r[1] for r in self._conn.execute("PRAGMA table_info(consents)")]
+            if "audio_accepted" not in cols:
+                self._conn.execute("ALTER TABLE consents ADD COLUMN audio_accepted INTEGER NOT NULL DEFAULT 0")
+
+    def all(self, sql: str, params=()) -> list:
+        with self._lock:
+            return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
+
+    def one(self, sql: str, params=()):
+        with self._lock:
+            r = self._conn.execute(sql, params).fetchone()
+            return dict(r) if r else None
+
+    def run(self, sql: str, params=()) -> int:
+        """Execute a write. Returns lastrowid."""
+        with self._lock:
+            return self._conn.execute(sql, params).lastrowid
+
+    def changes(self, sql: str, params=()) -> int:
+        """Execute a write and return how many rows it changed (0 for an ignored INSERT OR IGNORE)."""
+        with self._lock:
+            return self._conn.execute(sql, params).rowcount
+
+    def many(self, sql: str, rows):
+        with self._lock:
+            self._conn.execute("BEGIN")
+            try:
+                self._conn.executemany(sql, rows)
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+
+    def run_all(self, statements):
+        """Run several (sql, params) writes in one transaction: all of them or none."""
+        with self._lock:
+            self._conn.execute("BEGIN")
+            try:
+                for sql, params in statements:
+                    self._conn.execute(sql, params)
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+
+    def close(self):
+        with self._lock:
+            self._conn.close()

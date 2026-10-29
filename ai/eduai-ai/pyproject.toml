@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eduai-ai"
+version = "0.2.0"
+description = "EduAI webcam analysis: frame signals -> temporal indications for human review"
+requires-python = ">=3.10"
+dependencies = ["opencv-python-headless>=4.8", "numpy>=1.24", "pyyaml>=6.0", "httpx>=0.27"]
+
+[project.optional-dependencies]
+models = ["mediapipe>=0.10.14,<0.11"]
+livekit = ["livekit==1.1.20"]
+crypto = ["cryptography>=42"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
