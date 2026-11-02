@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Lambang EduAI">
+<title>Lambang EduAI</title>
+<circle cx="32" cy="32" r="32" fill="#0a2547"/>
+<circle cx="32" cy="32" r="29.2" fill="none" stroke="#c7a44b" stroke-width="2"/>
+<circle cx="32" cy="32" r="24.6" fill="#f9f3e8"/>
+<path d="M16 13H48V34C48 45 40 50 32 54C24 50 16 45 16 34Z" fill="#0a2547" stroke="#c7a44b" stroke-width="2" stroke-linejoin="round"/>
+<path d="M32 17L26 23L32 29L38 23ZM26 23H38M32 17V29" fill="none" stroke="#56c8dc" stroke-width="1.5" stroke-linejoin="round"/>
+<g fill="#fff"><circle cx="26" cy="23" r="1.9"/><circle cx="38" cy="23" r="1.9"/><circle cx="32" cy="29" r="1.9"/></g>
+<circle cx="32" cy="17" r="2.3" fill="#c7a44b"/>
+<path d="M26.5 31.5H37.5L34.6 36H33.8L33 47H31L30.2 36H29.4Z" fill="#c7a44b"/>
+</svg>
