@@ -120,3 +120,66 @@ Dasar: `EduAI-integrated.zip`. Hasil uji: `docs/TEST_RESULTS.md` baris 16–23.
 |---|---|---|
 | `tests/e2e/e2e_livekit_worker.py` | Baru | E2E jalur worker OpenVidu (mode `stop` dan `kill`). |
 | `README.md`, `docs/TEST_RESULTS.md`, `docs/API.md`, `docs/CHANGES.md` | Diubah | Status jujur, langkah audio & worker, hasil uji baru, kontrak heartbeat/`worker_active`. |
+
+## Rapat Video (Jitsi Meet)
+
+| Berkas | Status | Alasan |
+|---|---|---|
+| `frontend/src/jitsi.ts` | Baru | Memuat `lib-jitsi-meet` dari server Jitsi; hook `useJitsiRoom` dan `useJitsiTrack`. |
+| `frontend/src/App.tsx` | Diubah | Layar `meeting` (`MeetingPage`), menu **Rapat Video**, dan izin layar untuk semua peran. |
+| `frontend/.env.example` | Diubah | `VITE_JITSI_DOMAIN`, `VITE_JITSI_MUC`, `VITE_JITSI_SERVICE_URL`. |
+
+## Desain baru (lambang, login, dasbor)
+
+| Berkas | Status | Alasan |
+|---|---|---|
+| `frontend/public/brand/` | Baru | `eduai-seal.svg` (lambang vektor, teks sudah menjadi kurva), `eduai-mark.svg` (versi sederhana untuk ukuran ≤64 px), PNG turunan, dan ilustrasi login dari mockup. |
+| `frontend/src/index.css` | Diubah | Tema navy-emas, font bawaan sistem (seperti Instagram; Segoe UI di Windows); berlaku untuk semua halaman. |
+| `frontend/src/App.tsx` | Diubah | `Logo`, `Login`, `Sidebar`, `Topbar`, `PageTitle`, `SupervisorDashboard` mengikuti mockup. |
+| `frontend/index.html` | Diubah | Favicon dan warna tema. |
+| `tests/e2e/e2e_browser_flow.py`, `tests/e2e/e2e_livekit_worker.py` | Diubah | Placeholder login baru. |
+
+Navigasi responsif: sidebar penuh di atas 1264px, ikon + tooltip di 768–1264px, top app bar + bottom navigation di bawah 768px (menu kelima dan seterusnya serta tombol keluar ada di **Lainnya**).
+
+Belum tersambung backend: tombol SSO nonaktif; pilihan peran di login tidak memengaruhi peran (peran mengikuti akun).
+
+## Laporan Sesi (backend, gambar bukti, ekspor, finalisasi, retensi)
+
+| Berkas | Status | Alasan |
+|---|---|---|
+| `backend/app/report.py` | Baru | Status final, URL gambar bertanda tangan, salinan gambar, aturan retensi. |
+| `backend/app/report_export.py` | Baru | PDF sesuai template "Laporan Hasil Pengawasan Ujian" dan Excel. |
+| `backend/app/assets/eduai-seal.png` | Baru | Logo segel untuk PDF. |
+| `backend/tests/test_report.py` | Baru | Hitungan ringkasan, akses, gambar, finalisasi, retensi, PDF, Excel. |
+| `backend/app/api.py` | Diubah | Rute laporan, PATCH validasi, finalisasi, ekspor, penguncian jalur tulis. Audit laporan tidak lagi tercampur antarsesi (`exam:1` dan `exam:10`). |
+| `backend/app/db.py`, `store.py`, `main.py`, `settings.py`, `schemas.py`, `.env.example`, `requirements.txt` | Diubah | Tabel `report_finals` dan `report_frames`, kolom `exams.finished_at` dan `events.evidence_deleted_at`, pengaturan retensi dan kop surat, `reportlab`, `openpyxl`. |
+| `ai/eduai-ai/src/eduai_ai/evidence.py` | Diubah | `set_hold`: paket evidence dapat ditahan melewati masa simpan normal. |
+| `backend/tests/test_api.py` | Diubah | Folder gambar laporan dialihkan ke direktori sementara. |
+| `frontend/src/App.tsx`, `frontend/src/api.ts` | Diubah | Halaman Laporan dan Retensi Data. Ekspor CSV digantikan `.xlsx` dari backend. |
+| `README.md`, `docs/API.md`, `docs/TEST_RESULTS.md` | Diubah | Aturan retensi, kontrak API, hasil uji. |
+
+## Mode ujian Jitsi dan ESLint
+
+| Berkas | Status | Alasan |
+|---|---|---|
+| `backend/app/jitsi.py` | Baru | Pengaturan server dan nama ruang ujian. |
+| `backend/tests/test_jitsi.py` | Baru | Tes jalur Jitsi, sumber analisis, rapat biasa, dan gangguan koneksi. |
+| `backend/app/api.py`, `ai_service.py`, `main.py`, `db.py`, `schemas.py`, `settings.py`, `.env.example` | Diubah | Sumber `jitsi` ditentukan server, `connection_log`, `presence.jitsi_state`, "tidak dapat dianalisis" saat track mati atau frame berhenti, `EDUAI_JITSI_*`. |
+| `frontend/src/jitsi.ts`, `frontend/.env.example` | Diubah | Server Jitsi dibaca dari backend; `alpha.jitsi.net` dan `VITE_JITSI_*` dihapus. |
+| `frontend/src/consent.ts`, `frontend/tests/consent.test.ts` | Baru | Teks persetujuan; perlu disetujui pihak sekolah. |
+| `frontend/tests/meetingIsolation.test.ts` | Baru | Rapat Video tidak punya jalur ke analisis. |
+| `frontend/src/App.tsx`, `frontend/src/api.ts` | Diubah | Pilihan dan label sumber, ruang ujian Jitsi, catatan koneksi, Rapat Video, teks persetujuan, jalur logo rail untuk build produksi. |
+| `frontend/eslint.config.js`, `frontend/package.json`, `frontend/package-lock.json` | Baru/Diubah | ESLint untuk React + TypeScript, skrip `npm run lint`. |
+| `tests/e2e/e2e_browser_flow.py` | Diubah | Teks persetujuan baru. |
+
+
+## Akses gambar bukti
+
+| Berkas | Status | Alasan |
+|---|---|---|
+| `backend/app/api.py` | Diubah | Satu pemeriksaan izin untuk `/api/evidence`, URL gambar laporan, dan PDF; penolakan diaudit; `can_view_evidence` dan `restricted_text` di laporan. |
+| `backend/app/report.py`, `main.py` | Diubah | Keterangan akses dan baris audit pencabutan akses per peran. |
+| `backend/app/report_export.py` | Diubah | Keterangan yang sama di PDF dan Excel; gambar rusak kini berlabel "Gambar tidak dapat dibaca". |
+| `backend/tests/test_report.py` | Diubah | Matriks akses, audit, laporan tanpa gambar, PDF. |
+| `frontend/src/App.tsx`, `frontend/src/api.ts` | Diubah | Keterangan untuk penyelenggara dan sekolah; layar evidence tidak lagi meminta gambar untuk mereka. |
+| `README.md`, `docs/API.md` | Diubah | Aturan akses; paragraf Jitsi yang usang di README diperbaiki. |

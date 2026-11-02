@@ -13,9 +13,12 @@ Dokumentasi interaktif otomatis: `http://localhost:8000/docs` (OpenAPI/Swagger).
 Aturan peran (diterapkan di `backend/app/api.py`):
 
 - **siswa**: hanya ujian yang ia ikuti; persetujuan, join, presence, unggah frame. Tidak pernah bisa membaca status AI, indikasi, atau evidence.
-- **pengawas**: hanya ujian dengan `supervisor_id` = dirinya. Pemantauan, indikasi, evidence, validasi, catatan manual.
-- **penyelenggara**, **admin**: semua ujian; admin juga membuat ujian dan membaca audit log.
-- **sekolah**: daftar sesi, laporan, dan **hanya indikasi yang sudah divalidasi** (beserta evidence-nya). Tanpa video langsung dan tanpa status AI real-time.
+- **pengawas**: hanya ujian dengan `supervisor_id` = dirinya. Pemantauan, indikasi, gambar evidence, validasi, catatan manual.
+- **admin**: semua ujian, termasuk gambar evidence; juga membuat ujian dan membaca audit log.
+- **penyelenggara**: semua ujian, tanpa gambar evidence.
+- **sekolah**: daftar sesi, laporan, dan **hanya indikasi yang sudah divalidasi**, tanpa gambar evidence, video langsung, dan status AI real-time.
+
+Gambar evidence hanya untuk pengawas yang ditugaskan di ujian itu dan admin. Aturan ini satu fungsi (`_can_open_evidence`) untuk `/api/evidence`, `/api/report-frames`, dan gambar di PDF. Penolakan menjawab 403 dan dicatat di audit (`Akses gambar bukti ditolak`, status `Ditolak`). Pencabutan akses penyelenggara dan sekolah dicatat sekali sebagai baris audit baru saat backend mulai; baris lama tidak diubah.
 
 CORS: origin dari `EDUAI_CORS_ORIGINS` (default `http://localhost:5173`), metode GET/POST/PATCH, header `Authorization`, `Content-Type`.
 
@@ -28,7 +31,8 @@ Format galat: `{"detail": "<pesan dalam Bahasa Indonesia>"}` atau, untuk validas
 | 403 | Peran tidak berwenang atau sesi bukan milik pengawas |
 | 404 | Data tidak ditemukan |
 | 409 | Status tidak memungkinkan (ujian belum berlangsung, belum ada persetujuan) |
-| 410 | Evidence sudah melewati masa simpan dan dihapus |
+| 409 | Konflik keadaan, misalnya laporan sudah final atau belum semua indikasi ditinjau |
+| 410 | Evidence atau gambar bukti laporan sudah melewati masa simpan dan dihapus |
 | 413 / 415 | Frame terlalu besar / bukan JPEG |
 | 422 | Body tidak valid (skema) |
 | 429 | Terlalu banyak percobaan login (5 gagal per 5 menit per email) |
@@ -66,9 +70,15 @@ Format galat: `{"detail": "<pesan dalam Bahasa Indonesia>"}` atau, untuk validas
 | `GET /api/cases/{case_id}` | staf | Ringkasan kasus + semua kejadian aslinya (skor, alasan, `evidence_id`, riwayat validasi) |
 | `POST /api/cases/{case_id}/reviews` | pengawas, penyelenggara, admin | Satu keputusan untuk kejadian yang dilihat (`event_ids`); dicatat sebagai validasi biasa per kejadian |
 | `POST /api/exams/{id}/notes` | pengawas, penyelenggara, admin | Catatan manual |
-| `GET /api/evidence/{id}` | staf (sekolah: hanya yang tervalidasi) | Metadata evidence (diaudit) |
+| `GET /api/evidence/{id}` | pengawas yang ditugaskan, admin | Metadata evidence (diaudit) |
 | `GET /api/evidence/{id}/frames/{i}` | idem | Satu JPEG evidence (`Cache-Control: no-store`) |
-| `GET /api/exams/{id}/report` | staf | Laporan sesi |
+| `GET /api/jitsi/config` | semua pengguna | Server Jitsi: `configured`, `domain`, `operator` (`school` / `third_party`), `muc`, `service_url`. Tanpa nama ruang ujian |
+| `GET /api/sessions/{id}/report` (juga `/api/exams/{id}/report`) | staf | Info sesi, kehadiran, ringkasan indikasi, semua kejadian, status final. Sekolah: hanya yang sudah ditinjau, tanpa gambar |
+| `PATCH /api/events/{event_id}/review` | pengawas sesi, admin | Ubah status dan/atau catatan dari tabel laporan; mengembalikan baris dan ringkasan baru |
+| `GET /api/report-frames/{event_id}?sig=...` | URL bertanda tangan (5 menit) | Satu JPEG gambar bukti (`no-store`, diaudit) |
+| `POST /api/sessions/{id}/finalize` | pengawas sesi, admin | Mengunci data sesi dan menyalin gambar bukti |
+| `GET /api/sessions/{id}/report.pdf` | staf | PDF "Laporan Hasil Pengawasan Ujian"; gambar hanya untuk pengawas sesi dan admin; tanda DRAF sebelum final |
+| `GET /api/sessions/{id}/report.xlsx` | staf | Excel berisi tabel indikasi, tanpa gambar |
 | `GET /api/audit` | admin | Audit log |
 | `POST /api/ai/infer` | admin, penyelenggara | Inferensi 1–10 gambar (debug; tidak disimpan) |
 | `POST /api/ai/events` · `/evidence` · `/status` · `/heartbeat` | AI worker (service key) | Hasil dari worker OpenVidu |
@@ -136,6 +146,50 @@ Format galat: `{"detail": "<pesan dalam Bahasa Indonesia>"}` atau, untuk validas
 - `GET /api/summaries` (pengawas, penyelenggara, admin): ringkasan yang sudah dibuat → frontend menampilkan satu pop-up per
   ringkasan dan satu item lonceng per siswa. `GET /api/exams/{id}/summary`: ringkasan tersimpan, atau pratinjau langsung
   (`preview: true`, tidak disimpan, tanpa notifikasi) beserta `scheduled_at`. Siswa dan sekolah: 403.
+
+## Sumber analisis dan mode Jitsi
+
+`POST /api/exams/{id}/monitoring/start` menerima `{"source": "browser" | "livekit" | "jitsi"}` dan hanya untuk pengawas, penyelenggara, dan admin. Tanpa `source`, dipakai `EDUAI_ANALYSIS_SOURCE`. Nilai tersimpan di `exams.analysis_source` dan muncul sebagai `source` di `GET /api/exams/{id}/monitoring`, serta di `ai_status` dan kejadian. Di layar `livekit` tampil sebagai OpenVidu. Pilihan `jitsi` menjawab 409 bila `EDUAI_JITSI_DOMAIN` kosong.
+
+Endpoint frame tidak menerima sumber dari klien: `POST /api/exams/{id}/frames` membaca sumber dari data ujian di server, dan tetap menolak siswa tidak terdaftar (403) serta siswa tanpa persetujuan (409).
+
+- `monitoring.jitsi` pada `POST /join` dan `GET /session-state` berisi `{configured, domain, operator, muc, service_url, room}`. Hanya terisi untuk siswa terdaftar yang sudah memberi persetujuan, saat pemantauan aktif dengan sumber `jitsi`; selain itu `null`.
+- `POST /api/exams/{id}/presence` menerima `jitsi`: `connected` atau `disconnected`. Nilai ini hanya dibaca pada mode Jitsi. Perubahan dicatat dan tampil di linimasa sebagai `kind: "connection"`, bukan indikasi, dan tidak menghentikan analisis.
+- Pada mode Jitsi, `camera_on: false` atau tidak ada frame ±8 detik menjalankan pipeline dengan frame kosong, sehingga status menjadi `cannot_analyze` (`reason`: `track_ended` atau `no_frames`).
+- `GET /api/exams/{id}/students` menambah `presence.jitsi`; `ai.source` menunjukkan sumber hasil terakhir.
+- `monitoring.audio.reason` bernilai `jitsi_mode` pada mode Jitsi.
+
+## Laporan sesi (app/report.py, app/report_export.py)
+
+"Sesi" adalah `exam`, jadi `{id}` sama dengan id ujian. Catatan AI hanya penanda hal yang perlu diperiksa, bukan bukti pelanggaran (`ai_notice`).
+
+`GET /api/sessions/1/report` →
+
+```json
+{
+  "exam": {"id": 1, "name": "Ujian Akhir Matematika XI"},
+  "attendance": {"enrolled": 6, "joined": 5, "not_joined": 1},
+  "absent": ["Gilang Ramadhan"],
+  "indications": {"total": 3, "valid": 1, "invalid": 1, "further": 1, "unreviewed": 0, "cannot_analyze": 2, "cannot_analyze_s": 84.5},
+  "events": [{
+    "event_id": "9f2c...", "student": {"name": "Alya Putri"}, "label": "Wajah tidak terlihat", "start_ts": "2026-11-02T02:07:48+00:00",
+    "review_status": "Valid", "last_review": {"decision": "Valid", "note": "Keluar bingkai", "reviewer": "Rina Setiawati"},
+    "evidence": {"state": "available", "url": "/api/report-frames/9f2c...?sig=..."}
+  }],
+  "final": {"finalized_at": "2026-11-02T03:00:00+00:00", "finalized_by": "Rina Setiawati"},
+  "can_edit": false,
+  "ai_notice": "...", "retention_text": "Gambar bukti sudah dihapus sesuai kebijakan retensi", "frame_retention_hours": 24.0,
+  "activity": []
+}
+```
+
+- `evidence.state`: `available`, `deleted` (dihapus retensi), atau `none` (tidak pernah ada gambar). `url` hanya terisi untuk pengawas sesi dan admin. `can_view_evidence` menyatakan hal yang sama untuk seluruh laporan, dan `restricted_text` adalah keterangan untuk peran lain; PDF dan Excel memakai keterangan yang sama.
+- Gambar diambil dari sumber yang sama dengan Lihat Evidence (frame kunci, satu per kejadian), atau dari salinannya setelah final.
+- `PATCH /api/events/{event_id}/review` menerima `{"decision": "Tidak Valid", "note": "..."}`; keduanya opsional, tetapi kejadian yang belum punya status wajib menyertakan `decision` (400). Peninjauan bersifat tambah-saja, jadi riwayat keputusan tetap tersimpan. Hasil: `{"event": {...}, "indications": {...}}`.
+- **URL gambar**: JWT dengan kunci turunan terpisah dari token sesi, berisi pengguna, kejadian, dan masa berlaku 5 menit. Peran, status akun, dan penugasan diperiksa ulang tiap permintaan. Galat: 403 tidak valid, kedaluwarsa, atau izin hilang; 410 gambar sudah dihapus. URL kedaluwarsa diperbarui dengan memuat ulang laporan.
+- **Finalisasi** menjawab 409 bila ada indikasi belum ditinjau, pemantauan masih aktif, ada kejadian terbuka, atau laporan sudah final. "Perlu Tinjauan Lanjut" dihitung sudah ditinjau. Finalisasi tidak dapat dibatalkan.
+- Setelah final, semua penulisan untuk sesi itu menjawab 409: `PATCH /events/.../review`, `POST /events/.../reviews`, `POST /cases/.../reviews`, `POST /exams/.../notes`, `POST /exams/.../monitoring/start`, `POST /ai/evidence`. `POST /ai/events` menaruh kejadian itu di `rejected`.
+- **Retensi**: lihat README, bagian Privasi & keamanan. `GET /api/ai/health` memuat `evidence_hold_days` dan `report_frame_retention_hours`.
 
 ## Skema kejadian AI (schema 1.0, URS A-03)
 

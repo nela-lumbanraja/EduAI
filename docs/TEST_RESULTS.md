@@ -101,6 +101,62 @@ Temuan sebelum perbaikan (kode dasar, server yang sama): jalur normal lulus, tet
 
 Batasan: satu siswa, satu mesin, server LiveKit biasa (bukan paket OpenVidu lengkap dengan Caddy/Redis/ingress), Linux saja.
 
+### Rapat Video / Jitsi Meet (30 Oktober 2026)
+
+Windows 11, Chrome headless (`--use-fake-device-for-media-stream`), server uji `alpha.jitsi.net`, `pengawas1` dan `siswa1` di ruang acak. **LULUS:** keduanya bergabung (2 peserta), video diterima dua arah dan stabil selama 16 dtk, elemen audio remote terpasang, video lokal tampil lagi setelah kamera dimatikan lalu dinyalakan, tidak ada ubin tersisa setelah peserta keluar. `tsc --noEmit` dan `npm run build` lulus.
+
+**Tidak diuji:** kamera dan mikrofon sungguhan, suara yang benar-benar terdengar, server Jitsi sendiri, koneksi putus di tengah rapat, lebih dari dua peserta. Skrip uji tidak disimpan di repo.
+
+## Laporan Sesi
+
+Windows 11, Chrome headless, backend dan frontend terpisah di basis data sementara dengan tiga kejadian uji dan gambar sintetis.
+
+| Uji | Hasil |
+|---|---|
+| `backend/tests/test_report.py` | **Lulus** |
+| Angka ringkasan, thumbnail, perbesar, kejadian tanpa gambar | **Lulus** |
+| Ubah status dan catatan di tabel, ringkasan ikut berubah, tersimpan setelah muat ulang | **Lulus** |
+| Peringatan finalisasi, finalisasi, tabel terkunci, gambar dari salinan final | **Lulus** |
+| Ekspor PDF dan Excel dari tombol; PDF final dan DRAF diperiksa per halaman (3 halaman) | **Lulus** |
+| Pindah sesi lewat dropdown, kondisi kosong, galat dengan Coba lagi | **Lulus** |
+| Peran sekolah tanpa gambar, halaman Retensi Data | **Lulus** |
+
+**Tidak diuji:** data ujian sungguhan, retensi yang benar-benar menunggu 24 jam atau 7 hari (diuji dengan memundurkan waktu paket), URL gambar di server HTTPS, dan nama dengan huruf di luar Latin di PDF.
+
+## Mode ujian Jitsi
+
+Windows 11, Chrome headless, kamera palsu Chrome, kode frontend asli melawan `window.JitsiMeetJS` **tiruan**, backend terpisah di basis data sementara dengan AI nyata.
+
+| Uji | Hasil |
+|---|---|
+| Tes backend seluruhnya (termasuk `test_jitsi.py`) | **132 lulus, 0 gagal, 2 dilewati** |
+| Tes modul AI | **48 lulus, 0 gagal, 2 dilewati** |
+| Tes frontend (`notify`, `audioScores`, `meetingIsolation`, `consent`) | **24 lulus, 0 gagal** |
+| Uji mutasi `test_jitsi.py` (14 kerusakan sengaja, dengan kontrol tanpa mutasi) | **14 tertangkap, 0 lolos** |
+| Skenario browser (sumber, siswa Jitsi, terputus, gagal masuk, track mati, Rapat Video, belum dikonfigurasi, pesan OpenVidu, teks persetujuan, logo build produksi) | **46 dari 46 lulus** |
+| Rekaman jaringan Rapat Video | Siswa: 0 panggilan API. Pengawas: hanya polling notifikasi `/api/cases` dan `/api/summaries`. Kontrol perekam lulus |
+| `npm run lint` | Saat itu gagal (9 error, 1 peringatan); sudah diperbaiki, lihat bagian berikut |
+
+**Tidak diuji:** server Jitsi sungguhan, kamera sungguhan, indikasi dan evidence jalur Jitsi di browser (kamera palsu tidak melewati fase acuan; hanya tes backend), sambung ulang tiap 30 detik, mode OpenVidu setelah perubahan ini, dan `tests/e2e` (butuh Playwright).
+
+## Akses gambar bukti dan perbaikan ESLint
+
+Windows 11, kode final (belum di-commit saat diuji), Chrome headless dengan kamera palsu, backend terpisah di basis data sementara.
+
+| Uji | Hasil |
+|---|---|
+| Tes backend seluruhnya (termasuk matriks akses evidence) | **138 lulus, 0 gagal, 2 dilewati** |
+| Tes modul AI | **48 lulus, 0 gagal, 2 dilewati** |
+| Tes frontend | **24 lulus, 0 gagal** |
+| `tsc --noEmit`, `npm run lint`, `npm run build` | **Bersih, 0 temuan, build berhasil** |
+| Uji mutasi pemeriksaan izin evidence (16 kerusakan sengaja, dengan kontrol tanpa mutasi) | **16 tertangkap, 0 lolos** |
+| Browser: akses evidence per peran (pengawas, admin, penyelenggara, sekolah: laporan, Indikasi, Detail Evidence, jumlah permintaan gambar), Ruang Tunggu, ganti akun | **48 dari 48 lulus** |
+| Browser: mode ujian Jitsi (skenario yang sama seperti di atas) | **46 dari 46 lulus** |
+
+ESLint diperbaiki dalam 7 langkah; tiap langkah diuji `tsc`, tes frontend, dan uji browser terkait. Tidak ada aturan yang dimatikan. Perilaku yang terlihat pengguna tidak berubah.
+
+**Tidak diuji:** pesan "Pilih ujian..." di Ruang Ujian (tidak dapat dicapai lewat alur normal), server Jitsi dan kamera sungguhan, mode OpenVidu, dan `tests/e2e` (butuh Playwright).
+
 ## Langkah verifikasi OpenVidu untuk tim (paket OpenVidu / Windows)
 
 1. Jalankan OpenVidu local deployment (README, bagian OpenVidu), isi `LIVEKIT_*`, `EDUAI_AI_SERVICE_KEY`, `EDUAI_ANALYSIS_SOURCE=livekit`, mulai ulang backend.

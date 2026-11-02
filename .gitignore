@@ -17,3 +17,23 @@ ai/eduai-ai/evidence/
 ai/eduai-ai/*.csv
 ai/eduai-ai/config_st12.yaml
 ai/eduai-ai/smoke.txt
+
+# secrets, local data and temporary files wherever they appear
+.env
+.env.*
+!.env.example
+*.sqlite3
+*.sqlite3-*
+**/report-frames/
+node_modules/
+dist/
+*.log
+*.tmp
+*.bak
+Thumbs.db
+.DS_Store
+ai/eduai-ai/models/*.onnx
+ai/eduai-ai/models/*.pt
+
+# third-party photo of real people: do not commit (replace with an image we may use)
+frontend/public/brand/login.jpg
