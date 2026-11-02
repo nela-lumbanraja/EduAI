@@ -78,6 +78,8 @@ async function startLocalMedia(): Promise<StudentMedia> {
   };
 }
 
+type UploadConfig = Pick<MonitoringInfo, "upload_fps" | "max_width" | "jpeg_quality">;
+
 /**
  * Fallback frame path (works without OpenVidu): every 1/upload_fps seconds draw the
  * preview <video> into a canvas, encode a JPEG and POST it. Never more than one upload
@@ -94,7 +96,7 @@ export class FrameUploader {
 
   constructor(private examId: number, private video: HTMLVideoElement, private cameraOn: () => boolean) {}
 
-  start(cfg: MonitoringInfo) {
+  start(cfg: UploadConfig) {
     this.stop();
     const every = Math.max(200, Math.round(1000 / Math.max(0.2, cfg.upload_fps)));
     this.timer = window.setInterval(() => void this.tick(cfg), every);
@@ -108,7 +110,7 @@ export class FrameUploader {
 
   get running() { return this.timer !== null; }
 
-  private async tick(cfg: MonitoringInfo) {
+  private async tick(cfg: UploadConfig) {
     if (this.inFlight) { this.skipped++; return; }
     const v = this.video;
     if (!this.cameraOn() || v.readyState < 2 || !v.videoWidth) return;   // camera off: send nothing

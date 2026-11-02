@@ -1,21 +1,23 @@
 // Typed client for the EduAI backend (FastAPI). No secrets live here: the browser only
 // holds the user's own session token (sessionStorage, cleared when the tab closes).
 
+import type { JitsiServer } from "./jitsi";
 export type RoleCode = "siswa" | "pengawas" | "penyelenggara" | "admin" | "sekolah";
 export type User = { id: number; email: string; name: string; role: RoleCode; role_label: string; nis?: string | null; class_name?: string | null };
 export type ExamStatus = "Draft" | "Terjadwal" | "Sedang Berlangsung" | "Selesai";
 export type Exam = {
   id: number; name: string; description: string; subject: string; class_name: string; date: string; start_time: string;
-  duration_min: number; status: ExamStatus; monitoring_active: boolean; analysis_source: "browser" | "livekit" | null;
+  duration_min: number; status: ExamStatus; monitoring_active: boolean; analysis_source: AnalysisSource | null;
   monitoring_started_at: string | null; supervisor: { id: number; name: string } | null; student_count: number;
   indications?: { total: number; unreviewed: number }; online?: number; consent?: boolean; audio_consent?: boolean;
 };
 // not_started / no_data / ai_offline are dashboard states set by the backend (see GET /exams/{id}/students):
 // AI monitoring off, on but no analysis result yet, on but the analysis itself is down.
 export type AnalysisState = "not_started" | "no_data" | "ai_offline" | "warming_up" | "normal" | "indication" | "cannot_analyze" | "model_unavailable";
+export type AnalysisSource = "browser" | "livekit" | "jitsi";
 export type StudentRow = {
   id: number; name: string; nis: string | null; class_name: string | null; consent?: boolean;
-  presence?: { joined: boolean; online: boolean; joined_at: string | null; last_seen: string | null; camera_on: boolean | null; mic_on: boolean | null; connection: string | null; rtt_ms: number | null };
+  presence?: { joined: boolean; online: boolean; joined_at: string | null; last_seen: string | null; camera_on: boolean | null; mic_on: boolean | null; connection: string | null; rtt_ms: number | null; jitsi?: "connected" | "disconnected" | null };
   ai?: { state: AnalysisState | null; last_state: AnalysisState | null; frame_status: string | null; reason: string | null; face_count: number | null; latency_ms: number | null; updated_at: string | null; source: string | null };
   counts?: { indications: number; unreviewed: number; session_indications?: number; open_indications: number; open_cannot_analyze: number };
   last_indication?: { label: string | null; indicator: string; start_ts: string; end_ts?: string | null; status?: "open" | "closed"; current_session?: boolean } | null;
@@ -37,19 +39,23 @@ export type JoinInfo = {
   monitoring: MonitoringInfo;
 };
 export type MonitoringInfo = {
-  active: boolean; source: "browser" | "livekit" | null; upload_fps: number; max_width: number; jpeg_quality: number;
+  active: boolean; source: AnalysisSource | null; jitsi: (JitsiServer & { room: string }) | null; upload_fps: number; max_width: number; jpeg_quality: number;
   // optional speech-sound analysis in the student's browser (YAMNet); only scores are sent
   audio?: { available: boolean; consented: boolean; reason?: AudioReason | null; model_url: string; interval_ms: number };
 };
 export type MonitoringState = {
-  active: boolean; source: string | null; started_at: string | null; ai: { available: boolean; reason: string };
+  active: boolean; source: AnalysisSource | null; started_at: string | null; ai: { available: boolean; reason: string };
   worker: { process_running: boolean; last_heartbeat: string | null; alive: boolean; students: number }; livekit_configured: boolean;
 };
 export type TimelineItem = { ts: string; kind: string; title: string; event_id?: string; status?: string; review_status?: string | null; reason?: string; note?: string; end_ts?: string | null; evidence_id?: string | null; time_text?: string };
+export type ReportSummary = { total: number; valid: number; invalid: number; further: number; unreviewed: number; cannot_analyze: number; cannot_analyze_s: number };
+export type ReportEvent = AIEvent & { evidence: { state: "available" | "deleted" | "none"; url: string | null } };
 export type Report = {
-  exam: Exam; attendance: { enrolled: number; joined: number; not_joined: number };
-  indications: { total: number; valid: number; invalid: number; further: number; unreviewed: number; cannot_analyze: number };
-  events: AIEvent[]; activity: { ts: string; user_name: string; role: string; action: string; target: string; status: string }[];
+  exam: Exam; attendance: { enrolled: number; joined: number; not_joined: number }; absent: string[];
+  indications: ReportSummary; events: ReportEvent[];
+  final: { finalized_at: string; finalized_by: string } | null; can_edit: boolean; can_view_evidence: boolean;
+  ai_notice: string; retention_text: string; restricted_text: string; frame_retention_hours: number;
+  activity: { ts: string; user_name: string; role: string; action: string; target: string; status: string }[];
 };
 export type AuditRow = { id: number; ts: string; user_id: number | null; user_name: string; role: string; action: string; target: string; status: string };
 export type Dashboard = { exams: Exam[]; summary?: { active_sessions: number; students_online: number; unreviewed: number; valid: number; further: number; cases_total?: number; cases_unreviewed?: number; detections_total?: number }; recent_indications?: AIEvent[]; recent_cases?: CaseSummary[] };
@@ -88,6 +94,7 @@ export type Health = { status: string; time: string; ai: { available: boolean; r
 export type AIHealth = {
   available: boolean; reason: string; config_version: string | null; models: Record<string, { loaded: boolean; exists: boolean; reason: string; file: string }>;
   active_analyzers: number; max_concurrent: number; evidence_retention_hours: number; evidence_encrypted: boolean;
+  evidence_hold_days: number; report_frame_retention_hours: number;
 };
 export type UserRow = User & { active: boolean; created_at: string };
 
@@ -161,10 +168,11 @@ export const api = {
   audioScores: (examId: number, s: { speech: number; whisper: number; media: number }) => request<{ accepted: boolean; reason?: string }>("POST", `/api/exams/${examId}/audio`, s),
   join: (examId: number) => request<JoinInfo>("POST", `/api/exams/${examId}/join`),
   sessionState: (examId: number) => request<{ status: ExamStatus; monitoring: MonitoringInfo }>("GET", `/api/exams/${examId}/session-state`),
-  presence: (examId: number, p: { camera_on: boolean; mic_on: boolean; connection: "baik" | "lemah" | "terputus"; rtt_ms?: number | null }) => request<{ ok: boolean }>("POST", `/api/exams/${examId}/presence`, p),
+  presence: (examId: number, p: { camera_on: boolean; mic_on: boolean; connection: "baik" | "lemah" | "terputus"; rtt_ms?: number | null; jitsi?: "connected" | "disconnected" | null }) => request<{ ok: boolean }>("POST", `/api/exams/${examId}/presence`, p),
   leave: (examId: number) => request<{ ok: boolean }>("POST", `/api/exams/${examId}/leave`),
   uploadFrame: (examId: number, blob: Blob, signal?: AbortSignal) => { const f = new FormData(); f.append("frame", blob, "frame.jpg"); return request<{ accepted: boolean; reason?: string }>("POST", `/api/exams/${examId}/frames`, undefined, { form: f, signal }); },
-  startMonitoring: (examId: number, source?: "browser" | "livekit") => request<{ active: boolean; source: string; note: string | null }>("POST", `/api/exams/${examId}/monitoring/start`, { source: source ?? null }),
+  jitsiConfig: () => request<JitsiServer>("GET", "/api/jitsi/config"),
+  startMonitoring: (examId: number, source?: AnalysisSource) => request<{ active: boolean; source: AnalysisSource; note: string | null }>("POST", `/api/exams/${examId}/monitoring/start`, { source: source ?? null }),
   stopMonitoring: (examId: number) => request<{ active: boolean }>("POST", `/api/exams/${examId}/monitoring/stop`),
   monitoring: (examId: number) => request<MonitoringState>("GET", `/api/exams/${examId}/monitoring`),
   examEvents: (examId: number, o: { student_id?: number; category?: string; since?: string; limit?: number } = {}) => request<{ server_time: string; events: AIEvent[] }>("GET", `/api/exams/${examId}/events${qs(o)}`),
@@ -183,11 +191,22 @@ export const api = {
     const res = await request<Response>("GET", `/api/evidence/${encodeURIComponent(id)}/frames/${index}`, undefined, { raw: true });
     return URL.createObjectURL(await res.blob());
   },
-  report: (examId: number) => request<Report>("GET", `/api/exams/${examId}/report`),
+  report: (examId: number) => request<Report>("GET", `/api/sessions/${examId}/report`),
+  reviewPatch: (id: string, body: { decision?: Decision; note?: string }) => request<{ event: ReportEvent; indications: ReportSummary }>("PATCH", `/api/events/${encodeURIComponent(id)}/review`, body),
+  finalizeReport: (examId: number) => request<Report>("POST", `/api/sessions/${examId}/finalize`),
+  reportFrameSrc: (url: string) => `${BASE}${url}`,
+  exportReport: async (examId: number, kind: "pdf" | "xlsx") => {
+    const res = await request<Response>("GET", `/api/sessions/${examId}/report.${kind}`, undefined, { raw: true });
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement("a");
+    a.href = url; a.download = `laporan-sesi-${examId}.${kind}`; a.click();
+    URL.revokeObjectURL(url);
+  },
   audit: () => request<AuditRow[]>("GET", "/api/audit"),
 };
 
 // ---- display helpers ----
+export const EVIDENCE_RESTRICTED = "Gambar bukti hanya untuk pengawas dan admin";
 export const ROLE_LABEL: Record<RoleCode, "Siswa" | "Pengawas" | "Penyelenggara Ujian" | "Admin" | "Pihak Sekolah"> = {
   siswa: "Siswa", pengawas: "Pengawas", penyelenggara: "Penyelenggara Ujian", admin: "Admin", sekolah: "Pihak Sekolah",
 };
@@ -196,7 +215,7 @@ export const STATE_LABEL: Record<AnalysisState, string> = {
   cannot_analyze: "Tidak dapat dianalisis", model_unavailable: "AI belum tersedia",
 };
 // Why speech-sound analysis is not running (backend: _audio_block / _audio_state). [short, full]
-export type AudioReason = "not_consented" | "monitoring_off" | "disabled" | "ai_unavailable" | "model_missing" | "worker_mode" | "mic_off" | "no_scores";
+export type AudioReason = "not_consented" | "monitoring_off" | "disabled" | "ai_unavailable" | "model_missing" | "worker_mode" | "jitsi_mode" | "mic_off" | "no_scores";
 export const AUDIO_REASON: Record<AudioReason, [string, string]> = {
   not_consented: ["tidak disetujui", "Siswa tidak menyetujui analisis suara."],
   monitoring_off: ["AI belum dimulai", "Pemantauan AI belum dimulai."],
@@ -204,10 +223,13 @@ export const AUDIO_REASON: Record<AudioReason, [string, string]> = {
   ai_unavailable: ["AI belum siap", "Layanan AI di server belum siap."],
   model_missing: ["model tidak ada", "Model suara (ai/eduai-ai/models/yamnet.tflite) tidak ditemukan di server."],
   worker_mode: ["mode OpenVidu", "Hanya tersedia pada mode frame browser; worker OpenVidu hanya menganalisis video."],
+  jitsi_mode: ["mode Jitsi", "Hanya tersedia pada mode frame browser; mode Jitsi hanya menganalisis video."],
   mic_off: ["mikrofon mati", "Mikrofon siswa mati."],
   no_scores: ["belum ada skor", "Belum ada skor suara dari browser siswa (model masih dimuat atau gagal di perangkat siswa)."],
 };
+export const SOURCE_LABEL: Record<AnalysisSource, string> = { browser: "Browser", livekit: "OpenVidu", jitsi: "Jitsi" };
 export const FRAME_REASON: Record<string, string> = {
+  track_ended: "kamera mati atau track berhenti", no_frames: "tidak ada frame yang masuk",
   no_frame: "tidak ada frame", low_resolution: "resolusi terlalu rendah", dark: "terlalu gelap", overexposed: "terlalu terang",
   blurry: "gambar buram", frozen: "video membeku", face_too_small: "wajah terlalu kecil/jauh", ai_unavailable: "layanan AI belum siap",
   face_detector: "model wajah belum tersedia",
