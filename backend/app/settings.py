@@ -62,6 +62,18 @@ class Settings:
     audio_analysis: bool = True        # allow on-device speech-sound scores (needs student consent)
     case_gap_s: float = 0.0            # 0 = one case per student+indicator per exam; >0 = also split by gap (s)
     exam_timezone: str = ""            # IANA name for exam date/start_time; "" = server local time
+    jitsi_domain: str = ""             # no default server: empty = Jitsi rooms and the Jitsi source are off
+    jitsi_operator: str = ""           # "school" only if the school runs it; anything else = third party
+    jitsi_muc: str = ""                # default conference.<domain>
+    jitsi_service_url: str = ""        # default wss://<domain>/xmpp-websocket
+    report_frames_dir: Path = Path("data/report-frames")
+    report_frame_retention_hours: float = 24.0   # counted from finalisation
+    evidence_hold_days: float = 7.0    # evidence of a non-final session: at most this long after the session ended
+    school_name: str = ""              # letterhead of the PDF report; empty = template placeholder
+    school_address: str = ""
+    school_phone: str = ""
+    school_email: str = ""
+    school_city: str = ""
     jwt_secret_generated: bool = False
     notes: list = field(default_factory=list)
 
@@ -94,6 +106,18 @@ def load_settings(env_file: Path = None) -> Settings:
         evidence_dir=_path("EDUAI_EVIDENCE_DIR", BACKEND_ROOT / "data" / "evidence"),
         evidence_retention_hours=float(os.environ.get("EDUAI_EVIDENCE_RETENTION_HOURS", "24")),
         evidence_key=os.environ.get("EDUAI_EVIDENCE_KEY", ""),
+        jitsi_domain=os.environ.get("EDUAI_JITSI_DOMAIN", "").strip(),
+        jitsi_operator=os.environ.get("EDUAI_JITSI_OPERATOR", "").strip().lower(),
+        jitsi_muc=os.environ.get("EDUAI_JITSI_MUC", "").strip(),
+        jitsi_service_url=os.environ.get("EDUAI_JITSI_SERVICE_URL", "").strip(),
+        report_frames_dir=_path("EDUAI_REPORT_FRAMES_DIR", BACKEND_ROOT / "data" / "report-frames"),
+        report_frame_retention_hours=float(os.environ.get("EDUAI_REPORT_FRAME_RETENTION_HOURS", "24")),
+        evidence_hold_days=float(os.environ.get("EDUAI_EVIDENCE_HOLD_DAYS", "7")),
+        school_name=os.environ.get("EDUAI_SCHOOL_NAME", ""),
+        school_address=os.environ.get("EDUAI_SCHOOL_ADDRESS", ""),
+        school_phone=os.environ.get("EDUAI_SCHOOL_PHONE", ""),
+        school_email=os.environ.get("EDUAI_SCHOOL_EMAIL", ""),
+        school_city=os.environ.get("EDUAI_SCHOOL_CITY", ""),
         analysis_source=source,
         upload_fps=float(os.environ.get("EDUAI_UPLOAD_FPS", "2")),
         frame_max_bytes=int(os.environ.get("EDUAI_FRAME_MAX_BYTES", "400000")),

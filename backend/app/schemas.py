@@ -53,15 +53,22 @@ class PresenceIn(BaseModel):
     mic_on: bool
     connection: Literal["baik", "lemah", "terputus"] = "baik"
     rtt_ms: Optional[float] = Field(default=None, ge=0, le=60000)
+    jitsi: Optional[Literal["connected", "disconnected"]] = None   # only read when the exam's source is jitsi
 
 
 class MonitoringStartIn(BaseModel):
-    source: Optional[Literal["browser", "livekit"]] = None
+    source: Optional[Literal["browser", "livekit", "jitsi"]] = None
 
 
 class ReviewIn(BaseModel):
     decision: Literal["Valid", "Tidak Valid", "Perlu Tinjauan Lanjut"]
     note: str = Field(default="", max_length=2000)
+
+
+class ReviewPatch(BaseModel):
+    # Omitted decision = keep the current one (note-only edit on an event that already has a decision).
+    decision: Optional[Literal["Valid", "Tidak Valid", "Perlu Tinjauan Lanjut"]] = None
+    note: Optional[str] = Field(default=None, max_length=2000)
 
 
 class CaseReviewIn(ReviewIn):

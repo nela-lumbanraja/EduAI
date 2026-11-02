@@ -86,6 +86,22 @@ CREATE TABLE IF NOT EXISTS evidence (
   event_id TEXT NOT NULL, exam_id INTEGER NOT NULL, student_id INTEGER NOT NULL,
   frame_count INTEGER NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL
 );
+-- Jitsi connection changes of a student. Not an indication: shown on the timeline only.
+CREATE TABLE IF NOT EXISTS connection_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  exam_id INTEGER NOT NULL, student_id INTEGER NOT NULL, ts TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('connected','disconnected'))
+);
+-- One row per finalised report: the session's data is locked from then on.
+CREATE TABLE IF NOT EXISTS report_finals (
+  exam_id INTEGER PRIMARY KEY REFERENCES exams(id),
+  finalized_by INTEGER NOT NULL REFERENCES users(id), finalized_by_name TEXT NOT NULL, finalized_at TEXT NOT NULL
+);
+-- Key frame copied per event at finalisation. The row stays after the file is deleted (deleted_at).
+CREATE TABLE IF NOT EXISTS report_frames (
+  event_id TEXT PRIMARY KEY, exam_id INTEGER NOT NULL, frame_id TEXT NOT NULL,
+  created_at TEXT NOT NULL, expires_at TEXT NOT NULL, deleted_at TEXT
+);
 CREATE TABLE IF NOT EXISTS audit (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts TEXT NOT NULL, user_id INTEGER, user_name TEXT, role TEXT,
@@ -128,6 +144,13 @@ class Database:
             cols = [r[1] for r in self._conn.execute("PRAGMA table_info(consents)")]
             if "audio_accepted" not in cols:
                 self._conn.execute("ALTER TABLE consents ADD COLUMN audio_accepted INTEGER NOT NULL DEFAULT 0")
+            # Databases created before the session report rules.
+            if "finished_at" not in [r[1] for r in self._conn.execute("PRAGMA table_info(exams)")]:
+                self._conn.execute("ALTER TABLE exams ADD COLUMN finished_at TEXT")
+            if "jitsi_state" not in [r[1] for r in self._conn.execute("PRAGMA table_info(presence)")]:
+                self._conn.execute("ALTER TABLE presence ADD COLUMN jitsi_state TEXT")
+            if "evidence_deleted_at" not in [r[1] for r in self._conn.execute("PRAGMA table_info(events)")]:
+                self._conn.execute("ALTER TABLE events ADD COLUMN evidence_deleted_at TEXT")
 
     def all(self, sql: str, params=()) -> list:
         with self._lock:

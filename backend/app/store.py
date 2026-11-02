@@ -92,7 +92,7 @@ def purge_expired_evidence(db, evidence_store) -> int:
     for r in rows:
         if evidence_store.meta(r["evidence_id"]) is None:
             db.run("DELETE FROM evidence WHERE evidence_id = ?", (r["evidence_id"],))
-            db.run("UPDATE events SET evidence_id = NULL WHERE evidence_id = ?", (r["evidence_id"],))
+            db.run("UPDATE events SET evidence_id = NULL, evidence_deleted_at = ? WHERE evidence_id = ?", (now_iso(), r["evidence_id"]))
             gone += 1
     if removed or gone:
         audit(db, None, "Menghapus evidence melewati masa simpan", f"{max(removed, gone)} paket")
