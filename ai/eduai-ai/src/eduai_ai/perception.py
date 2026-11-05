@@ -3,7 +3,7 @@
 Components (each is optional except the face detector):
   - Face Detector (BlazeFace short-range)          -> number of faces, face size
   - Face Landmarker + facial transformation matrix -> head yaw/pitch of the main face
-  - Object Detector (EfficientDet-Lite0, COCO)     -> "cell phone" score, "person" count
+  - Object Detector (EfficientDet-Lite0, COCO)     -> "cell phone" / "book" scores, "person" count
 
 Only APIs that exist in the `mediapipe` Tasks Python package are used:
 vision.FaceDetector / FaceLandmarker / ObjectDetector with create_from_options(),
@@ -75,7 +75,7 @@ class MediaPipePerception:
             lambda p: vision.ObjectDetector.create_from_options(vision.ObjectDetectorOptions(
                 base_options=BaseOptions(model_asset_path=p), running_mode=VIDEO,
                 score_threshold=m["object_detector"]["min_score"],
-                category_allowlist=["cell phone", "person"])))
+                category_allowlist=["cell phone", "book", "person"])))
 
     def _load(self, name, info, factory):
         if not info["enabled"]:
@@ -145,6 +145,8 @@ class MediaPipePerception:
             dets = self.object_detector.detect_for_video(image, ms).detections
             phones = [d.categories[0].score for d in dets if d.categories and d.categories[0].category_name == "cell phone"]
             sig.phone_score = round(max(phones), 3) if phones else 0.0
+            books = [d.categories[0].score for d in dets if d.categories and d.categories[0].category_name == "book"]
+            sig.book_score = round(max(books), 3) if books else 0.0
             sig.person_count = sum(1 for d in dets if d.categories and d.categories[0].category_name == "person")
         return sig
 

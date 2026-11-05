@@ -216,3 +216,25 @@ def test_audio_reason_mic_off_then_no_scores_then_active(tmp_path, monkeypatch):
         assert audio_row(c, hp) == {"consented": True, "active": True, "reason": None}
         c.app.state.ai.clock = lambda: BASE_T + 10.0        # no scores for 10 s -> not active any more
         assert audio_row(c, hp) == {"consented": True, "active": False, "reason": "no_scores"}
+
+
+def test_speech_with_still_mouth_in_jitsi_mode(tmp_path, monkeypatch):
+    """Jitsi frames come from the student's browser like the browser source, so the speech scores join them."""
+    with make_client(tmp_path, monkeypatch, EDUAI_JITSI_DOMAIN="jitsi.sekolah.test") as c:
+        hs, hp = login(c, "siswa1@gmail.com"), login(c, "pengawas1@gmail.com")
+        c.post("/api/exams/1/consent", headers=hs, json={"accepted": True, "notice_version": "2026-10-v2", "audio": True})
+        c.post("/api/exams/1/join", headers=hs)
+        assert c.post("/api/exams/1/monitoring/start", headers=hp, json={"source": "jitsi"}).status_code == 200
+        st = c.get("/api/exams/1/session-state", headers=hs).json()["monitoring"]
+        assert st["audio"]["available"] is True and st["audio"]["reason"] is None and st["jitsi"], st
+        t = 0.0
+        frame(c, hs, t)
+        while t < 4.0:
+            t += 0.5
+            assert audio(c, hs, t, speech=0.8).json() == {"accepted": True}
+            frame(c, hs, t)
+        voice = [e for e in c.get("/api/exams/1/events", headers=hp).json()["events"] if e["indicator"] == "OTHER_VOICE"]
+        assert len(voice) == 1 and voice[0]["source"] == "jitsi"
+        alya = next(r for r in c.get("/api/exams/1/students", headers=hp).json() if r["name"] == "Alya Putri")
+        assert alya["audio"] == {"consented": True, "active": True, "reason": None}
+

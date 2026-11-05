@@ -109,7 +109,16 @@ def _clock(dt) -> str:
 
 
 def event_label(e) -> str:
-    return e.get("label") or e["indicator"]
+    label = e.get("label") or e["indicator"]
+    return f"{label}. {e['sound_text']}" if e.get("sound_text") else label
+
+
+def sound_info_text(data: dict) -> str:
+    items = data.get("sound_info") or []
+    if not items:
+        return "Catatan suara (info, bukan indikasi): tidak ada."
+    parts = [f"{i['label'].lower()} {i['count']} kali (sekitar {round(i['total_s'])} detik)" for i in items]
+    return "Catatan suara (info, bukan indikasi; tanpa gambar bukti): " + ", ".join(parts) + "."
 
 
 def image_note(e, data: dict) -> str:
@@ -167,6 +176,7 @@ def build_pdf(data: dict, frames: Dict[str, bytes], settings) -> bytes:
           _p("Hasil peninjauan diisi salah satu: Valid, Tidak Valid, atau Perlu Tinjauan Lanjut."), _p(TEMPLATE_NOTICE), PageBreak(),
           _p(f"Waktu video tidak dapat dianalisis (gelap, buram, atau kamera mati): {ind['cannot_analyze']} kali, "
              f"total sekitar {round(ind.get('cannot_analyze_s', 0) / 60)} menit."),
+          _p(sound_info_text(data)),
           _p("V. Tindak Lanjut", H2), _p(DOTS), _p(DOTS),
           _p("Demikian laporan ini dibuat dengan sebenarnya untuk dapat dipergunakan sebagaimana mestinya."),
           _p(f"{settings.school_city or '[Kota]'}, .................... 20...."),
@@ -223,7 +233,8 @@ def build_xlsx(data: dict, settings) -> bytes:
         ws.column_dimensions[col].width = width
     ws.freeze_panes = "A2"
     note = wb.create_sheet("Catatan")
-    for line in (data["exam"]["name"], "Status laporan: " + ("Final" if data["final"] else "Draf"), AI_NOTICE):
+    for line in (data["exam"]["name"], "Status laporan: " + ("Final" if data["final"] else "Draf"), AI_NOTICE,
+                 sound_info_text(data)):
         note.append([line])
     note.column_dimensions["A"].width = 100
     out = io.BytesIO()

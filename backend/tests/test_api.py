@@ -49,7 +49,7 @@ def jpeg(value=200, w=320, h=240, img=None):
 
 def make_settings(tmp_path, monkeypatch, **env):
     base = {"EDUAI_DB_PATH": str(tmp_path / "t.sqlite3"), "EDUAI_EVIDENCE_DIR": str(tmp_path / "evidence"),
-            "EDUAI_REPORT_FRAMES_DIR": str(tmp_path / "report-frames"), "EDUAI_JITSI_DOMAIN": "",
+            "EDUAI_REPORT_FRAMES_DIR": str(tmp_path / "report-frames"), "EDUAI_JITSI_DOMAIN": "", "EDUAI_JITSI_APP_SECRET": "", "EDUAI_JITSI_XMPP_DOMAIN": "", "EDUAI_JITSI_MUC": "", "EDUAI_JITSI_SERVICE_URL": "", "EDUAI_JITSI_OPERATOR": "",
             "EDUAI_JWT_SECRET": "x" * 40, "EDUAI_SEED_DEMO": "true", "EDUAI_AI_SERVICE_KEY": "svc-test-key",
             "LIVEKIT_URL": "", "LIVEKIT_API_KEY": "", "LIVEKIT_API_SECRET": "", "EDUAI_ANALYSIS_SOURCE": "browser"}
     base.update(env)

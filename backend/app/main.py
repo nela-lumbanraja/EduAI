@@ -73,6 +73,7 @@ def create_app(settings=None, perception_factory=None) -> FastAPI:
         report.run_retention(app.state)
         report.record_evidence_revocation(db)
         casing.configure_rules((app.state.ai.cfg or {}).get("summary_rules"))
+        summary.configure_detectors(app.state.ai.cfg or {})
         try:
             _check_summaries(app)                        # summaries that fell due while the backend was down
         except Exception:

@@ -1,5 +1,6 @@
 """SQLite storage (standard library). One connection guarded by a lock: simple and
 adequate for a single backend process. For several processes, move to PostgreSQL."""
+import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -45,6 +46,20 @@ CREATE TABLE IF NOT EXISTS consents (
   audio_accepted INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (exam_id, student_id)
 );
+CREATE TABLE IF NOT EXISTS exam_seb (
+  exam_id INTEGER PRIMARY KEY REFERENCES exams(id) ON DELETE CASCADE,
+  required INTEGER NOT NULL DEFAULT 0,
+  config_keys TEXT NOT NULL DEFAULT '[]', exam_keys TEXT NOT NULL DEFAULT '[]',
+  config_url TEXT NOT NULL DEFAULT '', updated_by INTEGER, updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS seb_challenges (
+  nonce TEXT PRIMARY KEY, exam_id INTEGER NOT NULL, student_id INTEGER NOT NULL, expires_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS seb_status (
+  exam_id INTEGER NOT NULL, student_id INTEGER NOT NULL,
+  state TEXT NOT NULL, method TEXT, version TEXT, checked_at TEXT NOT NULL,
+  PRIMARY KEY (exam_id, student_id)
+);
 CREATE TABLE IF NOT EXISTS presence (
   exam_id INTEGER NOT NULL, student_id INTEGER NOT NULL,
   joined_at TEXT, last_seen TEXT, left_at TEXT,
@@ -60,12 +75,12 @@ CREATE TABLE IF NOT EXISTS ai_status (
 CREATE TABLE IF NOT EXISTS events (
   event_id TEXT PRIMARY KEY,
   exam_id INTEGER NOT NULL, student_id INTEGER NOT NULL,
-  indicator TEXT NOT NULL, category TEXT NOT NULL CHECK (category IN ('indication','cannot_analyze')),
+  indicator TEXT NOT NULL, category TEXT NOT NULL CHECK (category IN ('indication','cannot_analyze','info')),
   status TEXT NOT NULL CHECK (status IN ('open','closed')),
   start_ts TEXT NOT NULL, end_ts TEXT, score REAL, reason TEXT, label TEXT,
   evidence_id TEXT, model_version TEXT, config_version TEXT, schema_version TEXT,
   source TEXT, review_status TEXT,
-  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, details TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_events_exam ON events(exam_id, updated_at);
 CREATE TABLE IF NOT EXISTS reviews (
@@ -151,6 +166,37 @@ class Database:
                 self._conn.execute("ALTER TABLE presence ADD COLUMN jitsi_state TEXT")
             if "evidence_deleted_at" not in [r[1] for r in self._conn.execute("PRAGMA table_info(events)")]:
                 self._conn.execute("ALTER TABLE events ADD COLUMN evidence_deleted_at TEXT")
+            # Databases created before the sound labels: audio scores per event, and the "info" category.
+            if "details" not in [r[1] for r in self._conn.execute("PRAGMA table_info(events)")]:
+                self._conn.execute("ALTER TABLE events ADD COLUMN details TEXT")
+            self._allow_info_category()
+
+    def _allow_info_category(self):
+        """SQLite cannot change a CHECK constraint: rebuild `events` with the same columns and rows, in one transaction."""
+        sql = self._conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='events'").fetchone()[0]
+        old = re.search(r"CHECK\s*\(\s*category\s+IN\s*\(\s*'indication'\s*,\s*'cannot_analyze'\s*\)\s*\)", sql)
+        if not old:
+            return                                        # already allows 'info'
+        new_sql = sql[:old.start()] + "CHECK (category IN ('indication','cannot_analyze','info'))" + sql[old.end():]
+        new_sql = re.sub(r'^CREATE TABLE\s+(IF NOT EXISTS\s+)?"?events"?', "CREATE TABLE events_new", new_sql, count=1)
+        cols = ",".join(r[1] for r in self._conn.execute("PRAGMA table_info(events)"))
+        self._conn.execute("PRAGMA foreign_keys = OFF")  # reviews.event_id references events; rows are kept as they are
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute(new_sql)
+                self._conn.execute(f"INSERT INTO events_new ({cols}) SELECT {cols} FROM events")
+                self._conn.execute("DROP TABLE events")
+                self._conn.execute("ALTER TABLE events_new RENAME TO events")
+                self._conn.execute("CREATE INDEX IF NOT EXISTS ix_events_exam ON events(exam_id, updated_at)")
+                if self._conn.execute("PRAGMA foreign_key_check").fetchall():
+                    raise sqlite3.IntegrityError("foreign key check failed after rebuilding events")
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+        finally:
+            self._conn.execute("PRAGMA foreign_keys = ON")
 
     def all(self, sql: str, params=()) -> list:
         with self._lock:

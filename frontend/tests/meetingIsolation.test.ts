@@ -16,9 +16,9 @@ function fn(name: string) {
 }
 const meeting = ["MeetingPage", "MeetingTile", "JitsiVideo", "JitsiAudio"].map(fn).join("\n");
 
-test("the meeting page only calls the Jitsi settings endpoint", () => {
+test("the meeting page only calls the Jitsi endpoints (settings, health, meeting token)", () => {
   const calls = new Set([...meeting.matchAll(/\bapi\.(\w+)/g)].map((m) => m[1]));
-  assert.deepEqual([...calls], ["jitsiConfig"]);
+  assert.deepEqual([...calls].sort(), ["jitsiConfig", "jitsiHealth", "jitsiMeetingToken"]);
 });
 
 test("the meeting page has no frame, audio or presence path", () => {

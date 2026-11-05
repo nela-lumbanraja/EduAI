@@ -183,3 +183,84 @@ Belum tersambung backend: tombol SSO nonaktif; pilihan peran di login tidak meme
 | `backend/tests/test_report.py` | Diubah | Matriks akses, audit, laporan tanpa gambar, PDF. |
 | `frontend/src/App.tsx`, `frontend/src/api.ts` | Diubah | Keterangan untuk penyelenggara dan sekolah; layar evidence tidak lagi meminta gambar untuk mereka. |
 | `README.md`, `docs/API.md` | Diubah | Aturan akses; paragraf Jitsi yang usang di README diperbaiki. |
+
+## Jitsi nyata, token, dan video langsung pengawas
+
+| Berkas | Status | Alasan |
+|---|---|---|
+| `dev/jitsi/docker-compose.yml`, `LICENSE.docker-jitsi-meet` | Baru | Berkas resmi docker-jitsi-meet `stable-11248-2`, tanpa perubahan. |
+| `dev/jitsi/.env.example`, `make-env.py`, `README.md` | Baru | JWT wajib, tanpa tamu, tanpa rekaman; pembuat `.env`; cara menjalankan dan troubleshooting. |
+| `backend/app/jitsi.py` | Diubah | Domain XMPP, ruang per siswa, token satu ruang, pengecekan kesehatan. |
+| `backend/app/api.py`, `settings.py`, `schemas.py`, `.env.example` | Diubah | `/jitsi/health`, `/jitsi/meeting-token`, `/exams/{id}/jitsi/watch`; `EDUAI_JITSI_XMPP_DOMAIN`, `_APP_ID`, `_APP_SECRET`. |
+| `backend/tests/test_jitsi.py`, `test_api.py` | Diubah | Ruang per siswa, token, izin video langsung, token rapat, tiga status kesehatan. |
+| `frontend/src/jitsi.ts`, `App.tsx`, `api.ts` | Diubah | Token, video pengawas per ruang siswa, kamera ujian dipakai ulang, pesan Rapat Video per peran. |
+| `frontend/tests/meetingIsolation.test.ts` | Diubah | Rapat Video boleh memanggil kesehatan dan token rapat, tetap tanpa jalur ke analisis. |
+| `README.md`, `docs/API.md`, `docs/TEST_RESULTS.md`, `.gitignore` | Diubah | Pengaturan `EDUAI_JITSI_*`, dev/jitsi, hasil uji, data server lokal diabaikan. |
+
+## Safe Exam Browser (lockdown browser per ujian)
+
+| Berkas | Status | Alasan |
+|---|---|---|
+| `backend/app/seb.py` | Baru | Hash SEB (`SHA256(URL tanpa fragmen + kunci)`), nonce sekali pakai, evaluasi Config Key / Browser Exam Key, status per siswa. |
+| `backend/app/db.py` | Diubah | Tabel `exam_seb`, `seb_challenges`, `seb_status`. |
+| `backend/app/api.py`, `schemas.py`, `settings.py`, `.env.example` | Diubah | `GET/PUT /exams/{id}/seb`, `/seb/challenge`, `/seb/verify`; `/join` menolak siswa tanpa SEB terverifikasi; status SEB per siswa untuk pengawas; `EDUAI_SEB_ALLOWED_ORIGINS`. |
+| `backend/tests/test_seb.py` | Baru | 17 tes: hash, izin, tanpa kebocoran kunci, JS API, header bernonce, kedaluwarsa, audit. |
+| `frontend/src/seb.ts`, `frontend/tests/seb.test.ts` | Baru | Membaca `window.SafeExamBrowser` (dengan `updateKeys`), tautan `seb://`/`sebs://`; 8 tes. |
+| `frontend/src/App.tsx`, `api.ts` | Diubah | Layar pemeriksaan SEB sebelum Cek Perangkat, pemeriksaan ulang 60 detik di ruang ujian, panel admin di Detail Ujian, ringkasan dan lencana SEB di Monitoring. |
+| `dev/seb/eduai-exam.template.xml`, `dev/seb/README.md` | Baru | Templat konfigurasi SEB (perlu ditinjau di SEB Config Tool) dan langkah admin. |
+| `README.md`, `docs/API.md`, `docs/TEST_RESULTS.md` | Diubah | Bagian 7c, endpoint SEB, hasil uji. |
+
+## Satu siaran per ujian: video mengikuti sumber AI
+
+| Berkas | Status | Alasan |
+|---|---|---|
+| `backend/app/api.py` | Diubah | Token OpenVidu siswa ada di `monitoring.livekit` (join dan session-state) dan ditahan pada mode Jitsi; token OpenVidu staf juga ditahan pada mode Jitsi. |
+| `backend/tests/test_jitsi.py` | Diubah | 2 tes: mode Jitsi tanpa token OpenVidu; beralih sumber memindahkan token tanpa masuk ulang. |
+| `frontend/src/media.ts` | Diubah | Kamera dibuka sekali oleh halaman; siaran OpenVidu menjadi hook `useOpenViduBroadcast` yang menyiarkan track itu, hanya selama ada token, dan tidak mematikan kamera saat berhenti. |
+| `frontend/src/jitsi.ts` | Diubah | Ruang ujian Jitsi hanya memakai salinan kamera halaman; tidak pernah membuka tangkapan kedua. |
+| `frontend/src/App.tsx`, `api.ts` | Diubah | `useExamLiveVideo`: kartu, dialog Perbesar, dan halaman pantau siswa menampilkan video dari sumber AI ujian itu dan tidak membuka server lainnya. Label "Siaran langsung · Jitsi/OpenVidu". |
+| `README.md`, `docs/API.md`, `docs/TEST_RESULTS.md` | Diubah | Aturan satu siaran, `monitoring.livekit`, hasil uji. |
+
+## Buku (`BOOK_VISIBLE`) dan analisis suara di mode Jitsi
+
+Bagian ini diport **selektif** dari `EduAI-arsitektur-AI.zip` (30 Okt). ZIP itu tidak disalin utuh, karena dibuat sebelum Laporan Sesi, Jitsi, SEB, dan aturan satu siaran, sehingga akan menimpa `api.py` dan `App.tsx`.
+
+| Berkas | Status | Alasan |
+|---|---|---|
+| `ai/eduai-ai/src/eduai_ai/perception.py`, `signals.py`, `events.py`, `temporal.py` | Diubah | Detektor objek juga mengembalikan skor `book` (putaran yang sama dengan ponsel); aturan `BOOK_VISIBLE` (≥0,5 selama ≥3 dtk, lepas 2 dtk, cooldown 60 dtk; mati bila bagian config tidak ada). |
+| `ai/eduai-ai/config.yaml` | Diubah | `indicators.BOOK_VISIBLE` (aktif) dan `summary_rules.BOOK_VISIBLE` (3 episode/jam); komentar `OTHER_VOICE` menyebut sumber Browser dan Jitsi. |
+| `ai/eduai-ai/tests/test_book.py` | Baru | 5 tes aturan buku (dari ZIP). |
+| `backend/app/schemas.py`, `cases.py`, `summary.py`, `main.py` | Diubah | Indikator `BOOK_VISIBLE` diterima; aturan kasus 3/jam; ringkasan hanya mencantumkan buku sebagai "tidak didukung" bila indikatornya mati. |
+| `backend/app/api.py` | Diubah | `_audio_block` menerima sumber `jitsi` (sebelumnya `jitsi_mode`). |
+| `frontend/src/App.tsx` | Diubah | YAMNet di browser siswa berjalan pada sumber Browser dan Jitsi. |
+| `backend/tests/test_audio.py`, `test_jitsi.py`, `test_summary.py` | Diubah | `OTHER_VOICE` bersumber jitsi; audio tanpa persetujuan tetap mati; buku di ringkasan. |
+
+**Belum diport dari ZIP:**
+- Relay skor suara ke worker OpenVidu (`GET /api/ai/audio`, `backend_client.py`, `livekit_worker.py`). Akibatnya, mode worker OpenVidu tetap tanpa analisis suara (`worker_mode`).
+- Sudut roll (tidak dipakai aturan mana pun).
+- `docs/AI_ARCHITECTURE.md`.
+
+## Jenis suara pada setiap kejadian suara
+
+| Berkas | Status | Alasan |
+|---|---|---|
+| `ai/eduai-ai/src/eduai_ai/temporal.py`, `events.py` | Diubah | Satu jenis suara per saat: MUSIK_MEDIA, BISIKAN, BICARA_MULUT_DIAM (`OTHER_VOICE`), BICARA_SISWA. Indikator baru `MEDIA_SOUND`, `WHISPER`, `STUDENT_SPEECH`, masing-masing dengan ambang dan cooldown sendiri. Kategori baru `info` (tanpa gambar bukti, tidak menjadikan status siswa "indikasi"). Skor puncak per episode di `Event.details`. Bisikan tidak lagi dihitung sebagai `OTHER_VOICE`. |
+| `ai/eduai-ai/config.yaml` | Diubah | Bagian `WHISPER`, `MEDIA_SOUND`, `STUDENT_SPEECH` (ambang, `category`, cooldown); aturan kasus `WHISPER`. |
+| `ai/eduai-ai/tests/test_sound_labels.py`, `test_voice.py` | Baru / diubah | 11 tes label suara; tes bisikan disesuaikan. |
+| `backend/app/db.py` | Diubah | Kolom `events.details`. CHECK `category` menerima `info`; basis data lama dibangun ulang otomatis dalam satu transaksi (baris dan review dipertahankan, `foreign_key_check` diperiksa). |
+| `backend/app/schemas.py`, `store.py`, `api.py`, `cases.py` | Diubah | Validasi kategori per indikator dan `details` (tanpa kunci tambahan); `sound_text`; filter `category=info`; linimasa `kind: "info"`; `sound_info` di laporan; aturan kasus `WHISPER`. |
+| `backend/app/report_export.py` | Diubah | Jenis suara dan skor di kolom kejadian (PDF dan Excel); baris "Catatan suara (info, bukan indikasi)". |
+| `backend/tests/test_sound_labels.py` | Baru | 4 tes: label dan skor sampai laporan, musik sebagai info, validasi kategori dan `details`, migrasi DB lama. |
+| `frontend/src/App.tsx`, `api.ts` | Diubah | Detail Evidence (kategori info, baris jenis suara), Laporan Sesi (jenis suara per baris, bagian catatan suara), linimasa, ikon mikrofon untuk info. |
+
+**Sengaja tidak dibuat:** pengenalan suara orang dan penghitungan jumlah pembicara. Alasannya ada di `docs/API.md`.
+
+## Masuk ulang ruang Jitsi dan pemeriksaan kategori info
+
+| Berkas | Status | Alasan |
+|---|---|---|
+| `frontend/src/jitsi.ts` | Diubah | Keluar dari ruang (`conference.leave()`, lalu `dispose()` track lokal, lalu `connection.disconnect()`) dijalankan berurutan dalam satu antrean per halaman. Setiap bergabung (ruang ujian siswa, video pengawas, Rapat Video) menunggu antrean itu selesai. Saat tab ditutup atau dimuat ulang (`pagehide`), conference langsung ditinggalkan, tidak menunggu server mendeteksi peserta yang hilang. |
+| `backend/tests/test_sound_labels.py` | Diubah | Tes bahwa kejadian `info` tidak masuk jumlah indikasi, kasus/pop-up, dasbor, ringkasan ujian, `rules_met`, atau jumlah indikasi laporan, walaupun `summary_rules` menyebut indikatornya. |
+
+Tidak ada perubahan skema DB pada bagian ini.
+

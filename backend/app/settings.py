@@ -66,6 +66,10 @@ class Settings:
     jitsi_operator: str = ""           # "school" only if the school runs it; anything else = third party
     jitsi_muc: str = ""                # default conference.<domain>
     jitsi_service_url: str = ""        # default wss://<domain>/xmpp-websocket
+    jitsi_xmpp_domain: str = ""        # default: the domain without port (docker-jitsi-meet: meet.jitsi)
+    jitsi_app_id: str = "eduai"        # JWT issuer/audience the Jitsi server accepts
+    jitsi_app_secret: str = ""         # JWT secret shared with the Jitsi server; empty = no tokens (open server)
+    seb_allowed_origins: list = field(default_factory=list)   # page origins SEB may hash; default = CORS origins
     report_frames_dir: Path = Path("data/report-frames")
     report_frame_retention_hours: float = 24.0   # counted from finalisation
     evidence_hold_days: float = 7.0    # evidence of a non-final session: at most this long after the session ended
@@ -110,6 +114,9 @@ def load_settings(env_file: Path = None) -> Settings:
         jitsi_operator=os.environ.get("EDUAI_JITSI_OPERATOR", "").strip().lower(),
         jitsi_muc=os.environ.get("EDUAI_JITSI_MUC", "").strip(),
         jitsi_service_url=os.environ.get("EDUAI_JITSI_SERVICE_URL", "").strip(),
+        jitsi_xmpp_domain=os.environ.get("EDUAI_JITSI_XMPP_DOMAIN", "").strip(),
+        jitsi_app_id=os.environ.get("EDUAI_JITSI_APP_ID", "").strip() or "eduai",
+        jitsi_app_secret=os.environ.get("EDUAI_JITSI_APP_SECRET", "").strip(),
         report_frames_dir=_path("EDUAI_REPORT_FRAMES_DIR", BACKEND_ROOT / "data" / "report-frames"),
         report_frame_retention_hours=float(os.environ.get("EDUAI_REPORT_FRAME_RETENTION_HOURS", "24")),
         evidence_hold_days=float(os.environ.get("EDUAI_EVIDENCE_HOLD_DAYS", "7")),
@@ -131,6 +138,9 @@ def load_settings(env_file: Path = None) -> Settings:
         backend_public_url=os.environ.get("EDUAI_BACKEND_URL", "http://localhost:8000"),
         jwt_secret_generated=generated,
     )
+    # The exam page as SEB loads it (the frontend), not the API: SEB hashes the URL the browser sees.
+    s.seb_allowed_origins = [o.strip().rstrip("/") for o in os.environ.get("EDUAI_SEB_ALLOWED_ORIGINS", "").split(",")
+                             if o.strip()] or list(s.cors_origins)
     if generated:
         s.notes.append("EDUAI_JWT_SECRET not set (or < 32 chars): using a random secret; logins end when the server restarts.")
     if source == "livekit" and not s.livekit_configured:

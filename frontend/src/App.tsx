@@ -3,14 +3,15 @@ import {
   api, ApiError, examWindow, fmtDate, fmtDateTime, fmtDuration, fmtTime, FRAME_REASON, initials, minutesAgo, remaining, ROLE_LABEL, EVIDENCE_RESTRICTED,
   session, setUnauthorizedHandler, SOURCE_LABEL, STATE_LABEL, AUDIO_REASON,
   type AIEvent, type AIHealth, type AnalysisState, type AuditRow, type CaseSummary, type Decision, type Exam, type ExamSummary, type Health, type MonitoringInfo,
-  type MonitoringState, type AnalysisSource, type Report as ReportData, type ReportEvent, type ReportSummary, type StudentRow, type TimelineItem, type User, type UserRow,
+  type MonitoringState, type AnalysisSource, type SebResult, type SebRow, type SebSettings, type Report as ReportData, type ReportEvent, type ReportSummary, type StudentRow, type TimelineItem, type User, type UserRow,
 } from "./api";
 import { loadSeen, newCaseIds, newSummaryKeys, notifiableCaseIds, saveSeen, seenKey, seenSummariesKey } from "./notify";
 import { SpeechScorer } from "./audio";
-import { FrameUploader, measureLatency, mediaErrorMessage, startStudentMedia, useExamVideoRoom, useMicLevel, useVideo, type StudentMedia } from "./media";
+import { FrameUploader, measureLatency, mediaErrorMessage, startStudentMedia, useExamVideoRoom, useMicLevel, useOpenViduBroadcast, useVideo, type StudentMedia } from "./media";
 import type { RemoteTrack } from "livekit-client";
 import { EVIDENCE_NOTICE, JITSI_NOTICE_UNKNOWN, jitsiNotice } from "./consent";
-import { jitsiRoomName, useJitsiRoom, useJitsiTrack, type JitsiTrack } from "./jitsi";
+import { jitsiRoomName, useJitsiRoom, useJitsiTrack, useJitsiWatch, type JitsiTrack } from "./jitsi";
+import { readSeb, sebLaunchLink, SEB_STATE_LABEL } from "./seb";
 
 type Role = "Siswa" | "Pengawas" | "Penyelenggara Ujian" | "Admin" | "Pihak Sekolah";
 
@@ -23,6 +24,7 @@ type Screen =
   | "waiting"
   | "consent"
   | "device"
+  | "seb-check"
   | "exam"
   | "monitor"
   | "student-detail"
@@ -192,7 +194,7 @@ const scoreText = (e: AIEvent) => (e.score == null ? "—" : `${Math.round(e.sco
 const examTime = (e: Exam) => { const { end } = examWindow(e); return `${e.start_time.replace(":", ".")}–${end.toTimeString().slice(0, 5).replace(":", ".")} WIB`; };
 
 // Tanda pilihan saja: peran sebenarnya selalu mengikuti akun yang masuk.
-const loginRoles = ["Mahasiswa", "Penyelenggara", "Pengawas", "Admin"];
+const loginRoles = ["Siswa", "Penyelenggara", "Pengawas", "Admin"];
 
 function Login({ go }: { go: (s: Screen) => void }) {
   const { setRole } = useRole();
@@ -463,6 +465,39 @@ function Sessions({ go }: { go: (s: Screen) => void }) {
   </main></AppShell>;
 }
 
+// Admin / organiser: per-exam Safe Exam Browser requirement. Keys are typed here and kept by the backend;
+// students and supervisors never receive them.
+function SebSettingsPanel({ examId }: { examId: number }) {
+  const settings = usePoll(() => api.sebSettings(examId), [examId]);
+  const [form, setForm] = useState<{ required: boolean; ck: string; bek: string; url: string } | null>(null);
+  const [loaded, setLoaded] = useState<SebSettings | null>(null);
+  const [msg, setMsg] = useState<[string, "blue" | "red"] | null>(null);
+  if (settings.data && settings.data !== loaded) {
+    setLoaded(settings.data);
+    setForm({ required: settings.data.required, ck: settings.data.config_keys.join("\n"), bek: settings.data.browser_exam_keys.join("\n"), url: settings.data.config_url });
+  }
+  const split = (t: string) => t.split(/[\s,;]+/).filter(Boolean);
+  const save = async () => {
+    if (!form) return;
+    try {
+      await api.saveSebSettings(examId, { required: form.required, config_keys: split(form.ck), browser_exam_keys: split(form.bek), config_url: form.url.trim() });
+      setMsg(["Pengaturan Safe Exam Browser disimpan.", "blue"]); void settings.reload();
+    } catch (e) { setMsg([(e as Error).message, "red"]); }
+  };
+  if (settings.error) return <Notice tone="red">{settings.error}</Notice>;
+  if (!form) return <p className="mt-3 text-sm text-slate-500">Memuat pengaturan...</p>;
+  const area = "mt-1 w-full rounded-md border border-slate-200 p-2.5 font-mono text-xs outline-none focus:border-blue-500";
+  return <div className="mt-4 space-y-4 text-sm" data-testid="seb-settings">
+    <label className="flex items-start gap-3"><input type="checkbox" checked={form.required} onChange={(e) => setForm({ ...form, required: e.target.checked })} className="mt-0.5 size-5 accent-blue-600" /><span><span className="block font-semibold text-slate-800">Wajibkan Safe Exam Browser</span><span className="text-xs text-slate-500">Siswa hanya dapat masuk ruang ujian dari SEB dengan konfigurasi yang kuncinya terdaftar di bawah.</span></span></label>
+    <label className="block"><span className="font-semibold text-slate-700">Config Key</span><span className="block text-xs text-slate-500">Satu per baris. Lihat di SEB Config Tool setelah berkas .seb disimpan. Sama untuk Windows, macOS, dan iOS.</span><textarea aria-label="Config Key" rows={2} value={form.ck} onChange={(e) => setForm({ ...form, ck: e.target.value })} className={area} /></label>
+    <label className="block"><span className="font-semibold text-slate-700">Browser Exam Key (opsional)</span><span className="block text-xs text-slate-500">Berbeda untuk tiap versi dan sistem operasi SEB. Bila diisi, kunci ini juga harus cocok.</span><textarea aria-label="Browser Exam Key" rows={2} value={form.bek} onChange={(e) => setForm({ ...form, bek: e.target.value })} className={area} /></label>
+    <label className="block"><span className="font-semibold text-slate-700">Alamat berkas konfigurasi .seb (opsional)</span><span className="block text-xs text-slate-500">Dipakai untuk tautan "Buka di Safe Exam Browser" bagi siswa.</span><input aria-label="Alamat berkas konfigurasi" value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} placeholder="https://ujian.sekolah.sch.id/seb/ujian.seb" className={area} /></label>
+    <p className="text-xs text-slate-500">Alamat halaman ujian yang diterima: {loaded?.allowed_origins.join(", ") || "—"}. Siswa yang sedang di ruang ujian diperiksa ulang tiap 60 detik dengan kunci terbaru.</p>
+    {msg && <Notice tone={msg[1]}>{msg[0]}</Notice>}
+    <div className="flex justify-end"><Button onClick={() => void save()}>Simpan pengaturan SEB</Button></div>
+  </div>;
+}
+
 function ExamDetail({ go }: { go: (s: Screen) => void }) {
   const [tab, setTab] = useState("Ringkasan");
   const { role } = useRole();
@@ -484,6 +519,7 @@ function ExamDetail({ go }: { go: (s: Screen) => void }) {
       <div className="mt-6 border-b border-slate-200"><div className="flex gap-7 overflow-x-auto">{["Ringkasan", "Peserta", "Pemantauan", "Laporan"].map((x) => <button key={x} onClick={() => setTab(x)} className={`whitespace-nowrap border-b-2 px-1 pb-3 text-sm font-semibold ${tab === x ? "border-blue-600 text-blue-700" : "border-transparent text-slate-500"}`}>{x}</button>)}</div></div>
       <div className="mt-6 grid gap-6 lg:grid-cols-[1.4fr_.8fr]"><section className="rounded-md border border-slate-200 bg-white p-6"><h2 className="font-bold text-slate-900">{tab}</h2>{tab === "Ringkasan" ? <><p className="mt-3 text-sm leading-7 text-slate-600">{e.description} Seluruh peserta wajib mengaktifkan kamera dan mikrofon selama sesi.</p><div className="mt-6 rounded-md bg-blue-50 p-4"><div className="flex gap-3"><span className="text-blue-700"><Icon name="shield" size={19} /></span><div><p className="text-sm font-bold text-blue-900">Pemantauan bertanggung jawab</p><p className="mt-1 text-xs leading-5 text-blue-800">AI hanya memberikan Indikasi dan bukti pendukung. Pengawas meninjau bukti sebelum menentukan keputusan.</p></div></div></div></> : tab === "Peserta" ? <div className="mt-4 divide-y divide-slate-100">{st.map((s) => <div key={s.id} className="flex items-center justify-between py-2.5 text-sm"><span className="font-semibold text-slate-800">{s.name}</span><span className="text-xs text-slate-500">NIS {s.nis ?? "—"}</span></div>)}</div> : <div className="mt-5 rounded-md border border-dashed border-slate-300 bg-slate-50 p-10 text-center"><Icon name={tab === "Laporan" ? "report" : "monitor"} size={28} /><p className="mt-3 text-sm font-semibold text-slate-700">{tab === "Laporan" ? (e.status === "Selesai" ? "Laporan siap ditinjau" : "Laporan lengkap tersedia setelah ujian selesai") : e.monitoring_active ? `Pemantauan AI aktif (${e.analysis_source === "livekit" ? "OpenVidu" : "frame browser"})` : "Pemantauan AI belum dimulai"}</p><Button variant="secondary" className="mt-4" onClick={() => go(tab === "Laporan" ? "report" : "monitor")}>{tab === "Laporan" ? "Buka laporan" : "Buka pemantauan"}</Button></div>}</section>
         <aside className="rounded-md border border-slate-200 bg-white p-6"><h2 className="font-bold text-slate-900">Kesiapan sesi</h2><div className="mt-5 space-y-4">{[["Peserta terdaftar", String(e.student_count), "green"], ["Sudah terhubung", String(joined), "green"], ["Masalah perangkat", String(deviceIssues), deviceIssues ? "amber" : "gray"], ["Belum bergabung", String(Math.max(0, e.student_count - joined)), "gray"]].map(([k, v, t]) => <div key={k} className="flex items-center justify-between"><span className="text-sm text-slate-500">{k}</span><Badge tone={t as "green" | "amber" | "gray"}>{v}</Badge></div>)}</div>{canMonitor && <Button variant="secondary" className="mt-6 w-full" onClick={() => go("waiting")}>Periksa ruang tunggu</Button>}</aside></div>
+      <section className="mt-6 rounded-md border border-slate-200 bg-white p-6"><div className="flex flex-wrap items-center gap-3"><span className="text-blue-700"><Icon name="shield" size={19} /></span><h2 className="font-bold text-slate-900">Keamanan ujian: Safe Exam Browser</h2><Badge tone={e.seb?.required ? (e.seb.ready ? "green" : "amber") : "gray"}>{e.seb?.required ? "Wajib" : "Tidak diwajibkan"}</Badge></div>{(role === "Admin" || role === "Penyelenggara Ujian") ? <SebSettingsPanel examId={e.id} /> : <p className="mt-3 text-sm text-slate-500">{e.seb?.required ? "Siswa hanya dapat masuk dari Safe Exam Browser dengan konfigurasi yang ditetapkan admin. Status tiap siswa tampil di halaman Pemantauan." : "Ujian ini tidak mewajibkan Safe Exam Browser."}</p>}</section>
     </>}
   </main></AppShell>;
 }
@@ -589,6 +625,38 @@ function Consent({ go }: { go: (s: Screen) => void }) {
   </main></div>;
 }
 
+// Step 0 when the exam requires Safe Exam Browser. The lockdown comes from SEB and its configuration;
+// this page only asks the backend whether this browser is that SEB, and never opens the exam otherwise.
+async function checkSeb(examId: number): Promise<SebResult> {
+  return api.verifySeb(examId, await readSeb());
+}
+
+function SebCheck({ go }: { go: (s: Screen) => void }) {
+  const { examId } = useSel();
+  const exam = usePoll(() => (examId ? api.exam(examId) : Promise.reject(new Error("Pilih ujian dari halaman Ujian Saya terlebih dahulu."))), [examId]);
+  const check = usePoll(() => (examId ? checkSeb(examId) : Promise.reject(new Error("Pilih ujian dari halaman Ujian Saya terlebih dahulu."))), [examId]);
+  const [busy, setBusy] = useState(false);
+  const result: SebResult | null = check.data;
+  const error = check.error;
+  const run = async () => { setBusy(true); check.setData(null); await check.reload(); setBusy(false); };
+  const launch = sebLaunchLink(exam.data?.seb?.config_url);
+  const ok = !!result?.verified;
+  return <div className="min-h-screen bg-slate-50"><StudentHeader /><main className="mx-auto max-w-3xl p-5 py-10 sm:py-16">
+    <section className="rounded-md border border-slate-200 bg-white p-6 sm:p-10">
+      <div className={`grid size-12 place-items-center rounded-md ${ok ? "bg-emerald-50 text-emerald-700" : "bg-blue-50 text-blue-700"}`}><Icon name="shield" size={25} /></div>
+      <p className="mt-6 text-xs font-bold uppercase tracking-widest text-blue-700">Keamanan ujian</p>
+      <h1 className="mt-2 text-3xl font-bold tracking-tight text-slate-900">Safe Exam Browser</h1>
+      <p className="mt-3 leading-7 text-slate-600">{exam.data?.name ?? "Ujian ini"} wajib dikerjakan di Safe Exam Browser (SEB). SEB membuka ujian dalam layar penuh, tanpa navigasi browser, dan membatasi perpindahan ke aplikasi atau situs lain sesuai konfigurasi sekolah.</p>
+      <div role="status" className={`mt-6 rounded-md border p-4 text-sm leading-6 ${busy || !result && !error ? "border-slate-200 bg-slate-50 text-slate-600" : ok ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-red-200 bg-red-50 text-red-800"}`}>
+        {busy ? "Memeriksa Safe Exam Browser..." : error ? error : result ? <><strong className="block">{result.state ? SEB_STATE_LABEL[result.state] : "Tidak diwajibkan"}</strong>{result.message}</> : "Memeriksa Safe Exam Browser..."}
+      </div>
+      {!busy && result && !ok && result.state === "not_seb" && <div className="mt-5 space-y-2 text-sm leading-6 text-slate-600"><p><strong className="text-slate-800">Cara masuk:</strong> tutup browser ini, lalu buka ujian melalui Safe Exam Browser dengan konfigurasi dari sekolah.</p>{launch ? <p><a className="font-semibold text-blue-700 underline" href={launch}>Buka di Safe Exam Browser</a> (SEB harus sudah terpasang di perangkat ini).</p> : <p>Minta berkas konfigurasi SEB (.seb) kepada admin atau pengawas.</p>}<p className="text-xs text-slate-500">Mode layar penuh browser biasa tidak menggantikan SEB.</p></div>}
+      {!busy && result?.state === "key_mismatch" && <p className="mt-5 text-sm leading-6 text-slate-600">Gunakan berkas konfigurasi SEB terbaru dari sekolah untuk ujian ini, lalu buka ulang. Jika masih gagal, hubungi pengawas.</p>}
+      <div className="mt-7 flex flex-wrap justify-end gap-3"><Button variant="secondary" onClick={() => go("my-exams")}>Kembali</Button>{!ok && <Button variant="secondary" disabled={busy} onClick={() => void run()}>Periksa lagi</Button>}<Button disabled={!ok || busy} onClick={() => go("device")}>Lanjut ke Cek Perangkat <Icon name="chevron" size={17} /></Button></div>
+    </section>
+  </main></div>;
+}
+
 function Device({ go }: { go: (s: Screen) => void }) {
   const { user } = useUser();
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -639,13 +707,18 @@ function ExamRoom({ go }: { go: (s: Screen) => void }) {
   const uploader = useRef<FrameUploader | null>(null);
   const speech = useRef<SpeechScorer | null>(null);
   const [audioInfo, setAudioInfo] = useState("");
+  const [sebLost, setSebLost] = useState("");
   const isStudent = role === "Siswa";
   const error = isStudent && !examId ? "Pilih ujian dari halaman Ujian Saya terlebih dahulu." : joinError;
   // Jitsi exam room: video only, nothing is rendered from other participants. Frames do not depend on it:
   // they go from the local camera to the backend, so a failed room only leaves a connection record.
   const [jitsiAttempt, setJitsiAttempt] = useState(0);
   const jitsi = useJitsiRoom(media && mon?.jitsi && examStatus === "Sedang Berlangsung" ? mon.jitsi.room : null,
-    user?.name ?? "Siswa", mon?.jitsi ?? null, { devices: ["video"], attempt: jitsiAttempt });
+    user?.name ?? "Siswa", mon?.jitsi ?? null, { devices: ["video"], attempt: jitsiAttempt, token: mon?.jitsi?.token ?? null, camera: media?.stream ?? null });
+  // OpenVidu broadcast only while the backend hands out a ticket (never in Jitsi mode): one broadcast at a time,
+  // carrying the same camera track the AI frames are taken from.
+  const openvidu = useOpenViduBroadcast(media && examStatus === "Sedang Berlangsung" ? mon?.livekit ?? null : null,
+    media?.stream ?? null, camOn, micOn);
   const jitsiReport = !mon?.jitsi ? null : jitsi.status === "joined" ? "connected" as const : jitsi.status === "error" ? "disconnected" as const : null;
   const jitsiState = useRef<"connected" | "disconnected" | null>(jitsiReport);
   useEffect(() => { jitsiState.current = jitsiReport; });
@@ -668,10 +741,17 @@ function ExamRoom({ go }: { go: (s: Screen) => void }) {
     let cancelled = false;
     (async () => {
       try {
+        // SEB exams: the backend admits only a fresh SEB check, so check right before joining.
+        const info = await api.exam(examId);
+        if (info.seb?.required) {
+          const r = await checkSeb(examId);
+          if (!r.verified) throw new ApiError(403, r.message ?? "Safe Exam Browser belum terverifikasi.");
+        }
+        if (cancelled) return;
         const j = await api.join(examId);
         if (cancelled) return;
         setExam(j.exam); setMon(j.monitoring); setExamStatus(j.exam.status);
-        m = await startStudentMedia(j);
+        m = await startStudentMedia();
         if (cancelled) { await m.stop(); return; }
         setMedia(m); setStream(m.stream);
       } catch (e) {
@@ -680,6 +760,16 @@ function ExamRoom({ go }: { go: (s: Screen) => void }) {
     })();
     return () => { cancelled = true; uploader.current?.stop(); uploader.current = null; speech.current?.stop(); speech.current = null; void m?.stop(); void api.leave(examId).catch(() => undefined); };
   }, [examId, isStudent]);
+
+  // SEB exams: re-check every 60 s so the supervisor sees a current state (a check counts for 3 minutes).
+  const sebRequired = !!exam?.seb?.required;
+  useEffect(() => {
+    if (!media || !examId || !sebRequired) return;
+    const t = window.setInterval(() => {
+      checkSeb(examId).then((r) => setSebLost(r.verified ? "" : r.message ?? "Safe Exam Browser tidak terverifikasi.")).catch(() => undefined);
+    }, 60000);
+    return () => window.clearInterval(t);
+  }, [media, examId, sebRequired]);
 
   // presence heartbeat + monitoring state (every 5 s)
   useEffect(() => {
@@ -702,7 +792,7 @@ function ExamRoom({ go }: { go: (s: Screen) => void }) {
   // Frame upload: always in browser-frame and Jitsi mode; in OpenVidu-worker mode only as a fallback when this
   // browser is not connected to the OpenVidu room (the worker cannot see this student's camera then).
   const uploadWanted = !!mon?.active && examStatus === "Sedang Berlangsung"
-    && (mon.source === "browser" || mon.source === "jitsi" || (mon.source === "livekit" && !media?.room));
+    && (mon.source === "browser" || mon.source === "jitsi" || (mon.source === "livekit" && !openvidu.connected));
   const uploadFps = mon?.upload_fps ?? 0, maxWidth = mon?.max_width ?? 0, jpegQuality = mon?.jpeg_quality ?? 0;
   useEffect(() => {
     if (!media || !examId || !videoRef.current) return;
@@ -712,8 +802,8 @@ function ExamRoom({ go }: { go: (s: Screen) => void }) {
     } else uploader.current?.stop();
   }, [media, examId, uploadWanted, uploadFps, maxWidth, jpegQuality, videoRef]);
 
-  // optional speech-sound scores (only with the student's audio consent; browser frame path only)
-  const audioWanted = !!media && !!mon?.active && mon.source === "browser" && examStatus === "Sedang Berlangsung"
+  // optional speech-sound scores (only with the student's audio consent; sources whose frames come from this browser)
+  const audioWanted = !!media && !!mon?.active && (mon.source === "browser" || mon.source === "jitsi") && examStatus === "Sedang Berlangsung"
     && !!mon.audio?.available && !!mon.audio?.consented;
   // consented but the server says audio cannot run now: tell the student instead of showing nothing
   const audioBlocked = mon?.active && mon.audio?.consented && !mon.audio.available && mon.audio.reason
@@ -747,11 +837,12 @@ function ExamRoom({ go }: { go: (s: Screen) => void }) {
     <header className="flex h-18 items-center justify-between border-b border-white/10 px-5 sm:px-8"><div><p className="text-sm font-bold">{exam?.name ?? "Ruang ujian"}</p><p className="text-xs text-slate-400">Ruang ujian • {exam?.student_count ?? "—"} peserta</p></div><div className="flex items-center gap-4"><div className="rounded-md bg-white/10 px-4 py-2 text-sm font-bold"><span className="mr-2 text-slate-400">Sisa waktu</span>{exam ? remaining(exam, now) : "—"}</div><button onClick={exit} className="hidden text-xs font-semibold text-slate-400 hover:text-white sm:block">Keluar ruang ujian</button></div></header>
     <main className="relative flex flex-1 items-center justify-center overflow-hidden p-5">
       {error ? <div className="max-w-md rounded-md border border-red-400/40 bg-red-500/10 p-5 text-center text-sm text-red-100"><p>{error}</p><Button variant="secondary" className="mt-4" onClick={() => go("my-exams")}>Kembali ke Ujian Saya</Button></div>
-        : <div className="relative text-center"><div className="mx-auto grid size-28 place-items-center rounded-full bg-slate-800 text-3xl font-bold text-slate-200 ring-1 ring-slate-700">{initials(exam?.supervisor?.name ?? "P")}</div><p className="mt-5 font-semibold">{exam?.supervisor?.name ?? "Pengawas"} • Pengawas</p><p className="mt-1 text-sm text-slate-400">{ended ? "Ujian telah selesai. Anda dapat keluar dari ruang ujian." : media ? "Ujian sedang berlangsung" : "Menyiapkan kamera..."}</p>{media?.livekitError && mon?.source !== "jitsi" && <p className="mx-auto mt-4 max-w-md rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-200">{media.livekitError}</p>}{uploadInfo && <p className="mx-auto mt-2 max-w-md rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-200">Pengiriman frame tertunda: {uploadInfo}</p>}{(audioInfo || audioBlocked) && <p className="mx-auto mt-2 max-w-md text-xs text-slate-400">{audioInfo || audioBlocked}</p>}</div>}
+        : <div className="relative text-center"><div className="mx-auto grid size-28 place-items-center rounded-full bg-slate-800 text-3xl font-bold text-slate-200 ring-1 ring-slate-700">{initials(exam?.supervisor?.name ?? "P")}</div><p className="mt-5 font-semibold">{exam?.supervisor?.name ?? "Pengawas"} • Pengawas</p><p className="mt-1 text-sm text-slate-400">{ended ? "Ujian telah selesai. Anda dapat keluar dari ruang ujian." : media ? "Ujian sedang berlangsung" : "Menyiapkan kamera..."}</p>{openvidu.error && <p className="mx-auto mt-4 max-w-md rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-200">{openvidu.error} Pengawas tidak dapat melihat video langsung.</p>}{uploadInfo && <p className="mx-auto mt-2 max-w-md rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-200">Pengiriman frame tertunda: {uploadInfo}</p>}{(audioInfo || audioBlocked) && <p className="mx-auto mt-2 max-w-md text-xs text-slate-400">{audioInfo || audioBlocked}</p>}</div>}
+      {sebLost && <p role="alert" className="absolute left-5 top-16 max-w-sm rounded-md border border-red-300/40 bg-red-500/15 px-3 py-2 text-xs leading-5 text-red-100">{sebLost} Pengawas melihat status ini.</p>}
       {jitsiReport === "disconnected" && <p role="status" className="absolute left-5 top-5 max-w-sm rounded-md border border-amber-300/40 bg-amber-500/15 px-3 py-2 text-xs leading-5 text-amber-100">Ruang Jitsi tidak terhubung. Ujian tetap berjalan dan kamera Anda tetap dipantau. Sistem mencoba menghubungkan kembali.</p>}
       <div className="absolute bottom-5 right-5 w-44 overflow-hidden rounded-md border border-white/20 bg-slate-800 sm:w-56"><div className="relative flex aspect-video items-center justify-center bg-slate-800">{stream && camOn ? <video ref={videoRef} muted playsInline className="absolute inset-0 size-full -scale-x-100 object-cover" /> : <><video ref={videoRef} muted playsInline className="hidden" /><div className="grid size-14 place-items-center rounded-full bg-white/10 font-bold">{initials(user?.name ?? "")}</div></>}</div><div className="flex items-center justify-between px-3 py-2 text-xs"><span>{user?.name}</span><span className={micOn ? "text-emerald-400" : "text-red-400"}><Icon name="mic" size={14} /></span></div></div>
     </main>
-    <footer className="flex h-20 items-center justify-between border-t border-white/10 px-5 sm:px-8"><div className={`flex items-center gap-2 text-xs ${conn === "baik" ? "text-emerald-400" : conn === "lemah" ? "text-amber-300" : "text-red-400"}`}><span className={`size-2 rounded-full ${conn === "baik" ? "bg-emerald-400" : conn === "lemah" ? "bg-amber-300" : "bg-red-400"}`} />{conn === "baik" ? "Koneksi stabil" : conn === "lemah" ? "Koneksi lambat" : "Koneksi terputus"}</div><div className="flex gap-3"><button onClick={toggleMic} aria-label={micOn ? "Matikan mikrofon" : "Nyalakan mikrofon"} className={`grid size-11 place-items-center rounded-full ${micOn ? "bg-white/10" : "bg-red-600"}`}><Icon name="mic" /></button><button onClick={toggleCam} aria-label={camOn ? "Matikan kamera" : "Nyalakan kamera"} className={`grid size-11 place-items-center rounded-full ${camOn ? "bg-white/10" : "bg-red-600"}`}><Icon name="camera" /></button></div><div className="hidden text-xs text-slate-500 sm:block">{mon?.active ? "Pemantauan AI aktif" : "Pemantauan AI belum dimulai"}{media?.room ? " · Siaran ke pengawas aktif" : ""}</div></footer>
+    <footer className="flex h-20 items-center justify-between border-t border-white/10 px-5 sm:px-8"><div className={`flex items-center gap-2 text-xs ${conn === "baik" ? "text-emerald-400" : conn === "lemah" ? "text-amber-300" : "text-red-400"}`}><span className={`size-2 rounded-full ${conn === "baik" ? "bg-emerald-400" : conn === "lemah" ? "bg-amber-300" : "bg-red-400"}`} />{conn === "baik" ? "Koneksi stabil" : conn === "lemah" ? "Koneksi lambat" : "Koneksi terputus"}</div><div className="flex gap-3"><button onClick={toggleMic} aria-label={micOn ? "Matikan mikrofon" : "Nyalakan mikrofon"} className={`grid size-11 place-items-center rounded-full ${micOn ? "bg-white/10" : "bg-red-600"}`}><Icon name="mic" /></button><button onClick={toggleCam} aria-label={camOn ? "Matikan kamera" : "Nyalakan kamera"} className={`grid size-11 place-items-center rounded-full ${camOn ? "bg-white/10" : "bg-red-600"}`}><Icon name="camera" /></button></div><div className="hidden text-xs text-slate-500 sm:block">{mon?.active ? "Pemantauan AI aktif" : "Pemantauan AI belum dimulai"}{openvidu.connected ? " · Siaran ke pengawas aktif (OpenVidu)" : jitsiReport === "connected" ? " · Siaran ke pengawas aktif (Jitsi)" : ""}</div></footer>
   </div>;
 }
 
@@ -771,6 +862,28 @@ function LiveVideo({ track, className = "" }: { track: RemoteTrack | undefined; 
   return <video ref={ref} muted playsInline autoPlay className={`absolute inset-0 size-full object-cover ${className}`} />;
 }
 
+type LiveFeed = { kind: "openvidu"; track: RemoteTrack } | { kind: "jitsi"; track: JitsiTrack };
+
+/** Live student video from the source the AI analyses: Jitsi in Jitsi mode, otherwise OpenVidu. Opens nothing
+ *  until the monitoring state is known, and never both servers at once. */
+function useExamLiveVideo(examId: number | null, running: boolean, m: MonitoringState | null | undefined) {
+  const { role } = useRole();
+  const mode = examId && running && m ? (m.active && m.source === "jitsi" ? "jitsi" : "openvidu") : null;
+  const ov = useExamVideoRoom(examId, mode === "openvidu");
+  const watching = mode === "jitsi" && (role === "Pengawas" || role === "Admin");
+  const watch = usePoll(() => (watching && examId ? api.jitsiWatch(examId) : Promise.resolve(null)), [watching, examId], 20000);
+  const jitsi = useJitsiWatch(watching ? watch.data?.server ?? null : null, watching ? watch.data?.rooms ?? null : null);
+  const feed = (id: number): LiveFeed | null => {
+    if (mode === "jitsi") { const t = jitsi[id]?.track; return t ? { kind: "jitsi", track: t } : null; }
+    return mode === "openvidu" && ov.tracks[id] ? { kind: "openvidu", track: ov.tracks[id] } : null;
+  };
+  return { mode, feed, label: mode === "jitsi" ? "Jitsi" : "OpenVidu", reason: mode === "openvidu" && !ov.connected ? ov.reason : null };
+}
+
+function LiveFeedVideo({ feed, className = "" }: { feed: LiveFeed; className?: string }) {
+  return feed.kind === "jitsi" ? <JitsiVideo track={feed.track} className={className} /> : <LiveVideo track={feed.track} className={className} />;
+}
+
 function studentStatus(s: StudentRow) {
   const p = s.presence;
   if (!p?.joined) return "Belum bergabung";
@@ -778,6 +891,20 @@ function studentStatus(s: StudentRow) {
   if (p.camera_on === false) return "Kamera mati";
   if (p.mic_on === false) return "Mikrofon mati";
   return "Hadir";
+}
+
+/** Supervisor label for one student's Safe Exam Browser check. */
+function sebStatus(seb: SebRow): [string, "green" | "amber" | "gray"] {
+  if (seb.fresh) return ["SEB terverifikasi", "green"];
+  if (!seb.state) return ["SEB belum diperiksa", "gray"];
+  if (seb.state === "verified") return ["Verifikasi SEB kedaluwarsa", "amber"];
+  return [SEB_STATE_LABEL[seb.state], "amber"];
+}
+
+function SebBadge({ seb }: { seb: SebRow }) {
+  const [text, tone] = sebStatus(seb);
+  const detail = seb.checked_at ? `Diperiksa ${fmtTime(seb.checked_at)}${seb.method ? ` · lewat ${seb.method === "header" ? "header HTTP (sekali pakai)" : "JavaScript API SEB"}` : ""}${seb.version ? ` · ${seb.version}` : ""}` : "Siswa belum membuka pemeriksaan SEB";
+  return <span title={detail} className="mt-2 inline-flex"><Badge tone={tone}><Icon name="shield" size={12} />{text}</Badge></span>;
 }
 
 function Monitoring({ go }: { go: (s: Screen) => void }) {
@@ -788,7 +915,7 @@ function Monitoring({ go }: { go: (s: Screen) => void }) {
   const students = usePoll(() => (examId ? api.students(examId) : Promise.resolve([] as StudentRow[])), [examId], 3000);
   const events = usePoll(() => (examId ? api.examEvents(examId, { limit: 30 }) : Promise.resolve({ server_time: "", events: [] as AIEvent[] })), [examId], 3000);
   const mon = usePoll(() => (examId ? api.monitoring(examId) : Promise.reject(new Error(""))), [examId], 5000);
-  const video = useExamVideoRoom(examId, !!examId && exam?.status === "Sedang Berlangsung");
+  const live = useExamLiveVideo(examId, exam?.status === "Sedang Berlangsung", mon.data);
   const [filter, setFilter] = useState("Semua");
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<number | null>(null);
@@ -801,6 +928,9 @@ function Monitoring({ go }: { go: (s: Screen) => void }) {
   const m: MonitoringState | null = mon.data;
   const sourceReady: Record<AnalysisSource, boolean> = { browser: true, livekit: !!servers.data?.[0].livekit.configured, jitsi: !!servers.data?.[1].configured };
   const jitsiLost = rows.filter((s) => m?.active && m.source === "jitsi" && s.presence?.jitsi === "disconnected");
+  const sebRequired = !!exam?.seb?.required;
+  const sebVerified = rows.filter((s) => s.seb?.fresh).length;
+  const sebProblems = rows.filter((s) => s.seb?.required && s.seb.state && !s.seb.fresh);
   const needsAttention = (s: StudentRow) => (s.counts?.unreviewed ?? 0) > 0 || s.ai?.state === "indication";
   const connIssue = (s: StudentRow) => ["Terputus", "Kamera mati", "Mikrofon mati"].includes(studentStatus(s));
   const attention = rows.filter(needsAttention).length;
@@ -816,7 +946,11 @@ function Monitoring({ go }: { go: (s: Screen) => void }) {
     if (!examId || !m) return;
     try {
       if (m.active) { await api.stopMonitoring(examId); setActionMsg("Pemantauan AI dihentikan. Indikasi yang masih terbuka ditutup."); }
-      else { const r = await api.startMonitoring(examId, source); setActionMsg(r.note ?? `Pemantauan AI dimulai. Sumber analisis: ${SOURCE_LABEL[r.source]}.`); }
+      else {
+        const r = await api.startMonitoring(examId, source);
+        const differs = r.source !== source ? ` Dipilih ${SOURCE_LABEL[source]}, tetapi server memakai ${SOURCE_LABEL[r.source]}.` : "";
+        setActionMsg((r.note ?? `Pemantauan AI dimulai. Sumber analisis: ${SOURCE_LABEL[r.source]}.`) + differs);
+      }
       void mon.reload(); void reloadExam();
     } catch (e) { setActionMsg((e as Error).message); }
   };
@@ -826,12 +960,13 @@ function Monitoring({ go }: { go: (s: Screen) => void }) {
   const exp = rows.find((s) => s.id === expanded);
   const openStudent = (id: number) => { setStudentId(id); go("student-detail"); };
   return <AppShell active="monitor" go={go} title="Pemantauan Langsung"><main className="p-4 sm:p-8">
-    <div className="mb-6 flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-2xl font-semibold text-slate-900">Pemantauan siswa</h1><p className="mt-1 text-sm text-slate-500">{exam ? `${exam.class_name} · ${exam.subject} · ${fmtDate(exam.date)}` : "Memuat sesi..."}</p></div><div className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-4 py-2.5"><span className={`size-2.5 rounded-full ${m?.active ? "animate-pulse bg-red-500" : "bg-slate-300"}`} /><div><p className="text-sm font-semibold text-slate-900">{exam?.name ?? "—"}</p><p className="text-xs text-slate-500">{exam ? `${exam.status} · sisa ${remaining(exam, now)}` : ""} · AI {m?.active ? "aktif" : "belum aktif"}{m?.active && m.source ? ` · Sumber: ${SOURCE_LABEL[m.source]}` : ""}</p></div>{canControl && examId && <Button variant="ghost" className="ml-2 h-9" onClick={() => notify.openSummary(examId)}>Ringkasan</Button>}{canControl && exam?.status === "Sedang Berlangsung" && !m?.active && <select aria-label="Sumber analisis" value={source} onChange={(e) => setSource(e.target.value as AnalysisSource)} className="ml-2 h-9 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700">{(["browser", "livekit", "jitsi"] as AnalysisSource[]).map((x) => <option key={x} value={x} disabled={!sourceReady[x]}>{SOURCE_LABEL[x]}{sourceReady[x] ? "" : " (belum dikonfigurasi)"}</option>)}</select>}{canControl && exam?.status === "Sedang Berlangsung" && <Button variant={m?.active ? "secondary" : "primary"} className="ml-2 h-9" onClick={toggleMonitoring}>{m?.active ? "Hentikan AI" : "Mulai AI"}</Button>}</div></div>
+    <div className="mb-6 flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-2xl font-semibold text-slate-900">Pemantauan siswa</h1><p className="mt-1 text-sm text-slate-500">{exam ? `${exam.class_name} · ${exam.subject} · ${fmtDate(exam.date)}` : "Memuat sesi..."}</p></div><div className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-4 py-2.5"><span className={`size-2.5 rounded-full ${m?.active ? "animate-pulse bg-red-500" : "bg-slate-300"}`} /><div><p className="text-sm font-semibold text-slate-900">{exam?.name ?? "—"}</p><p className="text-xs text-slate-500">{exam ? `${exam.status} · sisa ${remaining(exam, now)}` : ""} · AI {m?.active ? "aktif" : "belum aktif"}{m?.active && m.source ? ` · Sumber: ${SOURCE_LABEL[m.source]}` : ""}</p></div>{canControl && examId && <Button variant="ghost" className="ml-2 h-9" onClick={() => notify.openSummary(examId)}>Ringkasan</Button>}{canControl && exam?.status === "Sedang Berlangsung" && !m?.active && <select aria-label="Sumber analisis" value={source} onChange={(e) => setSource(e.target.value as AnalysisSource)} className="ml-2 h-9 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700">{(["browser", "livekit", "jitsi"] as AnalysisSource[]).map((x) => <option key={x} value={x} disabled={!sourceReady[x]}>{SOURCE_LABEL[x]}{sourceReady[x] ? "" : " (belum dikonfigurasi)"}</option>)}</select>}{canControl && exam?.status === "Sedang Berlangsung" && <Button variant={m?.active ? "secondary" : "primary"} className="ml-2 h-9" onClick={toggleMonitoring}>{m?.active ? "Hentikan AI" : `Mulai AI · ${SOURCE_LABEL[source]}`}</Button>}</div></div>
     {actionMsg && <Notice tone="blue">{actionMsg}</Notice>}
+    {exam && <div data-testid="seb-summary" className={`mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border px-4 py-3 text-sm ${!sebRequired ? "border-slate-200 bg-white text-slate-600" : sebProblems.length ? "border-amber-200 bg-amber-50 text-amber-900" : "border-emerald-200 bg-emerald-50 text-emerald-900"}`}><Icon name="shield" size={17} /><strong>Keamanan ujian:</strong>{!sebRequired ? <span>Safe Exam Browser tidak diwajibkan untuk ujian ini.</span> : <><span>Safe Exam Browser wajib · {sebVerified}/{rows.length} siswa terverifikasi.</span>{sebProblems.length > 0 && <span>Perlu dicek: {sebProblems.map((s) => `${s.name} (${sebStatus(s.seb!)[0]})`).join(", ")}.</span>}</>}</div>}
     {jitsiLost.length > 0 && <Notice>Koneksi Jitsi terputus: {jitsiLost.map((s) => s.name).join(", ")}. Ini catatan koneksi, bukan indikasi; analisis tetap berjalan selama kamera siswa hidup.</Notice>}
     {students.error && <Notice tone="red">{students.error}</Notice>}
     {workerDown && <Notice>Worker AI OpenVidu belum mengirim heartbeat{m?.worker.process_running ? "" : " (proses worker berhenti)"}. Pastikan server OpenVidu berjalan dan dapat dihubungi backend; sampai itu, status AI siswa tampil "Analisis AI terputus". {canControl && <button className="ml-1 font-semibold underline" onClick={async () => { if (!examId) return; try { await api.startMonitoring(examId, "browser"); setActionMsg("Analisis dialihkan ke frame dari browser siswa."); void mon.reload(); } catch (e) { setActionMsg((e as Error).message); } }}>Pakai frame dari browser</button>}</Notice>}
-    {!video.connected && video.reason && m?.source !== "jitsi" && <Notice tone="blue">Video langsung tidak ditampilkan: {video.reason}. Status kamera dan hasil AI tetap diperbarui.</Notice>}
+    {live.reason && <Notice tone="blue">Video langsung tidak ditampilkan: {live.reason}. Status kamera dan hasil AI tetap diperbarui.</Notice>}
     <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{stats.map(([label, value, icon, note]) => <div key={label} className="flex items-center gap-4 rounded-lg border border-slate-200 bg-white p-4"><div className="grid size-11 place-items-center rounded-lg bg-blue-50 text-blue-700"><Icon name={icon} size={21} /></div><div className="min-w-0 flex-1"><p className="text-xs text-slate-500">{label}</p><p className="text-2xl font-semibold leading-8 text-slate-900">{value}</p></div><span className="whitespace-nowrap rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-600">{note}</span></div>)}</div>
     <div className="grid gap-6 xl:grid-cols-[1fr_340px]">
       <section>
@@ -842,27 +977,27 @@ function Monitoring({ go }: { go: (s: Screen) => void }) {
           const off = st === "Kamera mati" || st === "Terputus" || st === "Belum bergabung";
           const flagged = needsAttention(s);
           const ai = s.ai?.state ?? "no_data";
-          const track = video.tracks[s.id];
+          const feed = live.feed(s.id);
           return <article key={s.id} className={`overflow-hidden rounded-lg border bg-white ${flagged ? "border-amber-300" : ai === "cannot_analyze" ? "border-slate-400" : "border-slate-200"}`}>
             <div className={`relative aspect-video ${off ? "bg-slate-800" : ["bg-blue-100", "bg-slate-200", "bg-blue-50", "bg-slate-300"][i % 4]}`}>
-              {off ? <div className="absolute inset-0 grid place-items-center text-center text-slate-300"><div><Icon name="wifi" size={22} /><p className="mt-1 text-xs">{st === "Terputus" ? "Terputus / menyambung ulang" : st === "Belum bergabung" ? "Belum bergabung" : "Kamera dimatikan"}</p></div></div> : track ? <LiveVideo track={track} /> : <Silhouette />}
-              {!off && <span className="absolute left-2 top-2 flex items-center gap-1.5 rounded bg-slate-900/75 px-2 py-0.5 text-[11px] font-medium text-white"><span className={`size-1.5 rounded-full ${track ? "bg-red-500" : "bg-slate-400"}`} />{track ? "LIVE" : "Online"}</span>}
+              {off ? <div className="absolute inset-0 grid place-items-center text-center text-slate-300"><div><Icon name="wifi" size={22} /><p className="mt-1 text-xs">{st === "Terputus" ? "Terputus / menyambung ulang" : st === "Belum bergabung" ? "Belum bergabung" : "Kamera dimatikan"}</p></div></div> : feed ? <LiveFeedVideo feed={feed} /> : <Silhouette />}
+              {!off && <span className="absolute left-2 top-2 flex items-center gap-1.5 rounded bg-slate-900/75 px-2 py-0.5 text-[11px] font-medium text-white"><span className={`size-1.5 rounded-full ${feed ? "bg-red-500" : "bg-slate-400"}`} />{feed ? "LIVE" : "Online"}</span>}
               <div className="absolute right-2 top-2 flex gap-1">{ctl("mic", s.presence?.mic_on === false)}{ctl("camera", s.presence?.camera_on === false)}{ctl("wifi", st === "Terputus")}</div>
               {ai === "indication" ? <div className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-amber-600/95 px-3 py-1.5 text-xs font-semibold text-white"><Icon name="bell" size={14} />{s.last_indication?.status === "open" ? s.last_indication.label ?? "Indikasi" : "Indikasi"} · sedang berlangsung</div>
                 : flagged ? <div className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-amber-50/95 px-3 py-1.5 text-xs font-medium text-amber-900"><Icon name="report" size={14} />{(() => { const li = s.last_indication; const txt = `${s.counts?.unreviewed ?? 0} belum ditinjau${li?.current_session === false ? " · sesi sebelumnya" : ""}${li ? ` · terakhir ${li.label ?? li.indicator} ${fmtTime(li.start_ts)}` : ""}`; return <span className="truncate" title={txt}>{txt}</span>; })()}</div>
                 : ai === "cannot_analyze" && !off ? <div className="absolute inset-x-0 bottom-0 bg-slate-700/90 px-3 py-1.5 text-xs font-semibold text-white">Tidak dapat dianalisis{s.ai?.reason ? ` · ${FRAME_REASON[s.ai.reason] ?? s.ai.reason}` : ""}</div> : null}
             </div>
-            <div className="p-3.5"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><p className="truncate text-sm font-semibold text-slate-900">{s.name}</p><p className="text-xs text-slate-400">NIS {s.nis ?? "—"} · AI: {STATE_LABEL[ai]}</p></div><Badge tone={s.counts?.unreviewed ? "amber" : st === "Hadir" ? stateTone(ai) : "gray"}>{s.counts?.unreviewed ? `${s.counts.unreviewed} perlu ditinjau` : st === "Hadir" ? STATE_LABEL[ai] : st}</Badge></div>
+            <div className="p-3.5"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><p className="truncate text-sm font-semibold text-slate-900">{s.name}</p><p className="text-xs text-slate-400">NIS {s.nis ?? "—"} · AI: {STATE_LABEL[ai]}</p>{s.seb?.required && <SebBadge seb={s.seb} />}</div><Badge tone={s.counts?.unreviewed ? "amber" : st === "Hadir" ? stateTone(ai) : "gray"}>{s.counts?.unreviewed ? `${s.counts.unreviewed} perlu ditinjau` : st === "Hadir" ? STATE_LABEL[ai] : st}</Badge></div>
               <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3 text-xs"><button onClick={() => setExpanded(s.id)} className="font-semibold text-slate-600 hover:text-slate-900">Perbesar</button><button onClick={() => openStudent(s.id)} className="flex items-center gap-1 font-semibold text-blue-700">Buka pemantauan <Icon name="chevron" size={14} /></button></div></div>
           </article>;
         })}</div>}
       </section>
       <aside className="h-fit rounded-lg border border-slate-200 bg-white"><div className="flex items-center justify-between border-b border-slate-100 p-4"><div><h2 className="font-semibold text-slate-900">Aktivitas terbaru</h2><p className="text-xs text-slate-500">Diperbarui setiap 3 detik</p></div><button onClick={() => go("indications")} className="text-xs font-semibold text-blue-700">Lihat semua</button></div>
-        <div className="max-h-[560px] divide-y divide-slate-100 overflow-y-auto">{aiOffline ? <p className="p-5 text-sm text-amber-800">AI belum tersedia. Daftar indikasi akan terisi lagi setelah layanan tersambung.</p> : (events.data?.events ?? []).length === 0 ? <p className="p-5 text-sm text-slate-500">Belum ada kejadian dari AI pada sesi ini.</p> : (events.data?.events ?? []).map((e) => { const ind = e.category === "indication"; return <button key={e.event_id} onClick={() => { if (ind) { setEventId(e.event_id); go("detail"); } else openStudent(e.student_id); }} className="flex w-full items-start gap-3 p-4 text-left hover:bg-slate-50"><span className={`mt-0.5 grid size-8 shrink-0 place-items-center rounded-md ${ind ? "bg-amber-50 text-amber-600" : "bg-slate-100 text-slate-500"}`}><Icon name={ind ? "bell" : "camera"} size={16} /></span><span className="min-w-0 flex-1"><span className="block text-sm font-medium text-slate-800">{eventTitle(e)}</span><span className="text-xs text-slate-500">{e.student?.name} · {fmtTime(e.start_ts)} · {e.status === "open" ? "berlangsung" : fmtDuration(e.duration_s)}</span></span>{ind && !e.review_status && <span className="mt-2 size-2 rounded-full bg-blue-600" />}</button>; })}</div>
+        <div className="max-h-[560px] divide-y divide-slate-100 overflow-y-auto">{aiOffline ? <p className="p-5 text-sm text-amber-800">AI belum tersedia. Daftar indikasi akan terisi lagi setelah layanan tersambung.</p> : (events.data?.events ?? []).length === 0 ? <p className="p-5 text-sm text-slate-500">Belum ada kejadian dari AI pada sesi ini.</p> : (events.data?.events ?? []).map((e) => { const ind = e.category === "indication"; return <button key={e.event_id} onClick={() => { if (ind) { setEventId(e.event_id); go("detail"); } else openStudent(e.student_id); }} className="flex w-full items-start gap-3 p-4 text-left hover:bg-slate-50"><span className={`mt-0.5 grid size-8 shrink-0 place-items-center rounded-md ${ind ? "bg-amber-50 text-amber-600" : "bg-slate-100 text-slate-500"}`}><Icon name={ind ? "bell" : e.category === "info" ? "mic" : "camera"} size={16} /></span><span className="min-w-0 flex-1"><span className="block text-sm font-medium text-slate-800">{eventTitle(e)}</span><span className="text-xs text-slate-500">{e.student?.name} · {fmtTime(e.start_ts)} · {e.status === "open" ? "berlangsung" : fmtDuration(e.duration_s)}</span></span>{ind && !e.review_status && <span className="mt-2 size-2 rounded-full bg-blue-600" />}</button>; })}</div>
         <div className="m-4 flex gap-3 rounded-md bg-blue-50 p-3.5 text-xs leading-5 text-blue-900"><Icon name="shield" size={17} /><p><strong className="block font-semibold">Perlu verifikasi manusia</strong>Indikasi dari AI hanya membantu peninjauan dan tidak menentukan hasil secara otomatis. "Tidak dapat dianalisis" berarti kualitas video kurang, bukan pelanggaran.</p></div>
       </aside>
     </div>
-    {exp && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/80 p-6"><section role="dialog" aria-modal="true" className="w-full max-w-4xl overflow-hidden rounded-lg border border-slate-700 bg-slate-900"><div className="flex items-center justify-between border-b border-white/10 p-4 text-white"><div><p className="font-semibold">{exp.name}</p><p className="text-xs text-slate-400">{video.tracks[exp.id] ? "Siaran langsung · OpenVidu" : "Video langsung tidak tersedia"} · AI: {STATE_LABEL[exp.ai?.state ?? "no_data"]}</p></div><button onClick={() => setExpanded(null)} aria-label="Tutup"><Icon name="close" /></button></div><div className="relative aspect-video bg-slate-800">{video.tracks[exp.id] ? <LiveVideo track={video.tracks[exp.id]} className="object-contain" /> : <Silhouette />}</div><div className="flex justify-end gap-2 border-t border-white/10 p-4"><Button variant="secondary" onClick={() => { setExpanded(null); openStudent(exp.id); }}>Detail siswa</Button><Button onClick={() => setExpanded(null)}>Tutup</Button></div></section></div>}
+    {exp && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/80 p-6"><section role="dialog" aria-modal="true" className="w-full max-w-4xl overflow-hidden rounded-lg border border-slate-700 bg-slate-900"><div className="flex items-center justify-between border-b border-white/10 p-4 text-white"><div><p className="font-semibold">{exp.name}</p><p className="text-xs text-slate-400">{live.feed(exp.id) ? `Siaran langsung · ${live.label}` : "Video langsung tidak tersedia"} · AI: {STATE_LABEL[exp.ai?.state ?? "no_data"]}</p></div><button onClick={() => setExpanded(null)} aria-label="Tutup"><Icon name="close" /></button></div><div className="relative aspect-video bg-slate-800">{(() => { const f = live.feed(exp.id); return f ? <LiveFeedVideo feed={f} className="object-contain" /> : <Silhouette />; })()}</div><div className="flex justify-end gap-2 border-t border-white/10 p-4"><Button variant="secondary" onClick={() => { setExpanded(null); openStudent(exp.id); }}>Detail siswa</Button><Button onClick={() => setExpanded(null)}>Tutup</Button></div></section></div>}
   </main></AppShell>;
 }
 
@@ -872,8 +1007,10 @@ function StudentMonitoringDetail({ go }: { go: (s: Screen) => void }) {
   const students = usePoll(() => (examId ? api.students(examId) : Promise.resolve([] as StudentRow[])), [examId], 3000);
   const timeline = usePoll(() => (examId && studentId ? api.timeline(examId, studentId) : Promise.resolve([] as TimelineItem[])), [examId, studentId], 5000);
   const exam = usePoll(() => (examId ? api.exam(examId) : Promise.reject(new Error("Pilih sesi"))), [examId]);
-  const video = useExamVideoRoom(examId, exam.data?.status === "Sedang Berlangsung");
+  const mon = usePoll(() => (examId ? api.monitoring(examId) : Promise.reject(new Error(""))), [examId], 5000);
+  const live = useExamLiveVideo(examId, exam.data?.status === "Sedang Berlangsung", mon.data);
   const s = students.data?.find((x) => x.id === studentId);
+  const feed = s ? live.feed(s.id) : null;
   const items = (timeline.data ?? []).slice().reverse();
   const st = s ? studentStatus(s) : "—";
   const openEvent = (id?: string) => { if (id) { setEventId(id); go("detail"); } };
@@ -882,7 +1019,7 @@ function StudentMonitoringDetail({ go }: { go: (s: Screen) => void }) {
     <div className="mb-5 flex flex-wrap items-center justify-between gap-3"><button onClick={() => go("monitor")} className="flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-slate-800"><Icon name="arrow" size={18} />Kembali ke pemantauan</button><Button variant="secondary" onClick={() => go("timeline")}>Lihat linimasa lengkap</Button></div>
     {!s ? <Notice tone={students.loading ? "blue" : "red"}>{students.loading ? "Memuat..." : students.error || "Pilih siswa dari halaman Monitoring."}</Notice> : <>
       <div className="mb-6 flex flex-col justify-between gap-5 rounded-md border border-slate-200 bg-white p-5 sm:flex-row sm:items-center"><div className="flex items-center gap-4"><div className="grid size-14 place-items-center rounded-full bg-amber-100 font-bold text-amber-800">{initials(s.name)}</div><div><div className="flex items-center gap-2"><h1 className="text-xl font-bold text-slate-900">{s.name}</h1><Badge tone={s.counts?.unreviewed ? "amber" : stateTone(s.ai?.state)}>{s.counts?.unreviewed ? "Perlu perhatian" : STATE_LABEL[s.ai?.state ?? "no_data"]}</Badge></div><p className="mt-1 text-sm text-slate-500">NIS {s.nis ?? "—"} • {s.class_name}</p></div></div><div className="flex gap-5 text-center"><div><p className={`text-sm font-bold ${s.presence?.online ? "text-emerald-600" : "text-slate-500"}`}>{s.presence?.online ? (s.presence.connection === "baik" ? "Stabil" : s.presence.connection) : "Offline"}</p><p className="text-[10px] text-slate-400">Koneksi</p></div><div><p className="text-sm font-bold text-slate-700">{s.presence?.camera_on ? "Aktif" : "Mati"}</p><p className="text-[10px] text-slate-400">Kamera</p></div><div><p className="text-sm font-bold text-slate-700">{s.presence?.mic_on ? "Aktif" : "Mati"}</p><p className="text-[10px] text-slate-400">Mikrofon</p></div><div title={`Analisis suara di perangkat siswa (hanya skor, tanpa audio)${s.audio?.reason ? `. ${AUDIO_REASON[s.audio.reason]?.[1] ?? s.audio.reason}` : ""}`}><p className="text-sm font-bold text-slate-700">{!s.audio?.consented ? "Tidak disetujui" : s.audio.active ? "Aktif" : "Tidak aktif"}</p><p className="text-[10px] text-slate-400">Analisis suara</p>{s.audio?.consented && !s.audio.active && s.audio.reason && <p className="text-[10px] font-medium text-amber-700">{AUDIO_REASON[s.audio.reason]?.[0] ?? s.audio.reason}</p>}</div></div></div>
-      <div className="grid gap-6 xl:grid-cols-[1.45fr_.8fr]"><div className="space-y-6"><section className="overflow-hidden rounded-md border border-slate-200 bg-white"><div className="relative flex aspect-video items-center justify-center bg-slate-800">{video.tracks[s.id] ? <LiveVideo track={video.tracks[s.id]} className="object-contain" /> : <div className="grid size-24 place-items-center rounded-full bg-white/10 text-2xl font-bold text-white ring-1 ring-white/20">{initials(s.name)}</div>}<div className="absolute bottom-4 left-4 flex items-center gap-2 rounded-md bg-slate-900/70 px-3 py-2 text-xs text-white"><span className={`size-2 rounded-full ${video.tracks[s.id] ? "bg-emerald-400" : "bg-slate-400"}`} />{video.tracks[s.id] ? "Siaran langsung • OpenVidu" : video.reason ? "Video langsung tidak tersedia" : "Menunggu video siswa"}</div></div><div className="flex items-center justify-between p-4"><p className="text-sm font-semibold text-slate-700">{exam.data?.name}</p><div className="flex gap-2 text-slate-500"><Icon name="mic" size={17} /><Icon name="camera" size={17} /><Icon name="wifi" size={17} /></div></div></section>
+      <div className="grid gap-6 xl:grid-cols-[1.45fr_.8fr]"><div className="space-y-6"><section className="overflow-hidden rounded-md border border-slate-200 bg-white"><div className="relative flex aspect-video items-center justify-center bg-slate-800">{feed ? <LiveFeedVideo feed={feed} className="object-contain" /> : <div className="grid size-24 place-items-center rounded-full bg-white/10 text-2xl font-bold text-white ring-1 ring-white/20">{initials(s.name)}</div>}<div className="absolute bottom-4 left-4 flex items-center gap-2 rounded-md bg-slate-900/70 px-3 py-2 text-xs text-white"><span className={`size-2 rounded-full ${feed ? "bg-emerald-400" : "bg-slate-400"}`} />{feed ? `Siaran langsung • ${live.label}` : live.reason ? "Video langsung tidak tersedia" : "Menunggu video siswa"}</div></div><div className="flex items-center justify-between p-4"><p className="text-sm font-semibold text-slate-700">{exam.data?.name}</p><div className="flex gap-2 text-slate-500"><Icon name="mic" size={17} /><Icon name="camera" size={17} /><Icon name="wifi" size={17} /></div></div></section>
         <section className="rounded-md border border-slate-200 bg-white p-6"><div className="flex items-center justify-between"><div><h2 className="font-bold text-slate-900">Aktivitas Siswa</h2><p className="mt-1 text-xs text-slate-500">Linimasa perangkat dan Indikasi selama sesi.</p></div><Badge tone={s.counts?.unreviewed ? "amber" : "gray"}>{s.counts?.unreviewed ?? 0} belum ditinjau</Badge></div><div className="mt-5 divide-y divide-slate-100">{items.slice(0, 8).map((it, idx) => <div key={it.ts + idx} className="flex items-center gap-4 py-3"><span className={`size-2 rounded-full ${it.kind === "indication" ? "bg-amber-500" : it.kind === "cannot_analyze" ? "bg-slate-400" : it.kind === "review" ? "bg-blue-500" : "bg-emerald-500"}`} /><span className="w-20 text-xs font-semibold text-slate-500">{fmtTime(it.ts)}</span><p className="flex-1 text-sm font-semibold text-slate-800">{it.title}{it.kind === "indication" && it.status === "open" ? " (berlangsung)" : ""}</p>{it.kind === "indication" && <button onClick={() => openEvent(it.event_id)} className="text-xs font-bold text-blue-700">{mayOpenEvidence(role) ? "Lihat Evidence" : "Lihat Detail"}</button>}</div>)}{items.length === 0 && <p className="py-3 text-sm text-slate-500">Belum ada aktivitas.</p>}</div><div className="mt-5 flex gap-3 border-t border-slate-100 pt-5"><Button onClick={() => go("indications")}>Lihat Indikasi</Button><Button variant="secondary" disabled={!lastInd} onClick={() => openEvent(lastInd?.event_id)}>Lihat Evidence</Button></div></section></div>
         <aside className="space-y-6"><section className="rounded-md border border-slate-200 bg-white p-5"><h2 className="font-bold text-slate-900">Status pemantauan</h2><div className="mt-5 space-y-4">{[["Status kehadiran", st], ["Waktu masuk", fmtTime(s.presence?.joined_at)], ["Koneksi", s.presence?.online ? `${s.presence.rtt_ms ? `${Math.round(s.presence.rtt_ms)} ms • ` : ""}${s.presence.connection ?? ""}` : "Offline"], ...(s.presence?.jitsi ? [["Ruang Jitsi", s.presence.jitsi === "connected" ? "Terhubung" : "Terputus"]] : []), ["Status AI", STATE_LABEL[s.ai?.state ?? "no_data"]], ["Sumber analisis", SOURCE_LABEL[s.ai?.source as AnalysisSource] ?? "—"], ["Kualitas video", s.ai?.frame_status === "cannot_analyze" ? `Tidak dapat dianalisis (${FRAME_REASON[s.ai.reason ?? ""] ?? s.ai.reason})` : s.ai?.frame_status === "analyzed" ? "Dapat dianalisis" : "—"], ["Jumlah Indikasi", `${s.counts?.indications ?? 0} kejadian`], ["Belum ditinjau", `${s.counts?.unreviewed ?? 0} Indikasi`]].map(([k, v], i) => <div key={k} className="flex justify-between gap-4 text-sm"><span className="text-slate-500">{k}</span><span className={`text-right font-semibold ${i === 0 && v === "Hadir" ? "text-emerald-700" : i === 6 && (s.counts?.unreviewed ?? 0) > 0 ? "text-amber-700" : "text-slate-800"}`}>{v}</span></div>)}</div></section><section className="rounded-md border border-blue-100 bg-blue-50 p-5"><div className="flex gap-3"><span className="text-blue-700"><Icon name="shield" size={19} /></span><div><p className="text-sm font-bold text-blue-900">Keputusan tetap pada pengawas</p><p className="mt-2 text-xs leading-5 text-blue-800">Periksa rekaman dan konteks sebelum membuat penilaian.</p></div></div></section></aside></div>
     </>}
@@ -896,12 +1033,12 @@ function MonitoringTimeline({ go }: { go: (s: Screen) => void }) {
   const timeline = usePoll(() => (examId && studentId ? api.timeline(examId, studentId) : Promise.resolve([] as TimelineItem[])), [examId, studentId], 5000);
   const [kind, setKind] = useState("Semua jenis kejadian");
   const s = students.data?.find((x) => x.id === studentId);
-  const kinds: Record<string, string> = { indication: "Indikasi", cannot_analyze: "Kualitas video", presence: "Kehadiran", connection: "Koneksi", consent: "Persetujuan", review: "Tinjauan pengawas", note: "Catatan manual" };
-  const tones: Record<string, string> = { indication: "amber", presence: "green", connection: "gray", consent: "green", review: "blue", cannot_analyze: "gray", note: "gray" };
+  const kinds: Record<string, string> = { indication: "Indikasi", info: "Info suara (bukan indikasi)", cannot_analyze: "Kualitas video", presence: "Kehadiran", connection: "Koneksi", consent: "Persetujuan", review: "Tinjauan pengawas", note: "Catatan manual" };
+  const tones: Record<string, string> = { indication: "amber", info: "blue", presence: "green", connection: "gray", consent: "green", review: "blue", cannot_analyze: "gray", note: "gray" };
   const events = (timeline.data ?? []).filter((e) => kind === "Semua jenis kejadian" || kinds[e.kind] === kind);
   return <AppShell active="timeline" go={go} title="Linimasa Pemantauan"><main className="mx-auto max-w-5xl p-4 sm:p-8"><button onClick={() => go("student-detail")} className="mb-5 flex items-center gap-2 text-sm font-semibold text-slate-500"><Icon name="arrow" size={18} />Kembali ke detail siswa</button><PageTitle title="Linimasa Pemantauan" description={`${s?.name ?? "Pilih siswa"} • ${s ? "" : ""}`} />
     <div className="mb-6 flex flex-wrap gap-2 rounded-md border border-slate-200 bg-white p-4"><select value={studentId ?? ""} onChange={(e) => setStudentId(Number(e.target.value))} className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600"><option value="" disabled>Pilih siswa</option>{(students.data ?? []).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><select value={kind} onChange={(e) => setKind(e.target.value)} className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600"><option>Semua jenis kejadian</option>{Object.values(kinds).map((k) => <option key={k}>{k}</option>)}</select></div>
-    <section className="rounded-md border border-slate-200 bg-white p-6">{events.length === 0 ? <p className="text-sm text-slate-500">Belum ada kejadian.</p> : <div className="relative ml-3 border-l border-slate-200 pl-8">{events.map((ev, i) => { const tone = tones[ev.kind] ?? "gray"; return <div key={ev.ts + i} className={`${i < events.length - 1 ? "pb-8" : ""} relative`}><span className={`absolute -left-[39px] top-1 grid size-5 place-items-center rounded-full ring-4 ring-white ${tone === "amber" ? "bg-amber-500" : tone === "green" ? "bg-emerald-500" : tone === "blue" ? "bg-blue-500" : "bg-slate-400"}`} /><div className="flex flex-col justify-between gap-2 sm:flex-row"><div><p className="text-sm font-bold text-slate-800">{ev.title}</p><p className="mt-1 text-xs text-slate-500">{kinds[ev.kind] ?? ev.kind} • {s?.name}{ev.reason ? ` • ${ev.reason}` : ""}{ev.note ? ` • ${ev.note}` : ""}</p>{ev.kind === "indication" && <button onClick={() => { setEventId(ev.event_id!); go("detail"); }} className="mt-1 text-xs font-bold text-blue-700">{mayOpenEvidence(role) ? "Lihat evidence" : "Lihat detail"}</button>}</div><span className="text-xs font-semibold text-slate-400">{fmtTime(ev.ts)} WIB</span></div></div>; })}</div>}</section>
+    <section className="rounded-md border border-slate-200 bg-white p-6">{events.length === 0 ? <p className="text-sm text-slate-500">Belum ada kejadian.</p> : <div className="relative ml-3 border-l border-slate-200 pl-8">{events.map((ev, i) => { const tone = tones[ev.kind] ?? "gray"; return <div key={ev.ts + i} className={`${i < events.length - 1 ? "pb-8" : ""} relative`}><span className={`absolute -left-[39px] top-1 grid size-5 place-items-center rounded-full ring-4 ring-white ${tone === "amber" ? "bg-amber-500" : tone === "green" ? "bg-emerald-500" : tone === "blue" ? "bg-blue-500" : "bg-slate-400"}`} /><div className="flex flex-col justify-between gap-2 sm:flex-row"><div><p className="text-sm font-bold text-slate-800">{ev.title}</p><p className="mt-1 text-xs text-slate-500">{kinds[ev.kind] ?? ev.kind} • {s?.name}{ev.reason ? ` • ${ev.reason}` : ""}{ev.sound_text ? ` • ${ev.sound_text}` : ""}{ev.note ? ` • ${ev.note}` : ""}</p>{ev.kind === "indication" && <button onClick={() => { setEventId(ev.event_id!); go("detail"); }} className="mt-1 text-xs font-bold text-blue-700">{mayOpenEvidence(role) ? "Lihat evidence" : "Lihat detail"}</button>}</div><span className="text-xs font-semibold text-slate-400">{fmtTime(ev.ts)} WIB</span></div></div>; })}</div>}</section>
   </main></AppShell>;
 }
 
@@ -967,9 +1104,9 @@ function SupervisorEvidenceDetail({ go }: { go: (s: Screen) => void }) {
     {e && <div className="grid gap-6 xl:grid-cols-[1.45fr_.75fr]"><div className="space-y-6">
       <EvidenceViewer event={e} />
       {isIndication && <section className="rounded-md border border-slate-200 bg-white p-6"><h2 className="font-bold text-slate-900">Validasi Pengawas</h2><p className="mt-1 text-sm text-slate-500">{readOnly ? "Hasil ini hanya dapat dilihat dan tidak dapat diubah oleh pihak sekolah." : "Pilih hasil berdasarkan evidence dan konteks kejadian."}</p>{!readOnly && <><div className="mt-5 grid gap-3 sm:grid-cols-3">{(["Valid", "Tidak Valid", "Perlu Tinjauan Lanjut"] as Decision[]).map((label) => <button key={label} onClick={() => setChoice(label)} className={`rounded-md border p-4 text-left ${choice === label ? "border-blue-500 bg-blue-50 ring-2 ring-blue-100" : "border-slate-200 hover:bg-slate-50"}`}><span className="text-sm font-bold text-slate-800">{label}</span></button>)}</div><label className="mt-5 block"><span className="mb-2 block text-sm font-semibold text-slate-700">Catatan Pengawas</span><textarea value={note} onChange={(x) => setNote(x.target.value)} rows={4} className="w-full resize-none rounded-md border border-slate-200 p-3 text-sm outline-none focus:border-blue-500" placeholder="Tuliskan alasan dan konteks validasi..." /></label><div className="mt-4 flex justify-end"><Button onClick={saveValidation}>Simpan Validasi</Button></div></>}{saved && <div className="mt-5 rounded-md border border-emerald-200 bg-emerald-50 p-4"><div className="flex items-center justify-between"><p className="text-sm font-bold text-emerald-900">Validasi berhasil disimpan</p><Badge tone="green">{e.review_status}</Badge></div><p className="mt-2 text-xs text-emerald-800">{history.at(-1)?.reviewer} • baru saja • {history.at(-1)?.note || "Tidak ada catatan tambahan."}</p></div>}<div className="mt-6 border-t border-slate-100 pt-6"><h3 className="text-sm font-bold text-slate-900">Riwayat Validasi</h3><div className="mt-3 divide-y divide-slate-100">{history.length === 0 ? <p className="py-3 text-sm text-slate-500">Belum ada validasi.</p> : history.map((item, index) => <div key={`${item.created_at}-${index}`} className="grid gap-2 py-3 text-sm sm:grid-cols-[70px_1fr_180px]"><span className="text-slate-500">{fmtTime(item.created_at).slice(0, 5)}</span><div><p className="font-semibold text-slate-800">{item.reviewer}</p><p className="mt-1 text-xs text-slate-500">{item.note || "Tidak ada catatan tambahan."}</p></div><Badge tone={reviewTone(item.decision)}>{item.decision}</Badge></div>)}</div></div></section>}
-      {!isIndication && <Notice tone="blue">Kejadian ini berkategori "tidak dapat dianalisis" (kualitas video kurang). Ini bukan indikasi dan tidak memerlukan validasi.</Notice>}
+      {!isIndication && <Notice tone="blue">{e.category === "info" ? "Kejadian ini berkategori info: dicatat sebagai konteks, bukan indikasi, tanpa gambar bukti, dan tidak memerlukan validasi." : 'Kejadian ini berkategori "tidak dapat dianalisis" (kualitas video kurang). Ini bukan indikasi dan tidak memerlukan validasi.'}</Notice>}
       {!readOnly && <section className="rounded-md border border-slate-200 bg-white p-6"><h2 className="font-bold text-slate-900">Tambah Catatan Manual</h2><p className="mt-1 text-sm text-slate-500">Catat kejadian yang terlihat langsung tetapi tidak terdeteksi sistem.</p><div className="mt-5 grid gap-4 sm:grid-cols-2"><label className="block"><span className="mb-2 block text-sm font-semibold text-slate-700">Waktu Kejadian</span><input type="time" value={manual.time} onChange={(x) => setManual({ ...manual, time: x.target.value })} className="h-11 w-full rounded-md border border-slate-200 px-3.5 text-sm" /></label><label className="block"><span className="mb-2 block text-sm font-semibold text-slate-700">Jenis Kejadian</span><input value={manual.kind} onChange={(x) => setManual({ ...manual, kind: x.target.value })} placeholder="Contoh: Aktivitas di luar kamera" className="h-11 w-full rounded-md border border-slate-200 px-3.5 text-sm" /></label><label className="block sm:col-span-2"><span className="mb-2 block text-sm font-semibold text-slate-700">Catatan</span><textarea rows={3} value={manual.note} onChange={(x) => setManual({ ...manual, note: x.target.value })} className="w-full rounded-md border border-slate-200 p-3 text-sm" placeholder="Jelaskan kejadian yang diamati..." /></label></div><div className="mt-4 flex items-center justify-between">{manualSaved ? <span className="text-xs font-semibold text-emerald-700">Catatan manual berhasil disimpan.</span> : <span />}<Button variant="secondary" disabled={!manual.note.trim()} onClick={saveManual}>Simpan Catatan</Button></div></section>}
-    </div><aside className="h-fit rounded-md border border-slate-200 bg-white p-6"><div className="flex items-center gap-3 border-b border-slate-100 pb-5"><div className="grid size-11 place-items-center rounded-full bg-slate-100 text-sm font-bold text-slate-700">{initials(e.student?.name ?? "")}</div><div><p className="font-bold text-slate-900">{e.student?.name}</p><p className="text-xs text-slate-500">NIS {e.student?.nis ?? "—"} • {e.student?.class_name}</p></div></div><dl className="mt-5 space-y-4 text-sm">{[["Jenis", eventTitle(e)], ["Kategori", isIndication ? "Indikasi (perlu ditinjau)" : "Tidak dapat dianalisis"], ["Waktu kejadian", fmtTime(e.start_ts)], ["Durasi", e.status === "open" ? "Masih berlangsung" : fmtDuration(e.duration_s)], ["Skor model", scoreText(e)], ["Status validasi", reviewLabel(e.review_status)], ["Versi model", e.model_version || "—"]].map(([label, value]) => <div key={label} className="flex justify-between gap-4"><dt className="text-slate-500">{label}</dt><dd className="text-right font-semibold text-slate-800">{value}</dd></div>)}</dl><div className="mt-6 rounded-md bg-amber-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-amber-700">Alasan dari sistem</p><p className="mt-2 text-sm leading-6 text-amber-900">{e.reason || "—"}</p></div><p className="mt-4 text-xs leading-5 text-slate-500">Skor hanya tersedia untuk deteksi objek; aturan durasi (mis. wajah tidak terlihat) tidak memiliki skor. Ambang aturan masih bersifat sementara dan belum divalidasi pada data sekolah.</p>{role !== "Pihak Sekolah" && <Button variant="secondary" className="mt-4 w-full" onClick={() => { setStudentId(e.student_id); go("student-detail"); }}>Buka detail siswa</Button>}</aside></div>}
+    </div><aside className="h-fit rounded-md border border-slate-200 bg-white p-6"><div className="flex items-center gap-3 border-b border-slate-100 pb-5"><div className="grid size-11 place-items-center rounded-full bg-slate-100 text-sm font-bold text-slate-700">{initials(e.student?.name ?? "")}</div><div><p className="font-bold text-slate-900">{e.student?.name}</p><p className="text-xs text-slate-500">NIS {e.student?.nis ?? "—"} • {e.student?.class_name}</p></div></div><dl className="mt-5 space-y-4 text-sm">{[["Jenis", eventTitle(e)], ["Kategori", isIndication ? "Indikasi (perlu ditinjau)" : e.category === "info" ? "Info (bukan indikasi)" : "Tidak dapat dianalisis"], ["Waktu kejadian", fmtTime(e.start_ts)], ["Durasi", e.status === "open" ? "Masih berlangsung" : fmtDuration(e.duration_s)], ["Skor model", scoreText(e)], ["Status validasi", reviewLabel(e.review_status)], ["Versi model", e.model_version || "—"]].map(([label, value]) => <div key={label} className="flex justify-between gap-4"><dt className="text-slate-500">{label}</dt><dd className="text-right font-semibold text-slate-800">{value}</dd></div>)}</dl><div className="mt-6 rounded-md bg-amber-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-amber-700">Alasan dari sistem</p><p className="mt-2 text-sm leading-6 text-amber-900">{e.reason || "—"}</p>{e.sound_text && <p data-testid="sound-text" className="mt-2 border-t border-amber-200 pt-2 text-sm font-semibold leading-6 text-amber-900">{e.sound_text}</p>}</div><p className="mt-4 text-xs leading-5 text-slate-500">Skor tersedia untuk deteksi objek dan suara; aturan durasi (mis. wajah tidak terlihat) tidak memiliki skor. Jenis suara hanya menyebut apa yang terdengar, bukan siapa yang berbicara atau berapa orang. Ambang aturan masih bersifat sementara dan belum divalidasi pada data sekolah.</p>{role !== "Pihak Sekolah" && <Button variant="secondary" className="mt-4 w-full" onClick={() => { setStudentId(e.student_id); go("student-detail"); }}>Buka detail siswa</Button>}</aside></div>}
   </main></AppShell>;
 }
 
@@ -988,7 +1125,7 @@ function ReportRow({ e, editable, retentionText, restrictedText, canViewEvidence
   const ev = e.evidence;
   return <tr className={`border-t border-slate-100 align-top ${!e.review_status ? "bg-amber-50/50" : ""}`}>
     <td className="px-5 py-4 font-semibold text-slate-800">{e.student?.name}</td>
-    <td className="px-5 py-4 text-slate-600">{eventTitle(e)}</td>
+    <td className="px-5 py-4 text-slate-600">{eventTitle(e)}{e.sound_text && <span className="mt-1 block text-xs leading-5 text-slate-500">{e.sound_text}</span>}</td>
     <td className="px-5 py-4 text-slate-500">{fmtTime(e.start_ts)}</td>
     <td className="px-5 py-4">{editable ? <select aria-label={`Status validasi ${e.student?.name}`} value={e.review_status ?? ""} disabled={busy} onChange={(x) => void save({ decision: x.target.value as Decision })} className="h-9 w-44 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 disabled:opacity-60"><option value="" disabled>Belum ditinjau</option>{(["Valid", "Tidak Valid", "Perlu Tinjauan Lanjut"] as Decision[]).map((d) => <option key={d} value={d}>{d}</option>)}</select> : <Badge tone={reviewTone(e.review_status)}>{e.review_status ?? "Belum ditinjau"}</Badge>}{error && <p role="alert" className="mt-1.5 max-w-44 text-xs leading-5 text-red-700">{error}</p>}</td>
     <td className="px-5 py-4 text-slate-500">{editable ? <textarea aria-label={`Catatan pengawas ${e.student?.name}`} rows={2} maxLength={2000} value={note} disabled={busy || !e.review_status} placeholder={e.review_status ? "Tulis catatan" : "Pilih status dahulu"} onChange={(x) => setNote(x.target.value)} onBlur={() => { if (note.trim() !== saved) void save({ note }); }} className="w-52 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700 disabled:bg-slate-50" /> : e.last_review?.note || "—"}</td>
@@ -1040,6 +1177,7 @@ function Report({ go }: { go: (s: Screen) => void }) {
       {ind!.unreviewed > 0 && <div className="mb-5 flex items-start gap-3 rounded-md border border-amber-200 bg-amber-50 p-4"><span className="text-amber-600"><Icon name="bell" size={18} /></span><div><p className="text-sm font-bold text-amber-900">{ind!.unreviewed} indikasi belum ditinjau</p><p className="mt-1 text-xs leading-5 text-amber-800">Laporan baru dapat difinalisasi setelah semua indikasi ditinjau.</p></div></div>}
       <div className="overflow-x-auto rounded-md border border-slate-200 bg-white"><div className="flex min-w-[620px] divide-x divide-slate-200">{[[`${r.attendance.joined} dari ${r.attendance.enrolled}`, "Kehadiran", "green"], [String(ind!.total), "Total Indikasi", "amber"], [String(ind!.total - ind!.unreviewed), "Sudah ditinjau", "blue"], [String(ind!.unreviewed), "Belum ditinjau", "gray"]].map(([num, label, tone]) => <div key={label} className="flex flex-1 items-center gap-3 px-4 py-3"><span className={`size-2 rounded-full ${tone === "green" ? "bg-emerald-500" : tone === "amber" ? "bg-amber-500" : tone === "blue" ? "bg-blue-700" : "bg-slate-400"}`} /><div><p className="text-lg font-bold leading-5 text-slate-900">{num}</p><p className="mt-0.5 whitespace-nowrap text-xs text-slate-500">{label}</p></div></div>)}</div></div>
       <section className="mt-6 overflow-hidden rounded-md border border-slate-200 bg-white"><div className="flex items-center justify-between gap-3 border-b border-slate-100 p-5"><div><h2 className="font-bold text-slate-900">Rincian Indikasi</h2><p className="mt-1 text-xs leading-5 text-slate-500">{r.ai_notice}</p></div><Badge tone={ind!.unreviewed ? "amber" : "green"}>{ind!.unreviewed} belum ditinjau</Badge></div>{r.events.length === 0 ? <p className="p-8 text-center text-sm text-slate-500">Belum ada kejadian yang tercatat oleh sistem pemantauan pada sesi ini.</p> : <div className="overflow-x-auto"><table className="w-full min-w-[960px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3.5">Siswa</th><th className="px-5 py-3.5">Jenis Indikasi</th><th className="px-5 py-3.5">Waktu</th><th className="px-5 py-3.5">Status validasi</th><th className="px-5 py-3.5">Catatan Pengawas</th><th className="px-5 py-3.5">Gambar bukti</th></tr></thead><tbody>{r.events.map((e) => <ReportRow key={e.event_id} e={e} editable={r.can_edit} retentionText={r.retention_text} restrictedText={r.restricted_text} canViewEvidence={r.can_view_evidence} onSaved={onSaved} onEnlarge={setEnlarged} onImageError={onImageError} go={go} />)}</tbody></table></div>}</section>
+      {(r.sound_info?.length ?? 0) > 0 && <section data-testid="sound-info" className="mt-6 rounded-md border border-slate-200 bg-white p-5"><h2 className="font-bold text-slate-900">Catatan suara (info, bukan indikasi)</h2><p className="mt-1 text-xs leading-5 text-slate-500">Dicatat sebagai konteks tanpa gambar bukti dan tanpa validasi. Hanya jenis suara, bukan identitas atau jumlah pembicara.</p><ul className="mt-3 space-y-1 text-sm text-slate-700">{r.sound_info!.map((x) => <li key={x.indicator}>{x.label}: {x.count} kali, sekitar {Math.round(x.total_s)} detik</li>)}</ul></section>}
       <section className="mt-6 overflow-hidden rounded-md border border-slate-200 bg-white"><div className="border-b border-slate-100 p-5"><h2 className="font-bold text-slate-900">Aktivitas Pengawas</h2><p className="mt-1 text-xs text-slate-500">Audit log hanya-baca dan tidak dapat diedit atau dihapus.</p></div><div className="overflow-x-auto"><table className="w-full min-w-[700px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3">Aktivitas</th><th className="px-5 py-3">Waktu</th><th className="px-5 py-3">User</th><th className="px-5 py-3">Status</th></tr></thead><tbody>{r.activity.map((row, i) => <tr key={i} className="border-t border-slate-100"><td className="px-5 py-4 font-semibold text-slate-800">{row.action}</td><td className="px-5 py-4 text-slate-500">{fmtDateTime(row.ts)}</td><td className="px-5 py-4 text-slate-600">{row.user_name}</td><td className="px-5 py-4"><Badge tone="green">{row.status}</Badge></td></tr>)}</tbody></table>{r.activity.length === 0 && <p className="p-6 text-center text-sm text-slate-500">Belum ada aktivitas.</p>}</div></section>
     </>}
     {big?.evidence.url && <div className="fixed inset-0 z-[70] grid place-items-center bg-slate-950/80 p-4" onClick={() => setEnlarged(null)}><section role="dialog" aria-modal="true" aria-label="Gambar bukti" className="w-full max-w-3xl overflow-hidden rounded-lg bg-white" onClick={(x) => x.stopPropagation()}><div className="flex items-center justify-between gap-3 border-b border-slate-100 p-4"><div><p className="text-sm font-bold text-slate-900">{big.student?.name} · {eventTitle(big)}</p><p className="mt-0.5 text-xs text-slate-500">{fmtTime(big.start_ts)} · hal yang perlu diperiksa pengawas</p></div><button onClick={() => setEnlarged(null)} aria-label="Tutup"><Icon name="close" /></button></div><img src={api.reportFrameSrc(big.evidence.url)} alt={`Gambar bukti ${big.student?.name}`} onError={onImageError} className="max-h-[75vh] w-full bg-slate-900 object-contain" /></section></div>}
@@ -1098,7 +1236,7 @@ function MyExams({ go }: { go: (s: Screen) => void }) {
   const { setExamId } = useSel();
   const list = usePoll(() => api.exams(), [], 15000);
   const rows = (list.data ?? []).map((e) => ({ ...e, timing: e.status === "Sedang Berlangsung" ? "active" : e.status === "Selesai" ? "ended" : "upcoming" }));
-  return <AppShell active="my-exams" go={go} title="Ujian Saya"><main className="p-4 sm:p-8"><PageTitle title="Ujian Saya" description={`Hanya ujian yang didaftarkan Admin untuk ${user?.name ?? ""} • ${user?.class_name ?? ""}.`} />{list.error && <Notice tone="red">{list.error}</Notice>}<section className="overflow-hidden rounded-md border border-slate-200 bg-white"><div className="overflow-x-auto"><table className="w-full min-w-[900px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3.5">Nama ujian</th><th className="px-5 py-3.5">Tanggal</th><th className="px-5 py-3.5">Jam mulai</th><th className="px-5 py-3.5">Durasi</th><th className="px-5 py-3.5">Status</th><th className="px-5 py-3.5">Aksi</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id} className="border-t border-slate-100"><td className="px-5 py-4 font-semibold text-slate-800">{row.name}</td><td className="px-5 py-4 text-slate-600">{fmtDate(row.date)}</td><td className="px-5 py-4 text-slate-600">{row.start_time.replace(":", ".")} WIB</td><td className="px-5 py-4 text-slate-600">{row.duration_min} menit</td><td className="px-5 py-4"><Badge tone={row.timing === "ended" ? "green" : row.timing === "active" ? "blue" : "gray"}>{row.status}</Badge></td><td className="px-5 py-4">{row.timing === "active" ? <Button className="h-9" onClick={() => { setExamId(row.id); go("device"); }}>Mulai Ujian</Button> : <div><Button className="h-9" disabled>Mulai Ujian</Button><p className="mt-1.5 text-[10px] text-slate-400">{row.timing === "upcoming" ? "Aktif saat jadwal dimulai" : "Waktu ujian telah berakhir"}</p></div>}</td></tr>)}</tbody></table>{!list.loading && rows.length === 0 && <p className="p-6 text-center text-sm text-slate-500">Belum ada ujian yang didaftarkan untuk Anda.</p>}</div><div className="border-t border-blue-100 bg-blue-50 p-4 text-xs leading-5 text-blue-800">Akses ujian divalidasi berdasarkan daftar peserta dan status ujian yang ditentukan Admin.</div></section></main></AppShell>;
+  return <AppShell active="my-exams" go={go} title="Ujian Saya"><main className="p-4 sm:p-8"><PageTitle title="Ujian Saya" description={`Hanya ujian yang didaftarkan Admin untuk ${user?.name ?? ""} • ${user?.class_name ?? ""}.`} />{list.error && <Notice tone="red">{list.error}</Notice>}<section className="overflow-hidden rounded-md border border-slate-200 bg-white"><div className="overflow-x-auto"><table className="w-full min-w-[900px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3.5">Nama ujian</th><th className="px-5 py-3.5">Tanggal</th><th className="px-5 py-3.5">Jam mulai</th><th className="px-5 py-3.5">Durasi</th><th className="px-5 py-3.5">Status</th><th className="px-5 py-3.5">Aksi</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id} className="border-t border-slate-100"><td className="px-5 py-4 font-semibold text-slate-800">{row.name}</td><td className="px-5 py-4 text-slate-600">{fmtDate(row.date)}</td><td className="px-5 py-4 text-slate-600">{row.start_time.replace(":", ".")} WIB</td><td className="px-5 py-4 text-slate-600">{row.duration_min} menit</td><td className="px-5 py-4"><Badge tone={row.timing === "ended" ? "green" : row.timing === "active" ? "blue" : "gray"}>{row.status}</Badge></td><td className="px-5 py-4">{row.timing === "active" ? <Button className="h-9" onClick={() => { setExamId(row.id); go(row.seb?.required ? "seb-check" : "device"); }}>Mulai Ujian</Button> : <div><Button className="h-9" disabled>Mulai Ujian</Button><p className="mt-1.5 text-[10px] text-slate-400">{row.timing === "upcoming" ? "Aktif saat jadwal dimulai" : "Waktu ujian telah berakhir"}</p></div>}</td></tr>)}</tbody></table>{!list.loading && rows.length === 0 && <p className="p-6 text-center text-sm text-slate-500">Belum ada ujian yang didaftarkan untuk Anda.</p>}</div><div className="border-t border-blue-100 bg-blue-50 p-4 text-xs leading-5 text-blue-800">Akses ujian divalidasi berdasarkan daftar peserta dan status ujian yang ditentukan Admin.</div></section></main></AppShell>;
 }
 
 function InstitutionDashboard({ go, role }: { go: (s: Screen) => void; role: "Penyelenggara Ujian" | "Pihak Sekolah" }) {
@@ -1282,10 +1420,10 @@ function AuditPage({ go }: { go: (s: Screen) => void }) {
   return <AppShell active="audit" go={go} title="Audit Log"><main className="p-4 sm:p-8"><PageTitle title="Audit Log" description="Jejak aktivitas sistem bersifat hanya-baca dan tidak dapat dihapus melalui aplikasi." />{list.error && <Notice tone="red">{list.error}</Notice>}<section className="overflow-hidden rounded-md border border-slate-200 bg-white"><div className="grid gap-3 border-b border-slate-100 p-4 md:grid-cols-4"><div className="relative md:col-span-2"><span className="absolute left-3 top-2.5 text-slate-400"><Icon name="search" size={17} /></span><input value={q} onChange={(e) => setQ(e.target.value)} className="h-10 w-full rounded-md border border-slate-200 pl-9 pr-3 text-sm" placeholder="Cari user atau aktivitas" /></div><select value={roleF} onChange={(e) => setRoleF(e.target.value)} className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm"><option>Semua role</option>{["siswa", "pengawas", "penyelenggara", "admin", "sekolah", "sistem"].map((r) => <option key={r} value={r}>{r}</option>)}</select></div><div className="overflow-x-auto"><table className="w-full min-w-[1060px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr>{["User", "Role", "Waktu", "Aktivitas", "Data yang diakses", "Status"].map((head) => <th key={head} className="px-5 py-3.5">{head}</th>)}</tr></thead><tbody>{rows.map((row) => <tr key={row.id} className="border-t border-slate-100">{[row.user_name, row.role, fmtDateTime(row.ts), row.action, row.target, row.status].map((cell, index) => <td key={index} className={`px-5 py-4 ${index === 0 ? "font-semibold text-slate-800" : "text-slate-600"}`}>{index === 5 ? <Badge tone="green">{cell}</Badge> : cell}</td>)}</tr>)}</tbody></table></div></section></main></AppShell>;
 }
 
-function JitsiVideo({ track, mirror = false }: { track: JitsiTrack | undefined; mirror?: boolean }) {
+function JitsiVideo({ track, mirror = false, className = "" }: { track: JitsiTrack | undefined; mirror?: boolean; className?: string }) {
   const ref = useJitsiTrack<HTMLVideoElement>(track);
   // Stay mounted while muted: the track is attached once per element, so remounting would leave it blank.
-  return <video ref={ref} muted playsInline autoPlay className={`absolute inset-0 size-full object-cover ${mirror ? "-scale-x-100" : ""} ${!track || track.isMuted() ? "invisible" : ""}`} />;
+  return <video ref={ref} muted playsInline autoPlay className={`absolute inset-0 size-full object-cover ${className} ${mirror ? "-scale-x-100" : ""} ${!track || track.isMuted() ? "invisible" : ""}`} />;
 }
 
 function JitsiAudio({ track }: { track: JitsiTrack }) {
@@ -1309,19 +1447,38 @@ function MeetingPage({ go }: { go: (s: Screen) => void }) {
   const [input, setInput] = useState("eduai-ruang-rapat");
   const [room, setRoom] = useState<string | null>(null);
   const server = usePoll(() => api.jitsiConfig(), []);
-  const jitsi = useJitsiRoom(room, user?.name ?? "Pengguna EduAI", server.data);
+  const health = usePoll(() => api.jitsiHealth(), []);
+  const { role } = useRole();
+  const [token, setToken] = useState<{ room: string; token: string | null } | null>(null);
+  const [joinError, setJoinError] = useState("");
+  const jitsi = useJitsiRoom(token ? token.room : null, user?.name ?? "Pengguna EduAI", server.data, { token: token?.token ?? null });
   const { status, error, localTracks, participants, toggle } = jitsi;
   const muted = (type: "audio" | "video") => localTracks.find((t) => t.getType() === type)?.isMuted() ?? true;
-  const join = (e: FormEvent) => { e.preventDefault(); const r = jitsiRoomName(input); if (r) setRoom(r); };
+  const join = async (e: FormEvent) => {
+    e.preventDefault();
+    const r = jitsiRoomName(input);
+    if (!r) return;
+    setJoinError("");
+    try { setToken(await api.jitsiMeetingToken(r)); setRoom(r); } catch (x) { setJoinError((x as Error).message); }
+  };
+  const leave = () => { setRoom(null); setToken(null); };
+  const h = health.data;
+  const unavailable = !h ? null : h.state === "ready" ? null
+    : role === "Admin" ? <Notice tone={h.state === "unreachable" ? "red" : "amber"}><p className="font-semibold">{h.state === "unreachable" ? "Server Jitsi tidak terjangkau." : "Server Jitsi belum diisi."}</p>
+        {h.detail && <p className="mt-1 font-mono text-xs">{h.detail}</p>}
+        {!!h.missing?.length && <><p className="mt-2">Isi di backend/.env lalu mulai ulang backend:</p><ul className="mt-1 font-mono text-xs">{h.missing.map((k) => <li key={k}>{k}={h.examples?.[k] ?? ""}</li>)}</ul></>}
+        <p className="mt-2 text-xs">Server pengembangan: lihat dev/jitsi/README.md.</p></Notice>
+    : <Notice>Rapat Video belum tersedia. Hubungi admin.</Notice>;
   return <AppShell active="meeting" go={go} title="Rapat Video"><main className="mx-auto max-w-7xl p-4 sm:p-8">
-    <PageTitle eyebrow="Jitsi Meet" title="Rapat Video" description={`Konferensi video lewat lib-jitsi-meet${server.data?.domain ? ` di server ${server.data.domain}` : ""}. Terpisah dari pemantauan ujian; tidak dianalisis AI dan tidak direkam.`} />
-    {server.error ? <Notice tone="red">Pengaturan Jitsi tidak dapat dimuat: {server.error}</Notice>
-      : !server.data ? <p role="status" className="text-sm text-slate-500">Memuat pengaturan Jitsi...</p>
-      : !server.data.configured ? <Notice>Rapat Video belum dapat dipakai karena server Jitsi belum dikonfigurasi. Admin perlu mengisi EDUAI_JITSI_DOMAIN di backend/.env, lalu memulai ulang backend.</Notice>
-      : !room ? <form onSubmit={join} className="max-w-lg rounded-md border border-slate-200 bg-white p-6">
+    <PageTitle eyebrow="Jitsi Meet" title="Rapat Video" description={`Konferensi video lewat lib-jitsi-meet${role === "Admin" && server.data?.domain ? ` di server ${server.data.domain}` : ""}. Terpisah dari pemantauan ujian; tidak dianalisis AI dan tidak direkam.`} />
+    {server.error || health.error ? <Notice tone="red">{role === "Admin" ? `Pengaturan Jitsi tidak dapat dimuat: ${server.error || health.error}` : "Rapat Video belum tersedia. Hubungi admin."}</Notice>
+      : !server.data || !h ? <p role="status" className="text-sm text-slate-500">Memeriksa server Jitsi...</p>
+      : unavailable ? unavailable
+      : !room ? <form onSubmit={(e) => void join(e)} className="max-w-lg rounded-md border border-slate-200 bg-white p-6">
       <label className="block text-sm font-semibold text-slate-700" htmlFor="jitsi-room">Nama ruang</label>
       <input id="jitsi-room" value={input} onChange={(e) => setInput(e.target.value)} className="mt-2 h-11 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" />
       <p className="mt-2 text-xs text-slate-500">Nama ruang: <span className="font-mono">{jitsiRoomName(input) || "—"}</span>. Siapa pun yang mengetahui nama ini dapat bergabung.</p>
+      {joinError && <div className="mt-3"><Notice tone="red">{joinError}</Notice></div>}
       <Button type="submit" icon="video" className="mt-5" disabled={!jitsiRoomName(input)}>Gabung</Button>
     </form> : <>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-200 bg-white px-4 py-3">
@@ -1329,7 +1486,7 @@ function MeetingPage({ go }: { go: (s: Screen) => void }) {
         <div className="flex gap-2">
           <Button variant="secondary" icon="mic" disabled={!localTracks.some((t) => t.getType() === "audio")} onClick={() => void toggle("audio")}>{muted("audio") ? "Nyalakan mik" : "Matikan mik"}</Button>
           <Button variant="secondary" icon="camera" disabled={!localTracks.some((t) => t.getType() === "video")} onClick={() => void toggle("video")}>{muted("video") ? "Nyalakan kamera" : "Matikan kamera"}</Button>
-          <Button onClick={() => setRoom(null)}>Keluar rapat</Button>
+          <Button onClick={leave}>Keluar rapat</Button>
         </div>
       </div>
       {error && <div className="mb-4"><Notice tone={status === "error" ? "red" : "amber"}>{error}</Notice></div>}
@@ -1428,10 +1585,10 @@ export default function App() {
   const notify = useIndicationNotifications(user);
   useEffect(() => { setUnauthorizedHandler(() => { setUser(null); setScreen("login"); }); }, []);
   const allowed: Record<Role, Screen[]> = {
-    Siswa: ["login", "dashboard", "my-exams", "consent", "device", "exam", "meeting", "settings", "access-denied"],
+    Siswa: ["login", "dashboard", "my-exams", "seb-check", "consent", "device", "exam", "meeting", "settings", "access-denied"],
     Pengawas: ["login", "dashboard", "sessions", "exam-detail", "waiting", "monitor", "student-detail", "detail", "timeline", "report", "indications", "history", "students", "meeting", "settings", "access-denied"],
     "Penyelenggara Ujian": ["login", "dashboard", "sessions", "exam-detail", "waiting", "monitor", "student-detail", "detail", "timeline", "report", "indications", "history", "students", "users", "meeting", "settings", "access-denied"],
-    Admin: ["login", "dashboard", "sessions", "create", "exam-detail", "waiting", "consent", "device", "exam", "monitor", "student-detail", "detail", "timeline", "report", "indications", "history", "students", "users", "permissions", "configuration", "retention", "audit", "meeting", "settings", "access-denied"],
+    Admin: ["login", "dashboard", "sessions", "create", "exam-detail", "waiting", "seb-check", "consent", "device", "exam", "monitor", "student-detail", "detail", "timeline", "report", "indications", "history", "students", "users", "permissions", "configuration", "retention", "audit", "meeting", "settings", "access-denied"],
     "Pihak Sekolah": ["login", "dashboard", "sessions", "exam-detail", "detail", "report", "indications", "history", "meeting", "settings", "access-denied"],
   };
   const go = (next: Screen) => {
@@ -1450,6 +1607,7 @@ export default function App() {
   else if (screen === "waiting") page = <WaitingRoom go={go} />;
   else if (screen === "consent") page = <Consent go={go} />;
   else if (screen === "device") page = <Device go={go} />;
+  else if (screen === "seb-check") page = <SebCheck go={go} />;
   else if (screen === "exam") page = <ExamRoom go={go} />;
   else if (screen === "monitor") page = <Monitoring go={go} />;
   else if (screen === "student-detail") page = <StudentMonitoringDetail go={go} />;

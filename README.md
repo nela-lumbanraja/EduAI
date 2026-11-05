@@ -20,7 +20,9 @@ AI **hanya memberi indikasi** untuk ditinjau pengawas; video yang tidak dapat di
 | Deteksi wajah (BlazeFace) | Diuji dengan inferensi nyata |
 | Arah kepala (Face Landmarker), ponsel (EfficientDet-Lite0) | Kode siap, **belum diuji** dengan model nyata (berkas tidak dapat diunduh di lingkungan pengembangan) |
 | OpenVidu: video langsung ke pengawas & worker AI di ruang | **Diuji end-to-end dengan server LiveKit 1.9.1 (media server OpenVidu 3) di Linux**: siswa publish, pengawas melihat video LIVE, worker menerima frame → indikasi + evidence → dasbor, berhenti bersih (juga bila worker dimatikan paksa). **Paket Docker OpenVidu dan Windows belum diuji.** |
-| Analisis suara (opsional, `OTHER_VOICE`) | YAMNet berjalan di browser siswa (hanya skor dikirim, tidak ada audio); diuji E2E dengan mikrofon palsu Chromium. **Belum diuji dengan mikrofon & wajah sungguhan; ambang sementara.** |
+| Analisis suara (opsional, `OTHER_VOICE`) | YAMNet berjalan di browser siswa (hanya skor dikirim, tidak ada audio), pada sumber **Browser dan Jitsi**. Diuji E2E dengan mikrofon palsu Chromium (sumber Jitsi: suara TTS Windows). **Belum diuji dengan mikrofon & wajah sungguhan; ambang sementara.** **Mode worker OpenVidu: belum ada analisis suara**, karena relay skor ke worker dari paket `EduAI-arsitektur-AI.zip` belum diport. |
+| Jenis suara | Setiap kejadian suara diberi label dari skor YAMNet dan gerak mulut: MUSIK/MEDIA (info), BISIKAN (indikasi), BICARA_MULUT_DIAM (`OTHER_VOICE`, indikasi), BICARA_SISWA (selalu info). Skor speech/whisper/media tampil di Detail Evidence dan laporan. Semua ambang dan kategori ada di `config.yaml`, **belum dikalibrasi**. **Tidak ada pengenalan suara orang dan tidak ada penghitungan jumlah pembicara** (alasannya di `docs/API.md`). Diuji E2E dengan rekaman musik sintetis, suara TTS, dan wajah dengan mulut yang digambar membuka-menutup. **Belum diuji dengan suara dan wajah sungguhan.** "Whispering" YAMNet bernilai 0 pada bisikan sintetis, jadi BISIKAN baru teruji di tingkat aturan. |
+| Buku (`BOOK_VISIBLE`) | Kelas COCO `book` dari EfficientDet-Lite0 yang sama dengan ponsel. Skor ≥0,5 selama ≥3 dtk; pop-up setelah 3 episode per jam; dapat dimatikan di `config.yaml`. Aturannya diuji dengan tes. **Belum divalidasi dengan buku di depan webcam**: COCO dilatih dengan buku di rak/meja, dan uji webcam pertama membaca buku sebagai ponsel (skor 64%). |
 | Pengelompokan kasus & notifikasi | Indikasi berulang digabung per kasus (jeda ≤120 dtk), pop-up hanya untuk kasus baru; diuji |
 | Rapat Video (Jitsi Meet, `lib-jitsi-meet`) | Halaman terpisah dari pemantauan ujian dan tidak punya jalur ke AI; diuji E2E di Windows dengan Chrome, dua pengguna, kamera palsu, dan server uji publik. **Belum diuji dengan kamera sungguhan atau server Jitsi sendiri.** |
 | Mode ujian Jitsi | Sumber analisis `jitsi`: frame masuk ke endpoint dan pipeline yang sama dengan kamera browser. Diuji dengan tes backend dan di Chrome memakai **Jitsi tiruan**. **Belum pernah dijalankan dengan server Jitsi sungguhan.** |
@@ -150,22 +152,38 @@ Pengawas memilih sumber saat menekan **Mulai AI** di halaman Monitoring. Pilihan
 | OpenVidu | `livekit` | Worker AI di ruang OpenVidu | `LIVEKIT_*` |
 | Jitsi | `jitsi` | Kamera siswa ke endpoint yang sama dengan Browser | `EDUAI_JITSI_DOMAIN` |
 
-Tombol **Mulai Pemantauan Ujian** di Ruang Tunggu Ujian memakai sumber bawaan `EDUAI_ANALYSIS_SOURCE`; pilihan sumber hanya ada di Monitoring.
+Tombol **Mulai Pemantauan Ujian** di Ruang Tunggu Ujian memakai sumber bawaan `EDUAI_ANALYSIS_SOURCE`; pilihan sumber hanya ada di Monitoring. `EDUAI_ANALYSIS_SOURCE` hanya menerima `browser` atau `livekit`; nilai lain, termasuk `jitsi`, dibaca sebagai `browser`. Mode Jitsi dipilih per ujian di Monitoring. Tombolnya menunjukkan sumber yang akan dikirim (misalnya **Mulai AI · Jitsi**). Bila sumber yang dipakai server berbeda dari pilihan, Monitoring menampilkan peringatan.
+
+**Satu siaran, yaitu yang dianalisis AI.** Halaman ruang ujian membuka kamera satu kali. Track itu dipakai untuk pratinjau siswa, frame AI, dan siaran ke pengawas, sehingga evidence berasal dari kamera yang sama dengan yang ditonton pengawas.
+
+| Sumber AI | Siaran siswa | Video di Monitoring dan halaman pantau siswa |
+|---|---|---|
+| Jitsi (pemantauan aktif) | Hanya Jitsi; backend tidak memberi token OpenVidu (`monitoring.livekit = null`) | Hanya Jitsi; pengawas tidak membuka OpenVidu |
+| OpenVidu, Browser, atau AI belum aktif | Hanya OpenVidu (bila `LIVEKIT_*` terisi); tidak ada ruang Jitsi | Hanya OpenVidu |
+
+Token mengikuti `GET /session-state` (tiap 5 detik), jadi saat pengawas mengganti sumber, siaran siswa ikut berpindah tanpa masuk ulang. Kamera tetap hidup selama perpindahan.
 
 ## 7b. Jitsi Meet (Rapat Video dan mode ujian)
 
-Tidak ada server Jitsi bawaan di kode. Isi di `backend\.env`, lalu mulai ulang backend:
+Tidak ada server Jitsi bawaan di kode. Untuk pengembangan, jalankan server lokal di `dev\jitsi\` (docker-jitsi-meet resmi; lihat `dev\jitsi\README.md`). Lalu isi `backend\.env` dan mulai ulang backend:
 
 ```
-EDUAI_JITSI_DOMAIN=alpha.jitsi.net      # contoh untuk pengembangan: server uji publik pihak ketiga
-EDUAI_JITSI_OPERATOR=                   # isi school HANYA jika server itu dikelola sekolah
-EDUAI_JITSI_MUC=                        # opsional, bawaan conference.<domain>
-EDUAI_JITSI_SERVICE_URL=                # opsional, bawaan wss://<domain>/xmpp-websocket
+EDUAI_JITSI_DOMAIN=localhost:8443       # host[:port] web Jitsi; kosong = Rapat Video dan sumber Jitsi mati
+EDUAI_JITSI_XMPP_DOMAIN=meet.jitsi      # domain XMPP; bawaan: domain tanpa port (server publik). docker-jitsi-meet: meet.jitsi
+EDUAI_JITSI_MUC=muc.meet.jitsi          # bawaan conference.<domain XMPP>
+EDUAI_JITSI_SERVICE_URL=                # bawaan wss://<domain>/xmpp-websocket
+EDUAI_JITSI_APP_ID=eduai                # issuer/audience JWT yang diterima server
+EDUAI_JITSI_APP_SECRET=                 # rahasia JWT yang sama dengan server Jitsi; kosong = tanpa token (server terbuka)
+EDUAI_JITSI_OPERATOR=dev                # school HANYA jika server itu dikelola sekolah
 ```
 
-Bila kosong, Rapat Video menampilkan pesan "belum dikonfigurasi" dan opsi Jitsi di Monitoring nonaktif. Frontend membaca pengaturan ini dari `GET /api/jitsi/config`; tidak ada lagi variabel `VITE_JITSI_*`.
+Bila `EDUAI_JITSI_APP_SECRET` terisi, backend menandatangani token untuk setiap orang yang bergabung, dan server menolak siapa pun tanpa token yang sah. Setiap token hanya membuka satu ruang. Tanpa rahasia ini, server bersifat terbuka: siapa pun yang tahu nama ruang bisa bergabung.
 
-**Mode ujian.** Bila pengawas memilih Jitsi, siswa yang sudah memberi persetujuan bergabung ke ruang ujian yang namanya dibuat server (HMAC dari `exam_id`, sulit ditebak). Hanya video yang dikirim ke Jitsi, tanpa audio, dan ruang ujian tidak menampilkan peserta lain. Pengawas tidak melihat video langsung; Monitoring menampilkan status AI, indikasi, dan evidence. Analisis suara `OTHER_VOICE` nonaktif di mode ini.
+**Pengecekan kesehatan.** `GET /api/jitsi/health` mengembalikan `not_configured`, `unreachable`, atau `ready` (diperiksa ke `https://<domain>/libs/lib-jitsi-meet.min.js`, batas waktu 2,5 detik, disimpan 15 detik). Di Rapat Video, admin melihat variabel yang kosong beserta contoh nilainya, atau alasan teknis server tidak terjangkau. Peran lain hanya melihat "Rapat Video belum tersedia. Hubungi admin."
+
+**Mode ujian.** Bila pengawas memilih Jitsi, setiap siswa yang sudah memberi persetujuan masuk ke **ruangnya sendiri** (`eduai-exam-` + HMAC dari ujian dan siswa). Token siswa hanya membuka ruang itu, jadi siswa tidak pernah menerima video siswa lain. Server Jitsi menolak percobaan itu (`notAllowed`), dan ini sudah diuji dengan server nyata. Hanya video yang dikirim, tanpa audio. Ruang ujian memakai kamera yang sudah dibuka halaman (salinan track), jadi kamera tidak dibuka dua kali.
+
+**Video langsung untuk pengawas.** Pengawas yang ditugaskan di ujian itu, dan admin, menerima video kamera siswa di Monitoring. Monitoring bergabung ke setiap ruang siswa tanpa kamera dan mikrofon, lewat `GET /api/exams/{id}/jitsi/watch`. Penyelenggara, pihak sekolah, siswa lain, dan pengawas ujian lain ditolak (403), dan penolakannya dicatat di audit. Video langsung **tidak direkam**: tidak ada Jibri, dan opsi rekaman, streaming, serta transkripsi dimatikan di server dan di token. Yang disimpan tetap hanya evidence sesuai aturan retensi. Analisis suara `OTHER_VOICE` nonaktif di mode ini.
 
 **Bila ada gangguan:**
 
@@ -175,9 +193,15 @@ Bila kosong, Rapat Video menampilkan pesan "belum dikonfigurasi" dan opsi Jitsi 
 | Track mati atau kamera dimatikan | Status **Tidak dapat dianalisis**, bukan indikasi. |
 | Frame berhenti masuk (browser tertutup, jaringan putus) | Status **Tidak dapat dianalisis** setelah ±8 detik. Tanpa heartbeat, pemeriksaan server berjalan tiap 30 detik. |
 
-**Rapat Video** tersedia untuk semua peran dan terpisah dari ujian: tidak dianalisis AI, tidak direkam, dan tidak mengirim frame. Halaman ini hanya meminta pengaturan server ke backend, dan `frontend\tests\meetingIsolation.test.ts` menjaganya.
+**Rapat Video** tersedia untuk semua peran dan terpisah dari ujian: tidak dianalisis AI, tidak direkam, dan tidak mengirim frame. Token rapat diminta lewat `POST /api/jitsi/meeting-token`, yang menolak nama ruang ujian. `frontend\tests\meetingIsolation.test.ts` menjaga bahwa halaman ini tidak punya jalur ke analisis.
 
-**Batasan:** sumber `jitsi` berlaku per ujian, bukan per siswa. Status koneksi dan kamera dilaporkan browser siswa; server hanya dapat memverifikasi apakah frame masih masuk. Ruang belum memakai token, jadi di server tanpa JWT siapa pun yang tahu nama ruang dapat bergabung. Pakai server Jitsi sendiri untuk siswa: di server uji publik, video peserta melewati pihak ketiga dan ketersediaannya tidak dijamin.
+**Batasan:**
+- Sumber `jitsi` berlaku per ujian, bukan per siswa.
+- Status koneksi dan kamera dilaporkan browser siswa; server hanya dapat memverifikasi apakah frame masih masuk.
+- Monitoring membuka satu koneksi per siswa. Dengan banyak siswa, beban browser pengawas naik, dan ini belum diuji di atas 2 siswa.
+- Pakai server Jitsi sendiri untuk siswa. Di server uji publik, video peserta melewati pihak ketiga dan ketersediaannya tidak dijamin.
+
+**Troubleshooting:** lihat tabel di `dev\jitsi\README.md` (sertifikat belum diterima, `passwordRequired`, video hitam karena UDP 10000 atau `JVB_ADVERTISE_IPS`, `videobridgeNotAvailable`).
 
 ### Teks persetujuan siswa
 
@@ -187,11 +211,20 @@ Bila kosong, Rapat Video menampilkan pesan "belum dikonfigurasi" dan opsi Jitsi 
 
 Bila `EDUAI_JITSI_DOMAIN` terisi, ditambahkan satu kalimat: "Bila ujian memakai Jitsi, video kamera melewati server Jitsi yang dikelola sekolah." bila `EDUAI_JITSI_OPERATOR=school`; selain itu "...server Jitsi pihak ketiga (domain), bukan server milik sekolah." Kalimat "hanya dapat dibuka oleh pengawas yang ditugaskan dan admin" kini ditegakkan backend: `GET /api/evidence/...`, URL gambar laporan, dan gambar di PDF memakai satu pemeriksaan izin. Penyelenggara dan pihak sekolah tetap melihat laporan, status validasi, dan catatan, dengan keterangan "Gambar bukti hanya untuk pengawas dan admin". Percobaan yang ditolak dan pencabutan akses per peran dicatat di audit log tanpa mengubah baris lama. Domain tidak dapat membuktikan pemilik server, jadi `EDUAI_JITSI_OPERATOR` wajib diisi dengan benar. Masa simpan di teks ini tertulis tetap; bila pengaturan retensi diubah, ubah juga teksnya.
 
-Menu **Rapat Video** tersedia untuk semua peran: isi nama ruang, klik **Gabung**, lalu izinkan kamera dan mikrofon. `lib-jitsi-meet` dimuat dari server Jitsi itu sendiri (`https://<domain>/libs/lib-jitsi-meet.min.js`), jadi versinya selalu cocok dengan server dan tidak ada dependensi npm tambahan. Rapat ini terpisah dari pemantauan ujian: tidak dianalisis AI dan tidak direkam EduAI.
+**Belum sesuai kode:** teks ini belum menyebut bahwa pengawas yang ditugaskan dapat melihat video kamera siswa secara langsung. Usulan redaksi baru menunggu persetujuan dan belum dipasang.
 
-Server diatur di backend lewat `EDUAI_JITSI_DOMAIN` (lihat bagian pengaturan Jitsi di atas); tidak ada lagi pengaturan Jitsi di frontend.
+Menu **Rapat Video** tersedia untuk semua peran: isi nama ruang, klik **Gabung**, lalu izinkan kamera dan mikrofon. `lib-jitsi-meet` dimuat dari server Jitsi itu sendiri (`https://<domain>/libs/lib-jitsi-meet.min.js`), jadi versinya selalu cocok dengan server dan tidak ada dependensi npm tambahan. Bila kamera tidak dapat dibuka lewat Jitsi (ukuran tidak didukung), halaman membukanya langsung lalu menyerahkannya ke Jitsi.
 
-**Sebelum dipakai sungguhan:** `alpha.jitsi.net` hanya contoh untuk pengembangan. Server itu adalah server uji publik milik pihak ketiga, jadi video dan suara peserta melewatinya, ketersediaannya tidak dijamin, dan siapa pun yang tahu nama ruang dapat bergabung (belum ada token atau kontrol akses). Pakai server Jitsi sendiri untuk siswa.
+## 7c. Safe Exam Browser (lockdown browser, per ujian)
+
+Kuncian ujian (layar penuh, tanpa navigasi, tanpa pindah aplikasi, filter URL) dikerjakan oleh **Safe Exam Browser** sesuai konfigurasi `.seb` sekolah. EduAI tidak memakai layar penuh JavaScript sebagai penggantinya. EduAI memeriksa bahwa siswa memakai SEB dengan konfigurasi yang benar, dengan membandingkan hash Config Key / Browser Exam Key dari SEB terhadap kunci yang disimpan di backend.
+
+- **Admin/penyelenggara** mengatur ujian lewat Daftar Ujian → Lihat Detail → **Keamanan ujian**: centang wajib SEB, isi Config Key (dan bila perlu Browser Exam Key), lalu alamat berkas `.seb` bila ada. Kunci hanya disimpan di backend.
+- **Siswa:** **Mulai Ujian** membuka pemeriksaan SEB lebih dulu. Browser biasa atau konfigurasi lain ditolak. `POST /join` juga menolak (403) tanpa pemeriksaan yang lolos dalam 3 menit terakhir, dan ruang ujian memeriksa ulang setiap 60 detik.
+- **Pengawas:** Monitoring menampilkan ringkasan "Keamanan ujian" dan lencana SEB per siswa.
+- `backend\.env`: `EDUAI_SEB_ALLOWED_ORIGINS` adalah alamat halaman ujian sebagaimana dibuka di SEB. Bila kosong, dipakai `EDUAI_CORS_ORIGINS`.
+
+Templat konfigurasi, langkah admin, dan batasan ada di `dev\seb\README.md`. **Belum diuji dengan SEB sungguhan**; uji integrasi meniru SEB di Chrome.
 
 ## 8. Menjalankan tes
 

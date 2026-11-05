@@ -2,7 +2,9 @@
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
@@ -11,10 +13,10 @@ from fastapi.responses import FileResponse
 from . import cases as casing
 from . import jitsi
 from . import report as reporting
-from . import report_export, store, summary
+from . import report_export, seb, store, summary
 from .db import now_iso
 from .livekit_service import make_token, room_name, student_identity
-from .schemas import (ConsentIn, EventsIn, ExamIn, ExamPatch, HeartbeatIn, LoginIn, MonitoringStartIn, NoteIn,
+from .schemas import (ConsentIn, MeetingTokenIn, SebSettingsIn, SebVerifyIn, EventsIn, ExamIn, ExamPatch, HeartbeatIn, LoginIn, MonitoringStartIn, NoteIn,
                       PresenceIn, RegisterIn, ReviewIn, ReviewPatch, CaseReviewIn, StatusIn, AudioScoresIn)
 from .security import (STAFF, create_token, get_current_user, hash_password, public_user, require_roles,
                        require_service_key, verify_password)
@@ -110,6 +112,7 @@ def _exam_out(db, e: dict, user: dict) -> dict:
     out["monitoring_active"] = bool(e["monitoring_active"])
     out["supervisor"] = sup
     out["student_count"] = db.one("SELECT COUNT(*) n FROM exam_students WHERE exam_id=?", (e["id"],))["n"]
+    out["seb"] = seb.public(seb.config(db, e["id"]))       # never the keys
     if user["role"] in STAFF:
         c = db.one("SELECT COUNT(*) total, SUM(review_status IS NULL) unreviewed FROM events"
                    " WHERE exam_id=? AND category='indication'", (e["id"],))
@@ -133,6 +136,11 @@ def _event_out(db, ev: dict, with_detail=False) -> dict:
     out = dict(ev)
     out["student"] = stu
     out["exam"] = exam
+    try:
+        out["details"] = json.loads(ev["details"]) if ev.get("details") else None
+    except ValueError:
+        out["details"] = None
+    out["sound_text"] = store.sound_text(out["details"])
     try:
         s, e = datetime.fromisoformat(ev["start_ts"]), datetime.fromisoformat(ev["end_ts"] or now_iso())
         out["duration_s"] = round((e - s).total_seconds(), 1)
@@ -335,6 +343,7 @@ def exam_students(exam_id: int, request: Request, user=Depends(require_roles(*ST
             else:
                 state = "no_data"                      # no result yet
             row.update({
+                "seb": _seb_row(db, exam_id, s["id"]),
                 "consent": bool(db.one("SELECT 1 FROM consents WHERE exam_id=? AND student_id=?", (exam_id, s["id"]))),
                 "audio": _audio_state(_st(request), exam, s["id"], _audio_consent(db, exam_id, s["id"]),
                                       None if not p else bool(p.get("mic_on"))),
@@ -373,7 +382,8 @@ def student_timeline(exam_id: int, student_id: int, request: Request, user=Depen
     for ev in db.all("SELECT * FROM events WHERE exam_id=? AND student_id=? ORDER BY start_ts", (exam_id, student_id)):
         items.append({"ts": ev["start_ts"], "kind": ev["category"], "title": ev["label"] or ev["indicator"],
                       "event_id": ev["event_id"], "status": ev["status"], "review_status": ev["review_status"],
-                      "reason": ev["reason"], "end_ts": ev["end_ts"], "evidence_id": ev["evidence_id"]})
+                      "reason": ev["reason"], "end_ts": ev["end_ts"], "evidence_id": ev["evidence_id"],
+                      "sound_text": store.sound_text(ev.get("details"))})
     for c in db.all("SELECT ts, state FROM connection_log WHERE exam_id=? AND student_id=?", (exam_id, student_id)):
         items.append({"ts": c["ts"], "kind": "connection",
                       "title": "Koneksi Jitsi terputus" if c["state"] == "disconnected" else "Terhubung ke Jitsi"})
@@ -394,7 +404,153 @@ def jitsi_config(request: Request, user=Depends(get_current_user)):
     return jitsi.client_config(_st(request).settings)
 
 
+JITSI_EXAMPLES = {"EDUAI_JITSI_DOMAIN": "localhost:8443", "EDUAI_JITSI_APP_SECRET": "(JWT_APP_SECRET dari dev/jitsi/.env)"}
+
+
+@router.get("/jitsi/health")
+def jitsi_health(request: Request, user=Depends(get_current_user)):
+    """not_configured / unreachable / ready. Only admins see which variable is missing and why it failed."""
+    h = jitsi.health(_st(request).settings)
+    if user["role"] != "admin":
+        return {"state": h["state"]}
+    return {**h, "examples": {k: JITSI_EXAMPLES[k] for k in h["missing"]}}
+
+
+@router.post("/jitsi/meeting-token")
+def jitsi_meeting_token(body: MeetingTokenIn, request: Request, user=Depends(get_current_user)):
+    """Rapat Video: every signed-in role may join a meeting room. Exam rooms are never opened from here."""
+    st = _st(request)
+    if not st.settings.jitsi_domain:
+        raise HTTPException(409, "Server Jitsi belum dikonfigurasi.")
+    room = body.room
+    if not jitsi.ROOM_RE.match(room):
+        raise HTTPException(422, "Nama ruang hanya boleh huruf kecil, angka, dan tanda hubung.")
+    if jitsi.is_exam_room(room):
+        store.audit(st.db, user, "Ruang ujian Jitsi ditolak di Rapat Video", f"ruang:{room[:20]}", status="Ditolak")
+        raise HTTPException(403, "Ruang ujian tidak dapat dibuka dari Rapat Video.")
+    return {"room": room, "token": jitsi.token(st.settings, user, room)}
+
+
+def _can_watch_video(db, user: dict, exam: dict) -> bool:
+    """Live student video: the supervisor assigned to this exam and admins. Never the organiser, the school or students."""
+    return user["role"] in ("pengawas", "admin") and _can_view(db, user, exam)
+
+
+@router.get("/exams/{exam_id}/jitsi/watch")
+def jitsi_watch(exam_id: int, request: Request, user=Depends(get_current_user)):
+    """One token per consenting student's room, for watching live video in Monitoring. Video is never recorded."""
+    st = _st(request)
+    db = st.db
+    exam = _exam_or_404(db, exam_id)
+    if not _can_watch_video(db, user, exam):
+        if user["role"] != "siswa":
+            store.audit(db, user, "Video langsung siswa ditolak", f"exam:{exam_id}", status="Ditolak")
+        raise HTTPException(403, "Video langsung hanya untuk pengawas yang ditugaskan dan admin.")
+    if not (exam["monitoring_active"] and exam["analysis_source"] == "jitsi" and st.settings.jitsi_domain):
+        return {"server": jitsi.client_config(st.settings), "rooms": []}
+    rows = db.all("SELECT u.id, u.name FROM exam_students s JOIN users u ON u.id=s.student_id"
+                  " JOIN consents c ON c.exam_id=s.exam_id AND c.student_id=s.student_id WHERE s.exam_id=? ORDER BY u.name", (exam_id,))
+    rooms = []
+    for r in rows:
+        room = jitsi.student_room(st.settings, exam_id, r["id"])
+        rooms.append({"student_id": r["id"], "name": r["name"], "room": room, "token": jitsi.token(st.settings, user, room)})
+    target = f"exam:{exam_id} video"
+    since = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(timespec="milliseconds")
+    if not db.one("SELECT 1 FROM audit WHERE user_id=? AND target=? AND ts>?", (user["id"], target, since)):
+        store.audit(db, user, "Melihat video langsung siswa (tidak direkam)", target)
+    return {"server": jitsi.client_config(st.settings), "rooms": rooms}
+
+
 # ---------------------------------------------------------------- student flow
+SEB_EDITORS = ("admin", "penyelenggara")
+
+
+def _seb_row(db, exam_id: int, student_id: int) -> dict:
+    """Supervisor view of one student's SEB check: result, method and age, never the keys."""
+    cfg = seb.config(db, exam_id)
+    st = seb.status(db, exam_id, student_id) if cfg["required"] else None
+    age = _age_s(st["checked_at"]) if st else None
+    return {"required": cfg["required"], "state": st["state"] if st else None, "method": st["method"] if st else None,
+            "version": st["version"] if st else None, "checked_at": st["checked_at"] if st else None,
+            "fresh": bool(st and st["state"] == "verified" and age is not None and age <= seb.FRESH_S)}
+
+
+def _seb_verified(db, exam_id: int, student_id: int) -> bool:
+    st = seb.status(db, exam_id, student_id)
+    return bool(st and st["state"] == "verified" and (_age_s(st["checked_at"]) or 1e9) <= seb.FRESH_S)
+
+
+@router.get("/exams/{exam_id}/seb")
+def get_seb_settings(exam_id: int, request: Request, user=Depends(require_roles(*SEB_EDITORS))):
+    db = _st(request).db
+    _view_exam(db, user, exam_id)
+    cfg = seb.config(db, exam_id)
+    return {**cfg, "ready": seb.ready(cfg), "allowed_origins": _st(request).settings.seb_allowed_origins}
+
+
+@router.put("/exams/{exam_id}/seb")
+def put_seb_settings(exam_id: int, body: SebSettingsIn, request: Request, user=Depends(require_roles(*SEB_EDITORS))):
+    db = _st(request).db
+    _view_exam(db, user, exam_id)
+    try:
+        ck, bek = seb.normalize_keys(body.config_keys), seb.normalize_keys(body.browser_exam_keys)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    if body.required and not (ck or bek):
+        raise HTTPException(422, "Isi minimal satu Config Key atau Browser Exam Key sebelum mewajibkan Safe Exam Browser.")
+    seb.save(db, exam_id, user["id"], body.required, ck, bek, body.config_url.strip())
+    store.audit(db, user, f"Mengubah pengaturan Safe Exam Browser (wajib: {'ya' if body.required else 'tidak'},"
+                f" {len(ck)} Config Key, {len(bek)} Browser Exam Key)", f"exam:{exam_id}")
+    return get_seb_settings(exam_id, request, user)
+
+
+@router.post("/exams/{exam_id}/seb/challenge")
+def seb_challenge(exam_id: int, request: Request, user=Depends(require_roles("siswa"))):
+    db = _st(request).db
+    _view_exam(db, user, exam_id)
+    return {"nonce": seb.new_challenge(db, exam_id, user["id"], time.time()), "ttl_s": seb.CHALLENGE_TTL_S}
+
+
+SEB_MESSAGES = {
+    "verified": "Safe Exam Browser terverifikasi.",
+    "not_seb": "Ujian ini wajib dibuka di Safe Exam Browser. Browser ini bukan Safe Exam Browser.",
+    "key_mismatch": "Konfigurasi Safe Exam Browser tidak sesuai dengan yang ditetapkan untuk ujian ini.",
+    "url_mismatch": "Halaman ujian dibuka dari alamat yang tidak diizinkan untuk Safe Exam Browser.",
+    "not_configured": "Pengaturan Safe Exam Browser untuk ujian ini belum lengkap. Hubungi admin.",
+}
+
+
+@router.post("/exams/{exam_id}/seb/verify")
+def seb_verify(exam_id: int, body: SebVerifyIn, request: Request, user=Depends(require_roles("siswa"))):
+    """The student's browser reports what SEB gave it. Headers are read from this request itself; the
+    nonce in its URL makes the header hashes single use. Expected keys never leave the server."""
+    st = _st(request)
+    db = st.db
+    _view_exam(db, user, exam_id)
+    cfg = seb.config(db, exam_id)
+    if not cfg["required"]:
+        return {"required": False, "state": None, "verified": True, "message": None}
+    if request.query_params.get("n") != body.nonce or not seb.take_challenge(db, body.nonce, exam_id, user["id"], time.time()):
+        raise HTTPException(409, "Kode verifikasi kedaluwarsa atau sudah dipakai. Coba lagi.")
+    # The header hashes cover the URL the browser requested: it must be exactly this request (same path
+    # and nonce), only the origin may differ (the frontend proxies /api to the backend).
+    req_url = body.request_url
+    claimed = urlsplit(req_url)
+    if claimed.path != request.url.path or claimed.query != request.url.query:
+        req_url = ""
+    state, method = seb.evaluate(
+        cfg, page_url=body.page_url, js_config=body.config_key, js_exam=body.browser_exam_key,
+        request_url=req_url, hdr_config=request.headers.get("x-safeexambrowser-configkeyhash"),
+        hdr_exam=request.headers.get("x-safeexambrowser-requesthash"), allowed_origins=st.settings.seb_allowed_origins)
+    prev = seb.record(db, exam_id, user["id"], state, method, body.version)
+    if state != prev:
+        store.audit(db, user, "Safe Exam Browser terverifikasi" if state == "verified"
+                    else f"Verifikasi Safe Exam Browser gagal ({state})", f"exam:{exam_id}",
+                    status="Berhasil" if state == "verified" else "Ditolak")
+    return {"required": True, "state": state, "method": method, "verified": state == "verified",
+            "message": SEB_MESSAGES[state]}
+
+
 @router.post("/exams/{exam_id}/consent")
 def give_consent(exam_id: int, body: ConsentIn, request: Request, user=Depends(require_roles("siswa"))):
     db = _st(request).db
@@ -411,7 +567,7 @@ def give_consent(exam_id: int, body: ConsentIn, request: Request, user=Depends(r
 
 
 def _audio_block(st, exam) -> Optional[str]:
-    """Why speech-sound analysis cannot run for this exam, or None when it can (browser frame path,
+    """Why speech-sound analysis cannot run for this exam, or None when it can (frames from the student's browser: sources browser and jitsi,
     enabled, AI loaded, model file present). Monitoring on/off is checked separately by the callers."""
     voice = ((st.ai.cfg or {}).get("indicators", {}).get("OTHER_VOICE") or {})
     if not st.settings.audio_analysis or not voice.get("enabled", True):
@@ -422,15 +578,13 @@ def _audio_block(st, exam) -> Optional[str]:
         return "model_missing"                 # ai/eduai-ai/models/yamnet.tflite not found
     if exam["analysis_source"] == "livekit":
         return "worker_mode"                   # the OpenVidu worker analyses video only (no audio path)
-    if exam["analysis_source"] == "jitsi":
-        return "jitsi_mode"                    # video only; the audio path stays on browser frames
-    if exam["analysis_source"] != "browser":
+    if exam["analysis_source"] not in ("browser", "jitsi"):
         return "monitoring_off"                # monitoring never started: no analysis mode chosen yet
     return None
 
 
 def _audio_available(st, exam) -> bool:
-    """Speech-sound analysis can run for this exam (browser frame path, enabled, model file present)."""
+    """Speech-sound analysis can run for this exam (browser or Jitsi source, enabled, model file present)."""
     return _audio_block(st, exam) is None
 
 
@@ -453,15 +607,31 @@ def _audio_state(st, exam, student_id: int, consented: bool, mic_on) -> dict:
     return {"consented": consented, "active": active and reason is None, "reason": reason}
 
 
+def _jitsi_mode(st, exam) -> bool:
+    """The exam's live video goes through Jitsi (and only Jitsi) while the AI analyses the Jitsi source."""
+    return bool(exam["monitoring_active"] and exam["analysis_source"] == "jitsi" and st.settings.jitsi_domain)
+
+
+def _student_livekit(st, exam, user) -> Optional[dict]:
+    """OpenVidu publish token for a student, except in Jitsi mode: one camera, one broadcast, the one the AI analyses."""
+    if not st.settings.livekit_configured or _jitsi_mode(st, exam):
+        return None
+    return {"url": st.settings.livekit_public_url, "room": room_name(exam["id"]),
+            "token": make_token(st.settings, student_identity(user["id"]), user["name"], room_name(exam["id"]),
+                                publish=True, subscribe=False)}
+
+
 def _monitoring_info(st, exam, user=None) -> dict:
     cfg = st.ai.cfg or {}
-    consented = bool(user and user["role"] == "siswa" and _audio_consent(st.db, exam["id"], user["id"]))
+    student = bool(user and user["role"] == "siswa")
+    consented = bool(student and _audio_consent(st.db, exam["id"], user["id"]))
     room = None
-    if (user and user["role"] == "siswa" and exam["monitoring_active"] and exam["analysis_source"] == "jitsi"
-            and st.settings.jitsi_domain
+    if (student and _jitsi_mode(st, exam)
             and st.db.one("SELECT 1 FROM consents WHERE exam_id=? AND student_id=?", (exam["id"], user["id"]))):
-        room = {**jitsi.client_config(st.settings), "room": jitsi.exam_room(st.settings, exam["id"])}
+        own = jitsi.student_room(st.settings, exam["id"], user["id"])
+        room = {**jitsi.client_config(st.settings), "room": own, "token": jitsi.token(st.settings, user, own)}
     return {"active": bool(exam["monitoring_active"]), "source": exam["analysis_source"], "jitsi": room,
+            "livekit": _student_livekit(st, exam, user) if student else None,
             "upload_fps": st.settings.upload_fps,
             "max_width": int(cfg.get("sampling", {}).get("work_width", 640)),
             "jpeg_quality": 0.8,
@@ -479,22 +649,28 @@ def join_exam(exam_id: int, request: Request, user=Depends(get_current_user)):
             raise HTTPException(409, "Ujian belum dimulai atau sudah selesai.")
         if not db.one("SELECT 1 FROM consents WHERE exam_id=? AND student_id=?", (exam_id, user["id"])):
             raise HTTPException(409, "Persetujuan perekaman belum diberikan.")
+        if seb.config(db, exam_id)["required"] and not _seb_verified(db, exam_id, user["id"]):
+            store.audit(db, user, "Masuk ruang ujian ditolak: Safe Exam Browser belum terverifikasi", f"exam:{exam_id}",
+                        status="Ditolak")
+            raise HTTPException(403, "Ujian ini wajib dibuka di Safe Exam Browser yang terverifikasi.")
         ts = now_iso()
         db.run("INSERT INTO presence (exam_id,student_id,joined_at,last_seen) VALUES (?,?,?,?)"
                " ON CONFLICT(exam_id,student_id) DO UPDATE SET last_seen=excluded.last_seen, left_at=NULL,"
                " joined_at=COALESCE(presence.joined_at, excluded.joined_at)", (exam_id, user["id"], ts, ts))
         store.audit(db, user, "Masuk ruang ujian", f"exam:{exam_id}")
-        identity, publish, subscribe = student_identity(user["id"]), True, False
+        identity = student_identity(user["id"])
+        lk = _student_livekit(st, exam, user)
     else:
         exam = _monitor_exam(db, user, exam_id)
-        identity, publish, subscribe = f"staff-{user['id']}", False, True
-    lk = None
-    if st.settings.livekit_configured:
-        lk = {"url": st.settings.livekit_public_url, "room": room_name(exam_id),
-              "token": make_token(st.settings, identity, user["name"], room_name(exam_id),
-                                  publish=publish, subscribe=subscribe)}
+        identity = f"staff-{user['id']}"
+        lk = None
+        if st.settings.livekit_configured and not _jitsi_mode(st, exam):
+            lk = {"url": st.settings.livekit_public_url, "room": room_name(exam_id),
+                  "token": make_token(st.settings, identity, user["name"], room_name(exam_id), publish=False, subscribe=True)}
+    reason = None if lk else ("Mode Jitsi: video langsung lewat Jitsi" if st.settings.livekit_configured
+                              else "OpenVidu/LiveKit belum dikonfigurasi di backend")
     return {"exam": _exam_out(db, exam, user), "identity": identity, "livekit": lk,
-            "livekit_reason": None if lk else "OpenVidu/LiveKit belum dikonfigurasi di backend",
+            "livekit_reason": reason,
             "monitoring": _monitoring_info(st, exam, user)}
 
 
@@ -695,7 +871,7 @@ def monitoring_state(exam_id: int, request: Request, user=Depends(require_roles(
 # ---------------------------------------------------------------- events & reviews
 @router.get("/exams/{exam_id}/events")
 def exam_events(exam_id: int, request: Request, student_id: Optional[int] = None,
-                category: Optional[str] = Query(default=None, pattern="^(indication|cannot_analyze)$"),
+                category: Optional[str] = Query(default=None, pattern="^(indication|cannot_analyze|info)$"),
                 since: Optional[str] = None, review: Optional[str] = None, limit: int = 200,
                 user=Depends(require_roles(*STAFF))):
     db = _st(request).db
@@ -705,7 +881,7 @@ def exam_events(exam_id: int, request: Request, student_id: Optional[int] = None
 
 
 @router.get("/events")
-def all_events(request: Request, category: Optional[str] = Query(default=None, pattern="^(indication|cannot_analyze)$"),
+def all_events(request: Request, category: Optional[str] = Query(default=None, pattern="^(indication|cannot_analyze|info)$"),
                since: Optional[str] = None, review: Optional[str] = None, limit: int = 200,
                user=Depends(require_roles(*STAFF))):
     """Events from every exam the user may see. Used for notifications and the Indikasi page."""
@@ -971,6 +1147,17 @@ def _report_rows(db, user, exam_id: int):
     return rows, db.all("SELECT start_ts, end_ts FROM events WHERE exam_id=? AND category='cannot_analyze'", (exam_id,))
 
 
+def _sound_info(db, exam_id: int) -> List[dict]:
+    """Sound events recorded as info (not indications): how often, how long. No evidence images exist for them."""
+    out = []
+    for r in db.all("SELECT indicator, label, COUNT(*) n, SUM(CASE WHEN end_ts IS NOT NULL THEN"
+                    " (julianday(end_ts) - julianday(start_ts)) * 86400 ELSE 0 END) secs FROM events"
+                    " WHERE exam_id=? AND category='info' GROUP BY indicator, label ORDER BY indicator", (exam_id,)):
+        out.append({"indicator": r["indicator"], "label": r["label"] or r["indicator"], "count": r["n"],
+                    "total_s": round(r["secs"] or 0, 1)})
+    return out
+
+
 def _report_event(st, user, ev: dict, final) -> dict:
     out = _event_out(st.db, ev)
     state = reporting.evidence_state(st, ev, final)
@@ -993,6 +1180,7 @@ def _report_data(st, user, exam: dict) -> dict:
             "absent": [u["name"] for u in enrolled if u["id"] not in joined],
             "indications": _report_summary(rows, cannot),
             "events": [_report_event(st, user, r, final) for r in rows],
+            "sound_info": _sound_info(db, exam_id),
             "final": {"finalized_at": final["finalized_at"], "finalized_by": final["finalized_by_name"]} if final else None,
             "can_edit": user["role"] in REPORT_EDITORS and not final,
             "can_view_evidence": _can_open_evidence(db, user, exam),

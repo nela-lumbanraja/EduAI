@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  EduAI: TEMPLATE for a Safe Exam Browser exam configuration. Not a finished .seb file.
+  1. Open it in the SEB Config Tool (Windows) or SEB Preferences (macOS) via "Open Settings...".
+  2. Check every option below in the tool, set a quit password (Exam / General pane), and adjust the
+     addresses for your server (startURL and URL filter).
+  3. Save it as an encrypted .seb file ("Starting an exam"); then copy the Config Key shown by the tool
+     into EduAI: Detail Ujian > Keamanan ujian.
+  Setting key names follow the SEB settings documentation and have NOT been checked with a real SEB yet;
+  the Config Tool ignores keys it does not know, so review the result in the tool before using it.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- the EduAI frontend; students log in and press "Mulai Ujian" there -->
+  <key>startURL</key><string>http://localhost:5173/</string>
+  <key>sebConfigPurpose</key><integer>0</integer>
+
+  <!-- EduAI checks the Config Key / Browser Exam Key (headers and JavaScript API) -->
+  <key>sendBrowserExamKey</key><true/>
+
+  <!-- full screen, no toolbar or address bar, no new windows -->
+  <key>browserViewMode</key><integer>1</integer>
+  <key>enableBrowserWindowToolbar</key><false/>
+  <key>newBrowserWindowByLinkPolicy</key><integer>0</integer>
+  <key>newBrowserWindowByScriptPolicy</key><integer>0</integer>
+
+  <!-- camera (AI monitoring) and microphone (optional speech analysis) must stay allowed -->
+  <key>allowVideoCapture</key><true/>
+  <key>allowAudioCapture</key><true/>
+
+  <!-- no switching to other applications, no system shortcuts -->
+  <key>allowSwitchToApplications</key><false/>
+  <key>enableAppSwitcherCheck</key><true/>
+  <key>enableAltTab</key><false/>
+  <key>enableAltF4</key><false/>
+  <key>enableEsc</key><false/>
+  <key>enableCtrlEsc</key><false/>
+  <key>enableStartMenu</key><false/>
+  <key>enableRightMouse</key><false/>
+  <key>enablePrintScreen</key><false/>
+  <key>allowVirtualMachine</key><false/>
+  <key>killExplorerShell</key><false/>
+  <key>createNewDesktop</key><true/>
+
+  <!-- leaving: only with the quit password set in the Config Tool -->
+  <key>allowQuit</key><true/>
+
+  <!-- only the EduAI frontend (and the school's Jitsi server, if used) may be loaded -->
+  <key>URLFilterEnable</key><true/>
+  <key>URLFilterEnableContentFilter</key><false/>
+  <key>URLFilterRules</key>
+  <array>
+    <dict>
+      <key>active</key><true/><key>regex</key><false/><key>action</key><integer>1</integer>
+      <key>expression</key><string>localhost:5173</string>
+    </dict>
+    <dict>
+      <key>active</key><false/><key>regex</key><false/><key>action</key><integer>1</integer>
+      <key>expression</key><string>localhost:8443</string>
+    </dict>
+  </array>
+</dict>
+</plist>

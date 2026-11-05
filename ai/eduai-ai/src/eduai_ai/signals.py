@@ -24,6 +24,7 @@ class FrameSignals:
     yaw: Optional[float] = None              # degrees, main face
     pitch: Optional[float] = None            # degrees, main face
     phone_score: Optional[float] = None      # None when the detector did not run
+    book_score: Optional[float] = None       # max COCO "book" score; None when the detector did not run
     person_count: Optional[int] = None       # None when the detector did not run
     jaw_open: Optional[float] = None         # 0-1 "jawOpen" blendshape of the main face (mouth movement)
     metrics: dict = field(default_factory=dict)  # brightness, sharpness, ... (no image data)

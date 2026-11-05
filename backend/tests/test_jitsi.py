@@ -87,6 +87,7 @@ def test_room_is_only_given_to_enrolled_students_with_consent(client):
     hs, hp = start(client)
     joined = client.get("/api/exams/1/session-state", headers=hs).json()["monitoring"]["jitsi"]
     assert joined["domain"] == "jitsi.sekolah.test" and joined["room"].startswith("eduai-exam-") and len(joined["room"]) == 35
+    assert joined["token"] is None                           # no EDUAI_JITSI_APP_SECRET: an open server, no tokens
     assert client.get("/api/exams/1/session-state", headers=login(client, "siswa2@gmail.com")).json()["monitoring"]["jitsi"] is None
     assert client.post("/api/exams/1/join", headers=hp).json()["monitoring"]["jitsi"] is None
     assert joined["muc"] == "conference.jitsi.sekolah.test" and joined["service_url"] == "wss://jitsi.sekolah.test/xmpp-websocket"
@@ -145,14 +146,16 @@ def test_jitsi_source_needs_a_configured_server(tmp_path, monkeypatch):
         r = c.post("/api/exams/1/monitoring/start", headers=hp, json={"source": "jitsi"})
         assert r.status_code == 409 and "EDUAI_JITSI_DOMAIN" in r.json()["detail"]
         assert c.get("/api/exams/1/monitoring", headers=hp).json()["active"] is False
-        assert c.get("/api/jitsi/config", headers=hp).json() == {"configured": False, "domain": None, "operator": None, "muc": None, "service_url": None}
+        assert c.get("/api/jitsi/config", headers=hp).json() == {"configured": False, "domain": None, "operator": None, "xmpp_domain": None,
+                                                                 "muc": None, "service_url": None, "auth": False}
 
 
 def test_custom_server_settings(tmp_path, monkeypatch):
     env = {**DOMAIN, "EDUAI_JITSI_MUC": "muc.lain.test", "EDUAI_JITSI_SERVICE_URL": "wss://ws.lain.test/x"}
     with TestClient(build(tmp_path, monkeypatch, **env)) as c:
         cfg = c.get("/api/jitsi/config", headers=login(c, "siswa1@gmail.com")).json()
-        assert cfg == {"configured": True, "domain": "jitsi.sekolah.test", "operator": "third_party", "muc": "muc.lain.test", "service_url": "wss://ws.lain.test/x"}
+        assert cfg == {"configured": True, "domain": "jitsi.sekolah.test", "operator": "third_party", "xmpp_domain": "jitsi.sekolah.test",
+                       "muc": "muc.lain.test", "service_url": "wss://ws.lain.test/x", "auth": False}
 
 
 @pytest.mark.parametrize("value,expected", [("school", "school"), ("SCHOOL", "school"), ("", "third_party"), ("sekolah", "third_party")])
@@ -316,7 +319,161 @@ def test_stop_monitoring_closes_events_with_the_jitsi_source(client):
     assert client.app.state.db.one("SELECT source FROM ai_status")["source"] == "jitsi"
 
 
-def test_audio_analysis_stays_off_in_jitsi_mode(client):
-    hs, hp = start(client)
+def test_audio_without_consent_stays_off_in_jitsi_mode(client):
+    hs, hp = start(client)                                              # consent without audio
     audio = client.get("/api/exams/1/session-state", headers=hs).json()["monitoring"]["audio"]
-    assert audio["available"] is False and audio["reason"] == "jitsi_mode"
+    assert audio["consented"] is False
+    assert client.post("/api/exams/1/audio", headers=hs, json={"speech": 0.9, "whisper": 0.0, "media": 0.0}).status_code == 403
+    assert student(client, hp)["audio"]["reason"] == "not_consented"
+
+
+# ------------------------------------------------------------------ real server: tokens, one room per student, live video
+import jwt as pyjwt                                         # noqa: E402
+
+SECRET = "s" * 48
+REAL = {"EDUAI_JITSI_DOMAIN": "localhost:8443", "EDUAI_JITSI_XMPP_DOMAIN": "meet.jitsi", "EDUAI_JITSI_MUC": "muc.meet.jitsi",
+        "EDUAI_JITSI_APP_SECRET": SECRET}
+
+
+@pytest.fixture
+def real(tmp_path, monkeypatch):
+    with TestClient(build(tmp_path, monkeypatch, **REAL)) as c:
+        yield c
+
+
+def claims(token):
+    return pyjwt.decode(token, SECRET, algorithms=["HS256"], audience="eduai")
+
+
+def two_students(c):
+    """siswa1 and siswa2 enrolled in exam 1 and consenting; monitoring on Jitsi."""
+    db = c.app.state.db
+    if not db.one("SELECT 1 FROM exam_students WHERE exam_id=1 AND student_id=?", (uid(c, "siswa2@gmail.com"),)):
+        db.run("INSERT INTO exam_students (exam_id, student_id) VALUES (1, ?)", (uid(c, "siswa2@gmail.com"),))
+    hs1, hs2, hp = (login(c, f"{u}@gmail.com") for u in ("siswa1", "siswa2", "pengawas1"))
+    for h in (hs1, hs2):
+        assert c.post("/api/exams/1/consent", headers=h, json={"accepted": True}).status_code == 200
+        c.post("/api/exams/1/join", headers=h)
+    assert c.post("/api/exams/1/monitoring/start", headers=hp, json={"source": "jitsi"}).status_code == 200
+    return hs1, hs2, hp
+
+
+def test_config_for_a_docker_server(real):
+    cfg = real.get("/api/jitsi/config", headers=login(real, "siswa1@gmail.com")).json()
+    assert cfg["xmpp_domain"] == "meet.jitsi" and cfg["muc"] == "muc.meet.jitsi" and cfg["auth"] is True
+    assert cfg["service_url"] == "wss://localhost:8443/xmpp-websocket" and SECRET not in str(cfg)
+
+
+def test_each_student_gets_only_their_own_room(real):
+    hs1, hs2, _ = two_students(real)
+    m1 = real.get("/api/exams/1/session-state", headers=hs1).json()["monitoring"]["jitsi"]
+    m2 = real.get("/api/exams/1/session-state", headers=hs2).json()["monitoring"]["jitsi"]
+    assert m1["room"] != m2["room"]
+    c1, c2 = claims(m1["token"]), claims(m2["token"])
+    assert c1["room"] == m1["room"] and c2["room"] == m2["room"]       # a token opens exactly one room, never "*"
+    assert c1["sub"] == "meet.jitsi" and c1["iss"] == "eduai" and c1["context"]["user"]["id"] == str(uid(real, "siswa1@gmail.com"))
+    assert c1["context"]["features"]["recording"] is False and c1["moderator"] is False
+
+
+def test_live_video_only_for_assigned_supervisor_and_admin(real):
+    two_students(real)
+    rooms = {}
+    for who in ("pengawas1", "admin1"):
+        r = real.get("/api/exams/1/jitsi/watch", headers=login(real, f"{who}@gmail.com"))
+        assert r.status_code == 200, who
+        rooms[who] = r.json()["rooms"]
+        assert {x["student_id"] for x in rooms[who]} == {uid(real, "siswa1@gmail.com"), uid(real, "siswa2@gmail.com")}
+        for x in rooms[who]:
+            assert claims(x["token"])["room"] == x["room"]
+    own = real.get("/api/exams/1/session-state", headers=login(real, "siswa1@gmail.com")).json()["monitoring"]["jitsi"]["room"]
+    assert own in {x["room"] for x in rooms["pengawas1"]}            # the supervisor watches the room the student is in
+    for who in ("penyelenggara1", "sekolah1", "pengawas2", "siswa1", "siswa2"):
+        assert real.get("/api/exams/1/jitsi/watch", headers=login(real, f"{who}@gmail.com")).status_code == 403, who
+    denied = real.app.state.db.all("SELECT role FROM audit WHERE action='Video langsung siswa ditolak'")
+    assert sorted(r["role"] for r in denied) == ["pengawas", "penyelenggara", "sekolah"]
+    assert real.app.state.db.one("SELECT 1 FROM audit WHERE action LIKE 'Melihat video langsung%' AND role='pengawas'")
+
+
+def test_watch_lists_only_consenting_students_and_nothing_when_off(real):
+    hp = login(real, "pengawas1@gmail.com")
+    assert real.get("/api/exams/1/jitsi/watch", headers=hp).json()["rooms"] == []      # monitoring not started
+    hs = login(real, "siswa1@gmail.com")
+    real.post("/api/exams/1/consent", headers=hs, json={"accepted": True})
+    real.post("/api/exams/1/monitoring/start", headers=hp, json={"source": "jitsi"})
+    assert [x["student_id"] for x in real.get("/api/exams/1/jitsi/watch", headers=hp).json()["rooms"]] == [uid(real, "siswa1@gmail.com")]
+
+
+def test_meeting_tokens_for_every_role_never_for_exam_rooms(real):
+    for who in ("siswa1", "pengawas1", "penyelenggara1", "admin1", "sekolah1"):
+        h = login(real, f"{who}@gmail.com")
+        r = real.post("/api/jitsi/meeting-token", headers=h, json={"room": "rapat-guru"})
+        assert r.status_code == 200 and claims(r.json()["token"])["room"] == "rapat-guru", who
+        assert real.post("/api/jitsi/meeting-token", headers=h, json={"room": "eduai-exam-0123456789abcdef01234567"}).status_code == 403, who
+    h = login(real, "admin1@gmail.com")
+    assert real.post("/api/jitsi/meeting-token", headers=h, json={"room": "Ruang Rapat!"}).status_code == 422
+    assert real.post("/api/jitsi/meeting-token", json={"room": "rapat-guru"}).status_code == 401
+    assert real.app.state.ai.entries == {}                              # a meeting never reaches the AI
+
+
+def test_health_states_and_who_sees_details(tmp_path, monkeypatch):
+    from app import jitsi
+    jitsi._cache.clear()
+    with TestClient(build(tmp_path, monkeypatch, EDUAI_JITSI_DOMAIN="")) as c:
+        assert c.get("/api/jitsi/health", headers=login(c, "siswa1@gmail.com")).json() == {"state": "not_configured"}
+        a = c.get("/api/jitsi/health", headers=login(c, "admin1@gmail.com")).json()
+        assert a["state"] == "not_configured" and "EDUAI_JITSI_DOMAIN" in a["missing"] and a["examples"]["EDUAI_JITSI_DOMAIN"]
+    monkeypatch.setattr(jitsi, "_probe", lambda d: "URLError: refused (https://x/libs/lib-jitsi-meet.min.js)")
+    jitsi._cache.clear()
+    with TestClient(build(tmp_path, monkeypatch, **REAL)) as c:
+        for who in ("siswa1", "penyelenggara1", "pengawas1", "sekolah1"):
+            assert c.get("/api/jitsi/health", headers=login(c, f"{who}@gmail.com")).json() == {"state": "unreachable"}, who
+        a = c.get("/api/jitsi/health", headers=login(c, "admin1@gmail.com")).json()
+        assert a["state"] == "unreachable" and "refused" in a["detail"] and a["missing"] == []
+    monkeypatch.setattr(jitsi, "_probe", lambda d: None)
+    jitsi._cache.clear()
+    with TestClient(build(tmp_path, monkeypatch, **REAL)) as c:
+        assert c.get("/api/jitsi/health", headers=login(c, "siswa1@gmail.com")).json() == {"state": "ready"}
+
+
+def test_health_probe_is_fast_against_a_dead_address():
+    import time as _t
+    from app import jitsi
+    t0 = _t.monotonic()
+    assert jitsi._probe("127.0.0.1:9") is not None                     # nothing listens on port 9
+    assert _t.monotonic() - t0 < jitsi.TIMEOUT_S + 1
+
+
+# ------------------------------------------------------------------ one broadcast: the one the AI analyses
+LK = {"LIVEKIT_URL": "ws://localhost:7880", "LIVEKIT_API_KEY": "devkey", "LIVEKIT_API_SECRET": "secret-for-tests-only-0123456789"}
+
+
+def test_jitsi_mode_has_no_openvidu_broadcast(tmp_path, monkeypatch):
+    """OpenVidu configured too: in Jitsi mode nobody gets an OpenVidu token, the student gets only the Jitsi room;
+    outside Jitsi mode the student gets only OpenVidu. The token follows the poll, so a switch needs no rejoin."""
+    with TestClient(build(tmp_path, monkeypatch, **DOMAIN, **LK)) as c:
+        hs, hp = login(c, "siswa1@gmail.com"), login(c, "pengawas1@gmail.com")
+        c.post("/api/exams/1/consent", headers=hs, json={"accepted": True})
+        j = c.post("/api/exams/1/join", headers=hs).json()
+        assert j["livekit"] and j["monitoring"]["livekit"] and j["monitoring"]["jitsi"] is None      # AI off: OpenVidu
+        c.post("/api/exams/1/monitoring/start", headers=hp, json={"source": "jitsi"})
+        m = c.get("/api/exams/1/session-state", headers=hs).json()["monitoring"]
+        assert m["jitsi"]["room"] and m["livekit"] is None
+        j = c.post("/api/exams/1/join", headers=hs).json()
+        assert j["livekit"] is None and j["monitoring"]["livekit"] is None and "Jitsi" in j["livekit_reason"]
+        staff = c.post("/api/exams/1/join", headers=hp).json()
+        assert staff["livekit"] is None                                    # supervisor does not open OpenVidu either
+        assert len(c.get("/api/exams/1/jitsi/watch", headers=hp).json()["rooms"]) == 1
+        c.post("/api/exams/1/monitoring/stop", headers=hp)
+        c.post("/api/exams/1/monitoring/start", headers=hp, json={"source": "browser"})
+        m = c.get("/api/exams/1/session-state", headers=hs).json()["monitoring"]
+        assert m["jitsi"] is None and m["livekit"]["room"] == "eduai-exam-1"
+        claims = pyjwt.decode(m["livekit"]["token"], LK["LIVEKIT_API_SECRET"], algorithms=["HS256"])
+        assert claims["sub"] == f"student-{uid(c, 'siswa1@gmail.com')}" and claims["video"]["canPublish"] and not claims["video"]["canSubscribe"]
+        assert c.post("/api/exams/1/join", headers=hp).json()["livekit"]
+        assert c.get("/api/exams/1/jitsi/watch", headers=hp).json()["rooms"] == []
+
+
+def test_staff_never_get_openvidu_token_in_monitoring_info(tmp_path, monkeypatch):
+    with TestClient(build(tmp_path, monkeypatch, **DOMAIN, **LK)) as c:
+        hp = login(c, "pengawas1@gmail.com")
+        assert c.post("/api/exams/1/join", headers=hp).json()["monitoring"]["livekit"] is None

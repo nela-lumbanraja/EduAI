@@ -28,10 +28,23 @@ from .db import now_iso
 log = logging.getLogger("eduai.summary")
 PRE_END_MIN = 10
 
-# Behaviours from the product requirements that the AI cannot detect yet (no model). Listed in the
-# summary so a missing count is not mistaken for "not observed".
-UNSUPPORTED = [{"behavior": "Buku/referensi tidak sah", "reason": "Belum ada model deteksi buku di modul AI.",
-                "rule": "3 episode dalam 1 jam (rencana)"}]
+# Behaviours from the product requirements that the AI cannot detect in this configuration. Listed in
+# the summary so a missing count is not mistaken for "not observed". Filled by configure_detectors().
+BOOK_OFF = {"behavior": "Buku/referensi tidak sah",
+            "reason": "Indikator BOOK_VISIBLE dimatikan atau detektor objek tidak dimuat di konfigurasi AI.",
+            "rule": "3 episode dalam 1 jam"}
+UNSUPPORTED = [dict(BOOK_OFF)]
+
+
+def configure_detectors(cfg: dict) -> list:
+    """Book counts are only meaningful when BOOK_VISIBLE and the object detector are both enabled."""
+    ind = (cfg or {}).get("indicators") or {}
+    od = ((cfg or {}).get("models") or {}).get("object_detector") or {}
+    book_on = bool((ind.get("BOOK_VISIBLE") or {}).get("enabled")) and od.get("enabled", True) is not False
+    UNSUPPORTED.clear()
+    if not book_on:
+        UNSUPPORTED.append(dict(BOOK_OFF))
+    return UNSUPPORTED
 
 
 def _tz(name: str):
