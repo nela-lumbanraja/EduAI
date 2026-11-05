@@ -1,14 +1,12 @@
 // Camera / microphone handling, OpenVidu (LiveKit protocol) connection and the
 // fallback frame uploader. Nothing here touches API secrets: the room token comes
-// from the backend (/api/exams/{id}/join) and is valid for one room only.
+// from the backend (join / session-state) and is valid for one room only.
 import { useEffect, useRef, useState } from "react";
-import { Room, RoomEvent, Track, VideoPresets, type RemoteTrack, type RemoteParticipant } from "livekit-client";
-import { api, type JoinInfo, type MonitoringInfo } from "./api";
+import { Room, RoomEvent, Track, type RemoteTrack, type RemoteParticipant } from "livekit-client";
+import { api, type MonitoringInfo } from "./api";
 
 export type StudentMedia = {
-  stream: MediaStream;               // what the student's own preview and the frame uploader read
-  room: Room | null;                 // set when published to OpenVidu
-  livekitError: string | null;
+  stream: MediaStream;               // the one capture: preview, frame uploader and live broadcast
   setCamera: (on: boolean) => Promise<void>;
   setMic: (on: boolean) => Promise<void>;
   cameraOn: () => boolean;
@@ -27,49 +25,14 @@ export function mediaErrorMessage(e: unknown): string {
   return "Kamera/mikrofon tidak dapat dibuka.";
 }
 
-/** Open camera+mic and, when the backend returned an OpenVidu token, publish them to the exam room. */
-export async function startStudentMedia(join: JoinInfo): Promise<StudentMedia> {
-  if (join.livekit) {
-    const room = new Room({ adaptiveStream: false, dynacast: true });
-    try {
-      await room.connect(join.livekit.url, join.livekit.token);
-      await room.localParticipant.setCameraEnabled(true, { resolution: VideoPresets.h540.resolution });
-      await room.localParticipant.setMicrophoneEnabled(true);
-      const streamFromRoom = () => {
-        const tracks: MediaStreamTrack[] = [];
-        const v = room.localParticipant.getTrackPublication(Track.Source.Camera)?.track?.mediaStreamTrack;
-        const a = room.localParticipant.getTrackPublication(Track.Source.Microphone)?.track?.mediaStreamTrack;
-        if (v) tracks.push(v);
-        if (a) tracks.push(a);
-        return new MediaStream(tracks);
-      };
-      const media: StudentMedia = {
-        stream: streamFromRoom(), room, livekitError: null,
-        setCamera: async (on) => { await room.localParticipant.setCameraEnabled(on); media.stream = streamFromRoom(); },
-        setMic: async (on) => { await room.localParticipant.setMicrophoneEnabled(on); },
-        cameraOn: () => room.localParticipant.isCameraEnabled,
-        micOn: () => room.localParticipant.isMicrophoneEnabled,
-        stop: async () => { await room.disconnect(); },
-      };
-      return media;
-    } catch (e) {
-      await room.disconnect().catch(() => undefined);
-      const local = await startLocalMedia();
-      local.livekitError = `Tidak dapat terhubung ke OpenVidu (${(e as Error).message || "koneksi gagal"}). Pengawas tidak dapat melihat video langsung.`;
-      return local;
-    }
-  }
-  const local = await startLocalMedia();
-  local.livekitError = join.livekit_reason;
-  return local;
-}
-
-async function startLocalMedia(): Promise<StudentMedia> {
+/** Open camera+mic once. The preview, the AI frames and the live broadcast (OpenVidu or Jitsi) all use these tracks,
+ *  so what the supervisor watches and what the AI analyses come from the same capture. */
+export async function startStudentMedia(): Promise<StudentMedia> {
   const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO, audio: true });
   const v = () => stream.getVideoTracks()[0];
   const a = () => stream.getAudioTracks()[0];
   return {
-    stream, room: null, livekitError: null,
+    stream,
     setCamera: async (on) => { if (v()) v().enabled = on; },
     setMic: async (on) => { if (a()) a().enabled = on; },
     cameraOn: () => !!v() && v().enabled && v().readyState === "live",
@@ -77,6 +40,58 @@ async function startLocalMedia(): Promise<StudentMedia> {
     stop: async () => { stream.getTracks().forEach((t) => t.stop()); },
   };
 }
+
+export type LiveKitTicket = { url: string; room: string; token: string };
+
+/**
+ * Student broadcast to OpenVidu while `ticket` is set; the backend withholds it in Jitsi mode, so a student is on one
+ * broadcast only. Publishes the page's own tracks (never a second capture) and leaves them running when it stops:
+ * they still feed the preview, the AI frames and Jitsi. A fresh token comes with every poll; only a room change reconnects.
+ */
+export function useOpenViduBroadcast(ticket: LiveKitTicket | null, stream: MediaStream | null, camOn: boolean, micOn: boolean) {
+  const ticketRef = useRef(ticket);
+  useEffect(() => { ticketRef.current = ticket; });
+  const key = ticket && stream ? `${ticket.url}|${ticket.room}` : null;
+  const [state, setState] = useState<{ connected: boolean; error: string | null }>({ connected: false, error: null });
+  const [started, setStarted] = useState<string | null>(null);
+  if (key !== started) { setStarted(key); setState({ connected: false, error: null }); }
+  const roomRef = useRef<Room | null>(null);
+
+  useEffect(() => {
+    const t = ticketRef.current;
+    if (!key || !t || !stream) return;
+    let cancelled = false;
+    const room = new Room({ adaptiveStream: false, dynacast: true, stopLocalTrackOnUnpublish: false });
+    room.on(RoomEvent.Disconnected, () => { if (!cancelled) setState({ connected: false, error: "Terputus dari OpenVidu." }); });
+    (async () => {
+      try {
+        await room.connect(t.url, t.token);
+        const v = stream.getVideoTracks()[0], a = stream.getAudioTracks()[0];
+        if (!cancelled && v) await room.localParticipant.publishTrack(v, { source: Track.Source.Camera });
+        if (!cancelled && a) await room.localParticipant.publishTrack(a, { source: Track.Source.Microphone });
+        if (cancelled) return;
+        roomRef.current = room;
+        setState({ connected: true, error: null });
+      } catch (e) {
+        if (!cancelled) setState({ connected: false, error: `Tidak dapat terhubung ke OpenVidu (${(e as Error).message || "koneksi gagal"}).` });
+      }
+    })();
+    return () => { cancelled = true; roomRef.current = null; void room.disconnect(false); };
+  }, [key, stream]);
+
+  // Camera/mic off: mute the publication too, so OpenVidu and the AI worker see a muted track, not black frames.
+  useEffect(() => {
+    const room = roomRef.current;
+    if (!room || !state.connected) return;
+    for (const [source, on] of [[Track.Source.Camera, camOn], [Track.Source.Microphone, micOn]] as const) {
+      const t = room.localParticipant.getTrackPublication(source)?.track;
+      if (t && t.isMuted === on) void (on ? t.unmute() : t.mute());
+    }
+  }, [camOn, micOn, state.connected]);
+  return state;
+}
+
+type UploadConfig = Pick<MonitoringInfo, "upload_fps" | "max_width" | "jpeg_quality">;
 
 /**
  * Fallback frame path (works without OpenVidu): every 1/upload_fps seconds draw the
@@ -94,7 +109,7 @@ export class FrameUploader {
 
   constructor(private examId: number, private video: HTMLVideoElement, private cameraOn: () => boolean) {}
 
-  start(cfg: MonitoringInfo) {
+  start(cfg: UploadConfig) {
     this.stop();
     const every = Math.max(200, Math.round(1000 / Math.max(0.2, cfg.upload_fps)));
     this.timer = window.setInterval(() => void this.tick(cfg), every);
@@ -108,7 +123,7 @@ export class FrameUploader {
 
   get running() { return this.timer !== null; }
 
-  private async tick(cfg: MonitoringInfo) {
+  private async tick(cfg: UploadConfig) {
     if (this.inFlight) { this.skipped++; return; }
     const v = this.video;
     if (!this.cameraOn() || v.readyState < 2 || !v.videoWidth) return;   // camera off: send nothing

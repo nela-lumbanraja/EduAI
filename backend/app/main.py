@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import cases as casing
-from . import store, summary
+from . import report, store, summary
 from .ai_service import AIManager
 from .api import router
 from .db import Database
@@ -31,9 +31,10 @@ async def _maintenance(app: FastAPI):
         tick += MAINTENANCE_EVERY_S
         try:
             await app.state.ai.reap_idle()
+            await app.state.ai.sweep_silent()
             await asyncio.to_thread(_check_summaries, app)
             if tick % PURGE_EVERY_S == 0:
-                await asyncio.to_thread(store.purge_expired_evidence, app.state.db, app.state.evidence_store)
+                await asyncio.to_thread(report.run_retention, app.state)
         except Exception:                                   # keep the loop alive; never log frame data
             log.exception("maintenance task failed")
 
@@ -58,6 +59,8 @@ def create_app(settings=None, perception_factory=None) -> FastAPI:
         app.state.limiter = LoginLimiter()
         app.state.evidence_store = EvidenceStore(settings.evidence_dir, settings.evidence_retention_hours,
                                                  settings.evidence_key or None)
+        app.state.report_frames = EvidenceStore(settings.report_frames_dir, settings.report_frame_retention_hours,
+                                                settings.evidence_key or None)
         app.state.workers = WorkerManager(settings)
         app.state.ai = AIManager(settings, db, app.state.evidence_store)
         await asyncio.to_thread(app.state.ai.init, perception_factory)
@@ -67,8 +70,10 @@ def create_app(settings=None, perception_factory=None) -> FastAPI:
         db.run("UPDATE exams SET monitoring_active=0")      # worker processes do not survive a restart
         for r in db.all("SELECT DISTINCT exam_id FROM events WHERE source='livekit' AND status='open'"):
             store.close_open_events(db, r["exam_id"], "livekit", " (backend dimulai ulang)")
-        store.purge_expired_evidence(db, app.state.evidence_store)
+        report.run_retention(app.state)
+        report.record_evidence_revocation(db)
         casing.configure_rules((app.state.ai.cfg or {}).get("summary_rules"))
+        summary.configure_detectors(app.state.ai.cfg or {})
         try:
             _check_summaries(app)                        # summaries that fell due while the backend was down
         except Exception:

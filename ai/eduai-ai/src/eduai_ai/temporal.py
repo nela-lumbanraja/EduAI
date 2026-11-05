@@ -10,7 +10,7 @@ import statistics
 from collections import deque
 from typing import List, Optional
 
-from .events import CANNOT_ANALYZE as CAT_CANNOT, INDICATION, INDICATORS, Event
+from .events import CANNOT_ANALYZE as CAT_CANNOT, INDICATION, INDICATORS, INFO, SOUND_OF, Event
 from .headpose import angular_deviation
 from .quality import REASONS
 from .signals import ANALYZED, CANNOT_ANALYZE, MODEL_UNAVAILABLE, FrameSignals
@@ -160,6 +160,11 @@ class Baseline:
             self.yaws, self.pitches = [], []
 
 
+# BOOK_VISIBLE defaults. Off unless config.yaml has a BOOK_VISIBLE section with enabled: true,
+# because COCO "book" is trained on shelves/tables, not on a book held at a webcam (unvalidated).
+BOOK_DEFAULTS = {"enabled": False, "min_score": 0.5, "min_duration_s": 3.0, "release_s": 2.0, "cooldown_s": 60.0}
+
+
 # OTHER_VOICE defaults, used when a config file has no OTHER_VOICE section (older configs keep working).
 VOICE_DEFAULTS = {
     "enabled": True,
@@ -173,6 +178,25 @@ VOICE_DEFAULTS = {
     "min_duration_s": 2.0,
     "release_s": 1.0,
     "cooldown_s": 30.0,
+}
+
+
+# The other sound labels (provisional, uncalibrated). Missing config sections use these values.
+# The mouth counts as moving when its jawOpen range is >= OTHER_VOICE.mouth_still_max (one boundary, no gap).
+SOUND_DEFAULTS = {
+    "WHISPER": {"enabled": True, "category": INDICATION, "whisper_min": 0.20,
+                "min_duration_s": 2.0, "release_s": 1.0, "cooldown_s": 30.0},
+    "MEDIA_SOUND": {"enabled": True, "category": INFO, "media_min": 0.30,
+                    "min_duration_s": 3.0, "release_s": 2.0, "cooldown_s": 60.0},
+    "STUDENT_SPEECH": {"enabled": True, "speech_min": 0.30,
+                       "min_duration_s": 2.0, "release_s": 1.0, "cooldown_s": 60.0},
+}
+SOUND_NAMES = ("OTHER_VOICE", "STUDENT_SPEECH", "WHISPER", "MEDIA_SOUND")
+SOUND_REASONS = {
+    "OTHER_VOICE": "Suara bicara terdengar saat mulut siswa tampak diam",
+    "STUDENT_SPEECH": "Siswa tampak berbicara (suara bicara, mulut bergerak); info, bukan indikasi",
+    "WHISPER": "Suara bisikan terdengar",
+    "MEDIA_SOUND": "Suara musik/media (TV, radio) terdengar",
 }
 
 
@@ -202,9 +226,23 @@ class EventEngine:
         r = ind["HEAD_TURN_REPEATED"]
         self.repeat = RepeatCounter(r["episode_min_s"], r["count"], r["window_s"], r["cooldown_s"])
         self.phone_min_score = ind["PHONE_VISIBLE"]["min_score"]
+        # BOOK_VISIBLE: optional section; a config without it keeps the indicator off.
+        self.book = {**BOOK_DEFAULTS, **(ind.get("BOOK_VISIBLE") or {})}
+        self.trackers["BOOK_VISIBLE"] = SustainedIndicator(
+            self.book["min_duration_s"], self.book["release_s"], self.book["cooldown_s"])
         self.voice = {**VOICE_DEFAULTS, **(ind.get("OTHER_VOICE") or {})}
         self.trackers["OTHER_VOICE"] = SustainedIndicator(
             self.voice["min_duration_s"], self.voice["release_s"], self.voice["cooldown_s"])
+        self.sound = {n: {**d, **(ind.get(n) or {})} for n, d in SOUND_DEFAULTS.items()}
+        self.sound["STUDENT_SPEECH"]["category"] = INFO       # the student's own talking is context, never an indication
+        self.category = {}                                    # indicators not listed here are INDICATION
+        for n, c in self.sound.items():
+            if c["category"] not in (INDICATION, INFO):
+                raise ValueError(f"indicators.{n}.category must be indication or info")
+            self.category[n] = c["category"]
+            self.trackers[n] = SustainedIndicator(c["min_duration_s"], c["release_s"], c["cooldown_s"])
+        self._peaks = {}                    # sound label -> score maxima of the current episode
+        self._mouth = None                  # jawOpen range over the mouth window, None = unknown
         self._audio = None                  # (ts, speech, whisper, media) from the student's device
         self._jaw = deque()                 # (ts, jawOpen) of recent analysed frames
         self.open_events = {}
@@ -218,12 +256,13 @@ class EventEngine:
         return Event(self.session_id, self.student_id, indicator, category, status, start, end,
                      score, reason, config_version=self.config_version)
 
-    def _emit(self, name, outputs, category, reason_fn, score_fn=lambda p: None):
+    def _emit(self, name, outputs, category, reason_fn, score_fn=lambda p: None, details_fn=lambda: None):
         events = []
         for o in outputs:
             if o[0] == "open":
                 _, start, peak = o
                 e = self._event(name, category, "open", start, score=score_fn(peak), reason=reason_fn(peak, None))
+                e.details = details_fn()
                 self.open_events[name] = e
                 events.append(e)
             elif o[0] == "close":
@@ -231,6 +270,7 @@ class EventEngine:
                 opened = self.open_events.pop(name, None)
                 e = self._event(name, category, "closed", start, end, score=score_fn(peak),
                                 reason=reason_fn(peak, end - start))
+                e.details = details_fn()
                 if opened is not None:
                     e.event_id = opened.event_id       # same id: the backend updates the row
                     e.evidence_id = opened.evidence_id
@@ -241,29 +281,56 @@ class EventEngine:
         """Latest speech-sound scores (0-1). Replaced as one tuple, so a frame update never sees half a sample."""
         self._audio = (float(ts), float(speech), float(whisper), float(media))
 
-    def _voice_signal(self, s: FrameSignals, analyzed: bool):
-        """(active, peak) for OTHER_VOICE: speech heard while exactly one face is visible and its mouth is still.
-        None = unknown (no fresh audio, no usable face) -> can close an event but never open one."""
+    def _sound_signals(self, s: FrameSignals, analyzed: bool) -> dict:
+        """(active, peak) per sound label from the latest YAMNet scores and the mouth movement. At most one label is
+        active: media dominant -> MEDIA_SOUND; else whisper dominant -> WHISPER; else speech -> OTHER_VOICE when the
+        mouth is still, STUDENT_SPEECH when it moves. None = unknown (no fresh audio; for speech also no usable face)
+        -> can close an event but never open one. Says what was heard, never who spoke."""
         v = self.voice
         if analyzed and s.face_count == 1 and s.jaw_open is not None:
             self._jaw.append((s.ts, s.jaw_open))
         while self._jaw and s.ts - self._jaw[0][0] > v["mouth_window_s"]:
             self._jaw.popleft()
+        out = {n: (None, None) for n in SOUND_NAMES}
         a = self._audio
-        if not v["enabled"] or a is None or abs(s.ts - a[0]) > v["audio_max_age_s"]:
-            return None, None
-        if not analyzed or s.face_count != 1 or len(self._jaw) < v["mouth_min_samples"]:
-            return None, None
+        self._mouth = None
+        if a is None or abs(s.ts - a[0]) > v["audio_max_age_s"]:
+            return out
         _, speech, whisper, media = a
-        voice = max(speech, whisper)
-        if not (speech >= v["speech_min"] or whisper >= v["whisper_min"]):
-            return False, None
-        if media >= v["media_min"] and media > voice:          # music / TV / radio dominates
-            return False, None
-        jaws = [j for _, j in self._jaw]
-        if max(jaws) - min(jaws) >= v["mouth_still_max"]:      # the student's mouth is moving
-            return False, None
-        return True, voice
+        ws, ms, ss = self.sound["WHISPER"], self.sound["MEDIA_SOUND"], self.sound["STUDENT_SPEECH"]
+        media_dom = media >= ms["media_min"] and media >= max(speech, whisper)
+        whisper_dom = not media_dom and whisper >= ws["whisper_min"] and whisper > speech
+        if ms["enabled"]:
+            out["MEDIA_SOUND"] = (media_dom, media)
+        if ws["enabled"]:
+            out["WHISPER"] = (whisper_dom, whisper)
+        if analyzed and s.face_count == 1 and len(self._jaw) >= v["mouth_min_samples"]:
+            jaws = [j for _, j in self._jaw]
+            self._mouth = max(jaws) - min(jaws)
+            speechy = not media_dom and not whisper_dom
+            still = self._mouth < v["mouth_still_max"]
+            if v["enabled"]:
+                out["OTHER_VOICE"] = (speechy and speech >= v["speech_min"] and still, speech)
+            if ss["enabled"]:
+                out["STUDENT_SPEECH"] = (speechy and speech >= ss["speech_min"] and not still, speech)
+        return out
+
+    def _track_peak(self, name: str, active: Optional[bool]):
+        if active is not True or self._audio is None:
+            return
+        _, speech, whisper, media = self._audio
+        p = self._peaks.setdefault(name, {"speech": 0.0, "whisper": 0.0, "media": 0.0, "mouth_movement": None})
+        p["speech"], p["whisper"], p["media"] = max(p["speech"], speech), max(p["whisper"], whisper), max(p["media"], media)
+        if self._mouth is not None:
+            p["mouth_movement"] = max(p["mouth_movement"] or 0.0, self._mouth)
+
+    def _details(self, name: str) -> Optional[dict]:
+        p = self._peaks.get(name)
+        if p is None:
+            return None
+        return {"sound_type": SOUND_OF[name], "speech": round(p["speech"], 2), "whisper": round(p["whisper"], 2),
+                "media": round(p["media"], 2),
+                "mouth_movement": None if p["mouth_movement"] is None else round(p["mouth_movement"], 3)}
 
     @staticmethod
     def _dur(d):
@@ -326,12 +393,23 @@ class EventEngine:
                 INDICATION, lambda p, d: "Objek menyerupai ponsel terlihat" + self._dur(d),
                 score_fn=lambda p: round(p, 2) if p is not None else None)
 
-        # 5. speech sound while the student's mouth is still (scores come from the student's device; no audio here)
-        voice_active, voice_peak = self._voice_signal(s, analyzed)
-        events += self._emit(
-            "OTHER_VOICE", self.trackers["OTHER_VOICE"].update(s.ts, voice_active, voice_peak), INDICATION,
-            lambda p, d: "Suara bicara terdengar saat mulut siswa tampak diam" + self._dur(d),
-            score_fn=lambda p: round(p, 2) if p is not None else None)
+        # 4b. book-like object visible (same detector pass as the phone; skipped on frames it did not run)
+        if self.book["enabled"] and (s.book_score is not None or not analyzed):
+            book_active = (s.book_score >= self.book["min_score"]) if analyzed and s.book_score is not None else None
+            events += self._emit(
+                "BOOK_VISIBLE", self.trackers["BOOK_VISIBLE"].update(s.ts, book_active, s.book_score),
+                INDICATION, lambda p, d: "Objek menyerupai buku terlihat" + self._dur(d),
+                score_fn=lambda p: round(p, 2) if p is not None else None)
+
+        # 5. sound labels (scores come from the student's device; no audio here)
+        for name, (active, peak) in self._sound_signals(s, analyzed).items():
+            self._track_peak(name, active)
+            events += self._emit(
+                name, self.trackers[name].update(s.ts, active, peak), self.category.get(name, INDICATION),
+                lambda p, d, n=name: SOUND_REASONS[n] + self._dur(d),
+                score_fn=lambda p: round(p, 2) if p is not None else None, details_fn=lambda n=name: self._details(n))
+            if not self.trackers[name].is_open and active is not True:
+                self._peaks.pop(name, None)          # episode over (or never opened): the next one starts fresh
         return events
 
     def flush(self) -> List[Event]:
@@ -340,9 +418,11 @@ class EventEngine:
             return []
         events = []
         for name, tracker in self.trackers.items():
-            cat = CAT_CANNOT if name == "CANNOT_ANALYZE" else INDICATION
+            cat = CAT_CANNOT if name == "CANNOT_ANALYZE" else self.category.get(name, INDICATION)
             events += self._emit(name, tracker.flush(self.last_ts), cat,
-                                 lambda p, d, n=name: INDICATORS[n] + self._dur(d) + " (pemantauan berakhir)")
+                                 lambda p, d, n=name: INDICATORS[n] + self._dur(d) + " (pemantauan berakhir)",
+                                 details_fn=lambda n=name: self._details(n) if n in SOUND_OF else None)
+        self._peaks.clear()
         return events
 
     def analysis_state(self) -> str:
@@ -352,7 +432,8 @@ class EventEngine:
             return STATE_MODEL_UNAVAILABLE
         if self.trackers["CANNOT_ANALYZE"].visible_open or self.last_status == CANNOT_ANALYZE:
             return STATE_CANNOT_ANALYZE
-        if any(t.visible_open for n, t in self.trackers.items() if n != "CANNOT_ANALYZE"):
+        if any(t.visible_open for n, t in self.trackers.items()
+               if n != "CANNOT_ANALYZE" and self.category.get(n, INDICATION) == INDICATION):
             return STATE_INDICATION
         if self.head_pose_enabled and not self.baseline.ready:
             return STATE_WARMING_UP

@@ -46,6 +46,8 @@ DEFAULT_RULES = {
     "HEAD_TURN": {"min_count": 1, "window_s": None},
     # one HEAD_TURN_REPEATED episode = 5 look-aways within 120 s (AI config); 4 such episodes per hour
     "HEAD_TURN_REPEATED": {"min_count": 4, "window_s": 3600.0},
+    "BOOK_VISIBLE": {"min_count": 3, "window_s": 3600.0},
+    "WHISPER": {"min_count": 1, "window_s": None},
 }
 RULES = dict(DEFAULT_RULES)
 

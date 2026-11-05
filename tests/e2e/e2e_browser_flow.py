@@ -18,8 +18,8 @@ BASE = os.environ.get("EDUAI_E2E_URL", "http://localhost:5173")
 
 def login(page, email):
     page.goto(BASE)
-    page.get_by_placeholder("pengawas1@gmail.com").fill(email)
-    page.get_by_placeholder("Minimal 6 karakter").fill("123456")
+    page.get_by_placeholder("contoh: nama@kampus.ac.id").fill(email)
+    page.get_by_placeholder("Masukkan kata sandi").fill("123456")
     page.get_by_role("button", name="Masuk", exact=True).click()
 
 
@@ -55,7 +55,7 @@ def main():
         expect(stu.get_by_text("Stabil")).to_be_visible(timeout=15000)
         shot(stu, "01_student_device_check.png")
         stu.get_by_role("button", name="Lanjut ke Persetujuan").click()
-        expect(stu.get_by_text("maksimal 1 hari (24 jam)")).to_be_visible()
+        expect(stu.get_by_text("paling lama 7 hari setelah ujian selesai")).to_be_visible()
         stu.get_by_role("checkbox").check()
         stu.get_by_role("button", name="Setuju & Masuk Ujian").click()
         expect(stu.get_by_text("Ujian sedang berlangsung")).to_be_visible(timeout=20000)

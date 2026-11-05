@@ -68,10 +68,13 @@ def test_silence_and_quiet_scores_are_not_flagged(cfg):
     assert opened(ev) == []
 
 
-def test_whisper_score_counts(cfg):
+def test_whisper_dominant_is_its_own_label(cfg):
+    """Whisper above the speech score is BISIKAN (WHISPER), no longer counted as OTHER_VOICE."""
     e = EventEngine(cfg, "1", "1")
     ev, _ = play(e, 4, whisper=0.35)
-    assert len(opened(ev)) == 1 and opened(ev)[0].score == 0.35
+    assert opened(ev) == []
+    w = opened(ev, "WHISPER")
+    assert len(w) == 1 and w[0].score == 0.35 and w[0].details["sound_type"] == "BISIKAN"
 
 
 def test_music_or_tv_dominating_is_not_flagged(cfg):

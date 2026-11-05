@@ -1,9 +1,10 @@
 """Request bodies and the AI event contract (mirrors eduai_ai.events.Event.to_dict, schema 1.0)."""
 from typing import List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-INDICATORS = ("FACE_ABSENT", "MULTIPLE_PERSONS", "HEAD_TURN", "HEAD_TURN_REPEATED", "PHONE_VISIBLE", "CANNOT_ANALYZE",
+INDICATORS = ("FACE_ABSENT", "MULTIPLE_PERSONS", "HEAD_TURN", "HEAD_TURN_REPEATED", "PHONE_VISIBLE", "BOOK_VISIBLE", "CANNOT_ANALYZE",
+              "WHISPER", "MEDIA_SOUND", "STUDENT_SPEECH",
               "OTHER_VOICE")
 STATES = ("no_data", "warming_up", "normal", "indication", "cannot_analyze", "model_unavailable")
 
@@ -35,6 +36,24 @@ class ExamPatch(BaseModel):
     status: Optional[Literal["Draft", "Terjadwal", "Sedang Berlangsung", "Selesai"]] = None
 
 
+class SebSettingsIn(BaseModel):
+    """Per-exam Safe Exam Browser requirement. Keys: 64 hex characters each, as shown by the SEB Config Tool."""
+    required: bool
+    config_keys: List[str] = Field(default_factory=list, max_length=20)
+    browser_exam_keys: List[str] = Field(default_factory=list, max_length=20)
+    config_url: str = Field(default="", max_length=500, pattern=r"^(|https?://\S+)$")
+
+
+class SebVerifyIn(BaseModel):
+    """Values read from SEB in the student's browser. None of them is a secret: they are hashes bound to a URL."""
+    nonce: str = Field(min_length=10, max_length=64)
+    page_url: str = Field(default="", max_length=2000)       # location.href of the exam page (JS API hashes)
+    request_url: str = Field(default="", max_length=2000)    # absolute URL of this verify request (header hashes)
+    config_key: Optional[str] = Field(default=None, max_length=64)        # SafeExamBrowser.security.configKey
+    browser_exam_key: Optional[str] = Field(default=None, max_length=64)  # SafeExamBrowser.security.browserExamKey
+    version: Optional[str] = Field(default=None, max_length=120)          # SafeExamBrowser.version
+
+
 class ConsentIn(BaseModel):
     accepted: bool
     notice_version: str = Field(default="2026-10-v1", max_length=40)
@@ -53,15 +72,22 @@ class PresenceIn(BaseModel):
     mic_on: bool
     connection: Literal["baik", "lemah", "terputus"] = "baik"
     rtt_ms: Optional[float] = Field(default=None, ge=0, le=60000)
+    jitsi: Optional[Literal["connected", "disconnected"]] = None   # only read when the exam's source is jitsi
 
 
 class MonitoringStartIn(BaseModel):
-    source: Optional[Literal["browser", "livekit"]] = None
+    source: Optional[Literal["browser", "livekit", "jitsi"]] = None
 
 
 class ReviewIn(BaseModel):
     decision: Literal["Valid", "Tidak Valid", "Perlu Tinjauan Lanjut"]
     note: str = Field(default="", max_length=2000)
+
+
+class ReviewPatch(BaseModel):
+    # Omitted decision = keep the current one (note-only edit on an event that already has a decision).
+    decision: Optional[Literal["Valid", "Tidak Valid", "Perlu Tinjauan Lanjut"]] = None
+    note: Optional[str] = Field(default=None, max_length=2000)
 
 
 class CaseReviewIn(ReviewIn):
@@ -77,12 +103,28 @@ class NoteIn(BaseModel):
     note: str = Field(min_length=1, max_length=2000)
 
 
+# Category allowed per indicator. Sound labels other than OTHER_VOICE may be "info" (context only, no evidence);
+# STUDENT_SPEECH (the student talking) is never an indication.
+EVENT_CATEGORIES = {"CANNOT_ANALYZE": ("cannot_analyze",), "STUDENT_SPEECH": ("info",),
+                    "WHISPER": ("indication", "info"), "MEDIA_SOUND": ("indication", "info")}
+
+
+class SoundDetails(BaseModel):
+    """Peaks of an audio episode: what kind of sound, never who spoke. Scores only, no audio."""
+    model_config = ConfigDict(extra="forbid")
+    sound_type: Literal["BICARA_MULUT_DIAM", "BICARA_SISWA", "BISIKAN", "MUSIK_MEDIA"]
+    speech: float = Field(ge=0, le=1)
+    whisper: float = Field(ge=0, le=1)
+    media: float = Field(ge=0, le=1)
+    mouth_movement: Optional[float] = Field(default=None, ge=0, le=1)
+
+
 class EventIn(BaseModel):
     event_id: str = Field(min_length=8, max_length=64, pattern=r"^[A-Za-z0-9-]+$")
     session_id: str = Field(max_length=64)
     student_id: str = Field(max_length=64)
     indicator: Literal[INDICATORS]
-    category: Literal["indication", "cannot_analyze"]
+    category: Literal["indication", "cannot_analyze", "info"]
     status: Literal["open", "closed"]
     start_ts: Union[str, float]
     end_ts: Optional[Union[str, float]] = None
@@ -93,15 +135,14 @@ class EventIn(BaseModel):
     config_version: str = Field(default="", max_length=64)
     schema_version: str = Field(default="1.0", max_length=16)
     label: Optional[str] = Field(default=None, max_length=120)
+    details: Optional[SoundDetails] = None
 
     @field_validator("category")
     @classmethod
     def _consistent(cls, v, info):
         ind = info.data.get("indicator")
-        if ind == "CANNOT_ANALYZE" and v != "cannot_analyze":
-            raise ValueError("CANNOT_ANALYZE must use category cannot_analyze")
-        if ind and ind != "CANNOT_ANALYZE" and v != "indication":
-            raise ValueError("behaviour indicators must use category indication")
+        if ind and v not in EVENT_CATEGORIES.get(ind, ("indication",)):
+            raise ValueError(f"{ind} must use category {' or '.join(EVENT_CATEGORIES.get(ind, ('indication',)))}")
         return v
 
 
@@ -130,3 +171,7 @@ class HeartbeatIn(BaseModel):
     students: int = 0
     source: str = "livekit"
     worker_id: str = Field(default="", max_length=64)     # EDUAI_WORKER_ID; "" from older workers
+
+
+class MeetingTokenIn(BaseModel):
+    room: str = Field(min_length=1, max_length=64)

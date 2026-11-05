@@ -155,9 +155,19 @@ class EvidenceStore:
             data = self._fernet.decrypt(data)
         return data
 
+    def set_hold(self, evidence_id: str, until: Optional[float]):
+        """Keep a package until `until` (epoch) even past its retention; None removes the hold."""
+        p = self._dir(evidence_id) / "meta.json"
+        if not p.is_file():
+            return
+        info = json.loads(p.read_text(encoding="utf-8"))
+        if info.get("hold_until") != until:
+            info["hold_until"] = until
+            p.write_text(json.dumps(info), encoding="utf-8")
+
     def _expired(self, info: dict, now: float) -> bool:
         # The *current* retention setting applies, so shortening retention also removes older packages.
-        return info.get("created_at", 0) + self.retention_s < now
+        return max(info.get("created_at", 0) + self.retention_s, info.get("hold_until") or 0) < now
 
     def delete(self, evidence_id: str):
         shutil.rmtree(self._dir(evidence_id), ignore_errors=True)

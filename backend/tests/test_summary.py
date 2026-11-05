@@ -254,7 +254,7 @@ def test_summary_content_groups_by_student_and_behaviour_without_fabrication(cli
         ("PHONE_VISIBLE", 3, True), ("HEAD_TURN_REPEATED", 1, False)]
     assert bima["rules_met"] == 1
     assert cici["indications"] == [] and cici["analysis"] == "no_data" and cici["cannot_analyze"]["periods"] == 0
-    assert s["unsupported"][0]["behavior"].startswith("Buku")                 # no book count is invented
+    assert s["unsupported"] == []                    # BOOK_VISIBLE is enabled in the default AI config
     assert "bukan bukti" in s["note"]
 
 
@@ -270,3 +270,13 @@ def test_rules_can_be_overridden_from_config():
         assert casing.rule_for("BAD") == {"min_count": 1, "window_s": None}       # invalid entry ignored
     finally:
         casing.configure_rules(None)
+
+
+def test_book_listed_as_unsupported_when_switched_off():
+    from app import summary
+    assert summary.configure_detectors({"indicators": {"BOOK_VISIBLE": {"enabled": False}}})[0]["behavior"].startswith("Buku")
+    assert summary.configure_detectors({"indicators": {"BOOK_VISIBLE": {"enabled": True}},
+                                        "models": {"object_detector": {"enabled": False}}})[0]["behavior"].startswith("Buku")
+    assert summary.configure_detectors({"indicators": {"BOOK_VISIBLE": {"enabled": True}}}) == []
+    summary.configure_detectors({"indicators": {"BOOK_VISIBLE": {"enabled": True}}})
+
