@@ -47,7 +47,7 @@ def book_frames(t0, seconds, score):
 def test_book_visible_needs_sustained_detection(cfg):
     assert INDICATORS["BOOK_VISIBLE"] == "Objek menyerupai buku terlihat"
     e = EventEngine(cfg, "1", "7")
-    short = feed(e, book_frames(0.0, 2.0, 0.8) + book_frames(2.0, 4.0, 0.1))   # 2 s < min_duration 3 s
+    short = feed(e, book_frames(0.0, 1.0, 0.8) + book_frames(1.0, 4.0, 0.1))   # 1 s < min_duration 1.5 s
     assert [x for x in short if x.indicator == "BOOK_VISIBLE"] == []
     evs = feed(e, book_frames(6.0, 5.0, 0.72) + book_frames(11.0, 4.0, 0.0))
     book = [x for x in evs if x.indicator == "BOOK_VISIBLE"]
@@ -58,7 +58,7 @@ def test_book_visible_needs_sustained_detection(cfg):
 
 def test_book_below_threshold_or_unknown_never_opens(cfg):
     e = EventEngine(cfg, "1", "7")
-    frames = book_frames(0.0, 10.0, 0.49)                                       # min_score 0.5
+    frames = book_frames(0.0, 10.0, 0.34)                                       # min_score 0.35
     frames += [sig(10.0 + i * DT, book=None) for i in range(50)]               # detector not run / not loaded
     frames += [sig(20.0 + i * DT, status=CANNOT_ANALYZE) for i in range(50)]   # bad video
     assert [x for x in feed(e, frames) if x.indicator == "BOOK_VISIBLE"] == []
@@ -68,7 +68,7 @@ def test_book_cooldown_suppresses_repeats(cfg):
     e = EventEngine(cfg, "1", "7")
     evs = []
     t = 0.0
-    for _ in range(3):                                   # 3 episodes 10 s apart, cooldown 60 s
+    for _ in range(3):                                   # 3 episodes 10 s apart, cooldown 30 s
         evs += feed(e, book_frames(t, 4.0, 0.9) + book_frames(t + 4.0, 6.0, 0.0))
         t += 10.0
     assert [x.status for x in evs if x.indicator == "BOOK_VISIBLE"] == ["open", "closed"]
@@ -90,3 +90,12 @@ def test_phone_and_book_are_independent(cfg):
     assert "BOOK_VISIBLE" in names and "PHONE_VISIBLE" not in names
 
 
+
+
+def test_book_is_caught_faster_since_nov_2026(cfg):
+    """Config values requested on 10 Nov 2026: a held/opened book (lower score) is reported after 1.5 s."""
+    b = cfg["indicators"]["BOOK_VISIBLE"]
+    assert (b["min_score"], b["min_duration_s"]) == (0.35, 1.5)
+    e = EventEngine(cfg, "1", "7")
+    evs = feed(e, book_frames(0.0, 3.0, 0.4))            # weak "book" score (held at the webcam), 3 s
+    assert [x.status for x in evs if x.indicator == "BOOK_VISIBLE"] == ["open"]

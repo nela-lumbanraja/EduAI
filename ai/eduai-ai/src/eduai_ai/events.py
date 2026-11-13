@@ -35,6 +35,7 @@ INDICATORS = {
     "WHISPER": "Suara bisikan terdengar",
     "MEDIA_SOUND": "Suara musik/media terdengar",
     "STUDENT_SPEECH": "Siswa berbicara",
+    "BOOK_SOUND": "Suara kertas/halaman buku terdengar",
 }
 
 # What kind of sound an audio event heard, from YAMNet scores + mouth movement. It never says WHO spoke:
@@ -44,9 +45,10 @@ SOUND_TYPES = {
     "BICARA_SISWA": "siswa berbicara (mulut bergerak)",
     "BISIKAN": "bisikan",
     "MUSIK_MEDIA": "musik/media (TV, radio)",
+    "KERTAS_BUKU": "kertas/halaman buku (gemerisik, dibalik, diremas)",
 }
 SOUND_OF = {"OTHER_VOICE": "BICARA_MULUT_DIAM", "STUDENT_SPEECH": "BICARA_SISWA", "WHISPER": "BISIKAN",
-            "MEDIA_SOUND": "MUSIK_MEDIA"}
+            "MEDIA_SOUND": "MUSIK_MEDIA", "BOOK_SOUND": "KERTAS_BUKU"}
 
 SCHEMA_VERSION = "1.0"
 

@@ -219,16 +219,20 @@ def test_jitsi_disconnect_is_a_connection_record_and_analysis_continues(client):
     assert not [i for i in items if i["kind"] == "indication"]
 
 
-def test_dead_track_is_cannot_analyze_not_an_indication(client):
+def test_dead_track_is_cannot_analyze_and_the_switched_off_camera_is_an_indication(client):
+    # AI side unchanged: no usable video = "tidak dapat dianalisis". Since 6 Nov 2026 the camera that the student
+    # switched off is ALSO an indication (CAMERA_OFF, app/device.py), from the presence heartbeats.
     hs, hp = start(client)
     t = warm_up(client, hs)
     gap(client, hs, t, camera_on=False)
-    ev = client.app.state.db.all("SELECT * FROM events")
-    assert [e["category"] for e in ev] == ["cannot_analyze"] and ev[0]["source"] == "jitsi" and ev[0]["status"] == "open"
+    ev = client.app.state.db.all("SELECT * FROM events WHERE source='jitsi'")
+    assert [e["category"] for e in ev] == ["cannot_analyze"] and ev[0]["status"] == "open"
+    dev = client.app.state.db.all("SELECT * FROM events WHERE source='presence'")
+    assert [(e["indicator"], e["category"], e["status"]) for e in dev] == [("CAMERA_OFF", "indication", "open")]
     row = student(client, hp)
     assert row["ai"]["state"] == "cannot_analyze" and row["ai"]["reason"] == "track_ended"
-    assert row["counts"]["indications"] == 0 and row["counts"]["open_cannot_analyze"] == 1
-    assert client.get("/api/exams/1/report", headers=hp).json()["indications"]["total"] == 0
+    assert row["counts"]["indications"] == 1 and row["counts"]["open_cannot_analyze"] == 1
+    assert client.get("/api/exams/1/report", headers=hp).json()["indications"]["total"] == 1
 
 
 def test_no_frames_arriving_is_cannot_analyze_not_an_indication(client):
@@ -273,7 +277,9 @@ def test_open_indication_is_not_extended_by_a_dead_track(client):
         t += 0.5
     assert len(indications(client)) == 1
     gap(client, hs, t, seconds=20, camera_on=False)
-    assert len(indications(client)) == 1                      # the gap itself creates no second indication
+    ai_ind = [e for e in indications(client) if e["source"] != "presence"]
+    assert len(ai_ind) == 1                                   # the gap itself creates no second AI indication
+    assert [e["indicator"] for e in indications(client) if e["source"] == "presence"] == ["CAMERA_OFF"]
     assert client.app.state.db.one("SELECT COUNT(*) n FROM events WHERE category='cannot_analyze'")["n"] == 1
 
 
@@ -293,7 +299,9 @@ def test_gap_rules_do_not_apply_to_browser_source(client):
     hs, hp = start(client, "browser")
     t = warm_up(client, hs)
     gap(client, hs, t, camera_on=False)
-    assert counts(client)["events"] == 0
+    db = client.app.state.db
+    assert db.one("SELECT COUNT(*) n FROM events WHERE source!='presence'")["n"] == 0      # no AI gap events
+    assert [e["indicator"] for e in db.all("SELECT * FROM events WHERE source='presence'")] == ["CAMERA_OFF"]   # but an indication
     assert student(client, hp)["ai"]["source"] == "browser"
 
 
@@ -314,8 +322,9 @@ def test_stop_monitoring_closes_events_with_the_jitsi_source(client):
     t = warm_up(client, hs)
     gap(client, hs, t, camera_on=False)
     assert client.post("/api/exams/1/monitoring/stop", headers=hp).status_code == 200
-    ev = client.app.state.db.one("SELECT status, source FROM events")
+    ev = client.app.state.db.one("SELECT status, source FROM events WHERE source='jitsi'")
     assert ev == {"status": "closed", "source": "jitsi"}
+    assert client.app.state.db.one("SELECT status FROM events WHERE source='presence'")["status"] == "closed"
     assert client.app.state.db.one("SELECT source FROM ai_status")["source"] == "jitsi"
 
 

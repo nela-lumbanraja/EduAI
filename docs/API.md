@@ -45,18 +45,22 @@ Format galat: `{"detail": "<pesan dalam Bahasa Indonesia>"}` atau, untuk validas
 | `GET /api/health` | publik | Status backend, AI tersedia/tidak, OpenVidu terkonfigurasi/tidak |
 | `GET /api/ai/health` | publik | Kesiapan model per komponen, retensi evidence, worker aktif |
 | `POST /api/auth/login` | publik | Login → `{token, user}` |
+| `PATCH /api/auth/me` | semua pengguna (akun sendiri) | Ubah nama lengkap `{name}`; field lain ditolak (422) |
+| `POST /api/users` | admin | Tambah pengguna `{name, email, role, password (min 8), nis, class_name}`. Siswa wajib NIS dan kelas; peran lain tanpa keduanya. 409 bila email dipakai |
+| `PATCH /api/users/{id}` | admin; pihak sekolah (hanya akun siswa, tanpa ubah peran) | Ubah nama, email, peran, status, NIS, kelas. 409 bila email dipakai, ubah peran/status sendiri, admin aktif terakhir, atau peran akun yang masih terhubung ke ujian belum selesai |
 | `POST /api/auth/register` | publik | Daftar mandiri **khusus siswa** (dapat dimatikan) |
 | `GET /api/auth/me` | semua | Profil pengguna |
 | `GET /api/users?role=` | admin, penyelenggara | Daftar pengguna |
 | `GET /api/dashboard` | semua | Ringkasan sesuai peran |
-| `GET /api/exams` · `POST /api/exams` | semua · admin | Daftar (difilter peran) · buat ujian |
+| `GET /api/dashboard/detections-per-hour?date=YYYY-MM-DD` | pengawas, penyelenggara, admin, sekolah | Hanya-baca. Jumlah deteksi AI (kejadian `indication`) per jam WIB untuk satu tanggal WIB (default: hari ini). Hanya ujian yang boleh dilihat pengguna (pengawas: ujian miliknya); pihak sekolah hanya menghitung indikasi yang sudah ditinjau. Respons: `{date, timezone: "Asia/Jakarta", server_time, hours: [{hour, count}] x 24, total}`. Tanggal tidak valid: 422. |
+| `GET /api/exams` · `POST /api/exams` | semua · admin | Daftar (difilter peran) · buat ujian. Status ujian yang sudah terbit mengikuti jadwal secara otomatis (Terjadwal → Sedang Berlangsung → Selesai; lihat `app/exam_status.py`) |
 | `GET /api/exams/{id}` · `PATCH /api/exams/{id}` | sesuai akses · admin, penyelenggara | Detail · ubah status |
 | `GET /api/exams/{id}/students` | staf | Peserta + presence + status AI + jumlah indikasi |
 | `GET /api/exams/{id}/students/{sid}/timeline` | pengawas, penyelenggara, admin | Linimasa siswa |
 | `POST /api/exams/{id}/consent` | siswa | Persetujuan perekaman |
 | `POST /api/exams/{id}/join` | siswa / staf pemantau | Token ruang OpenVidu + info pemantauan. Siswa: 403 bila ujian mewajibkan Safe Exam Browser dan belum terverifikasi (lihat bagian Safe Exam Browser). |
 | `GET /api/exams/{id}/session-state` | siswa | Status ujian & pemantauan (dipoll tiap 5 dtk) |
-| `POST /api/exams/{id}/presence` | siswa | Heartbeat kamera/mikrofon/koneksi |
+| `POST /api/exams/{id}/presence` | siswa | Heartbeat kamera/mikrofon/koneksi. Saat pemantauan aktif, kamera mati 2 heartbeat berturut-turut menjadi indikasi `CAMERA_OFF`; mikrofon mati (bila siswa menyetujui suara) menjadi `MIC_OFF` (app/device.py) |
 | `POST /api/exams/{id}/leave` | siswa | Keluar; analisis siswa dihentikan dan kejadian terbuka ditutup |
 | `POST /api/exams/{id}/frames` | siswa | **Jalur frame browser**: satu JPEG |
 | `POST /api/exams/{id}/monitoring/start` · `/stop` · `GET .../monitoring` | pengawas, penyelenggara, admin | Mulai/hentikan analisis AI, status worker |
@@ -70,7 +74,10 @@ Format galat: `{"detail": "<pesan dalam Bahasa Indonesia>"}` atau, untuk validas
 | `GET /api/cases/{case_id}` | staf | Ringkasan kasus + semua kejadian aslinya (skor, alasan, `evidence_id`, riwayat validasi) |
 | `POST /api/cases/{case_id}/reviews` | pengawas, penyelenggara, admin | Satu keputusan untuk kejadian yang dilihat (`event_ids`); dicatat sebagai validasi biasa per kejadian |
 | `POST /api/exams/{id}/notes` | pengawas, penyelenggara, admin | Catatan manual |
-| `GET /api/evidence/{id}` | pengawas yang ditugaskan, admin | Metadata evidence (diaudit) |
+| `GET /api/notifications/state` | pengawas yang ditugaskan, admin | Status panel notifikasi milik akun ini per kasus: `read`, `dismissed`, `evidence_seen` (dari log audit "Melihat evidence" milik akun ini sendiri). Hanya kasus ujian yang diawasi (admin: semua) |
+| `PUT /api/notifications/{case_id}/read` | pengawas ujian itu, admin | Tandai kasus sudah dibaca (hilang titik biru) |
+| `PUT` · `DELETE /api/notifications/{case_id}/dismiss` | pengawas ujian itu, admin | Abaikan / tampilkan lagi. Dibaca dan diabaikan kembali ke awal bila kasus mendapat kejadian baru |
+| `GET /api/evidence/{id}` | pengawas yang ditugaskan, admin | Metadata evidence (diaudit; target `exam:{id} event:{8 karakter} case:{case_id}`) |
 | `GET /api/evidence/{id}/frames/{i}` | idem | Satu JPEG evidence (`Cache-Control: no-store`) |
 | `GET /api/jitsi/config` | semua pengguna | Server Jitsi: `configured`, `domain`, `operator` (`school` / `third_party`), `xmpp_domain`, `muc`, `service_url`, `auth` (server memakai token). Tanpa nama ruang ujian dan tanpa rahasia. |
 | `GET /api/jitsi/health` | semua pengguna | `{state}`: `not_configured` / `unreachable` / `ready`. Admin juga menerima `missing` (variabel kosong), `examples`, dan `detail` (alasan teknis). Diperiksa ke `https://<domain>/libs/lib-jitsi-meet.min.js`, batas waktu 2,5 dtk, disimpan 15 dtk. |
@@ -374,6 +381,8 @@ GET /api/evidence/pxAmBrzYPgwzrksiLKBP5g
  "frame_ts": [1760326385.4, "..."], "key_index": 0, "encrypted": false,
  "created_at": "2026-10-13T03:33:19.919+00:00", "expires_at": "2026-10-14T03:33:19.919+00:00"}
 ```
+
+Setiap pemanggilan dicatat di log audit sebagai "Melihat evidence" dengan target `exam:1 event:e68a5f2d case:c-e68a5f2d-...`.
 
 `GET /api/evidence/{id}/frames/{i}` mengembalikan `image/jpeg`. Frontend mengambilnya dengan header Authorization lalu menampilkan sebagai blob URL; tidak ada URL statis publik.
 

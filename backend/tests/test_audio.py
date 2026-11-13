@@ -238,3 +238,32 @@ def test_speech_with_still_mouth_in_jitsi_mode(tmp_path, monkeypatch):
         alya = next(r for r in c.get("/api/exams/1/students", headers=hp).json() if r["name"] == "Alya Putri")
         assert alya["audio"] == {"consented": True, "active": True, "reason": None}
 
+
+
+def test_paper_sound_creates_a_book_indication_with_sound_text(tmp_path, monkeypatch):
+    """Book opened or leafed through: YAMNet paper score from the browser (no audio) -> BOOK_SOUND (Buku)."""
+    with make_client(tmp_path, monkeypatch) as c:
+        hs, hp, _ = enter(c, audio=True)
+        t = 0.0
+        frame(c, hs, t)
+        while t < 3.0:
+            t += 0.5
+            r = c.post("/api/exams/1/audio", headers=hs, json={"speech": 0.0, "whisper": 0.0, "media": 0.0, "paper": 0.55})
+            c.app.state.ai.clock = lambda: BASE_T + t
+            assert r.json()["accepted"] is True
+            frame(c, hs, t)
+        ev = c.get("/api/exams/1/events", headers=hp, params={"category": "indication"}).json()["events"]
+        book = [e for e in ev if e["indicator"] == "BOOK_SOUND"]
+        assert len(book) == 1 and book[0]["label"] == "Suara kertas/halaman buku terdengar"
+        assert book[0]["details"]["sound_type"] == "KERTAS_BUKU" and book[0]["details"]["paper"] == 0.55
+        assert book[0]["sound_text"] == "Jenis suara: kertas/halaman buku (gemerisik, dibalik, diremas) (kertas 0,55)"
+        case = next(x for x in c.get("/api/cases", headers=hp).json()["cases"] if x["indicator"] == "BOOK_SOUND")
+        assert case["rule"]["met"] is True                                # the first episode notifies
+
+
+def test_old_browsers_without_paper_score_still_work(tmp_path, monkeypatch):
+    with make_client(tmp_path, monkeypatch) as c:
+        hs, hp, _ = enter(c, audio=True)
+        frame(c, hs, 0.0)
+        assert audio(c, hs, 0.5, speech=0.1).json() == {"accepted": True}          # no "paper" field
+        assert c.post("/api/exams/1/audio", headers=hs, json={"speech": 0, "whisper": 0, "media": 0, "paper": 1.5}).status_code == 422

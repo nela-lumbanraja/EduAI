@@ -48,21 +48,34 @@ export type LiveKitTicket = { url: string; room: string; token: string };
  * broadcast only. Publishes the page's own tracks (never a second capture) and leaves them running when it stops:
  * they still feed the preview, the AI frames and Jitsi. A fresh token comes with every poll; only a room change reconnects.
  */
+/** Wait before reconnect attempt n (0-based): 3 s, 6 s, 12 s, then every 20 s. */
+export const reconnectDelay = (attempt: number) => Math.min(20_000, 3_000 * 2 ** Math.max(0, attempt));
+
 export function useOpenViduBroadcast(ticket: LiveKitTicket | null, stream: MediaStream | null, camOn: boolean, micOn: boolean) {
   const ticketRef = useRef(ticket);
   useEffect(() => { ticketRef.current = ticket; });
   const key = ticket && stream ? `${ticket.url}|${ticket.room}` : null;
   const [state, setState] = useState<{ connected: boolean; error: string | null }>({ connected: false, error: null });
   const [started, setStarted] = useState<string | null>(null);
-  if (key !== started) { setStarted(key); setState({ connected: false, error: null }); }
+  // Reconnect: the video server may start after the student (e.g. Docker still booting) or drop the connection.
+  // Without this the student stayed unconnected and the supervisor saw "Video langsung tidak tersedia" until a reload.
+  const [attempt, setAttempt] = useState(0);
+  if (key !== started) { setStarted(key); setState({ connected: false, error: null }); setAttempt(0); }
   const roomRef = useRef<Room | null>(null);
 
   useEffect(() => {
     const t = ticketRef.current;
     if (!key || !t || !stream) return;
     let cancelled = false;
+    let retry: number | undefined;
+    const again = (why: string) => {
+      if (cancelled || retry !== undefined) return;
+      const wait = reconnectDelay(attempt);
+      setState({ connected: false, error: `${why} Mencoba menyambung lagi dalam ${Math.round(wait / 1000)} detik…` });
+      retry = window.setTimeout(() => { if (!cancelled) setAttempt((n) => n + 1); }, wait);
+    };
     const room = new Room({ adaptiveStream: false, dynacast: true, stopLocalTrackOnUnpublish: false });
-    room.on(RoomEvent.Disconnected, () => { if (!cancelled) setState({ connected: false, error: "Terputus dari OpenVidu." }); });
+    room.on(RoomEvent.Disconnected, () => again("Terputus dari OpenVidu."));
     (async () => {
       try {
         await room.connect(t.url, t.token);
@@ -73,11 +86,11 @@ export function useOpenViduBroadcast(ticket: LiveKitTicket | null, stream: Media
         roomRef.current = room;
         setState({ connected: true, error: null });
       } catch (e) {
-        if (!cancelled) setState({ connected: false, error: `Tidak dapat terhubung ke OpenVidu (${(e as Error).message || "koneksi gagal"}).` });
+        again(`Tidak dapat terhubung ke OpenVidu (${(e as Error).message || "koneksi gagal"}).`);
       }
     })();
-    return () => { cancelled = true; roomRef.current = null; void room.disconnect(false); };
-  }, [key, stream]);
+    return () => { cancelled = true; if (retry !== undefined) window.clearTimeout(retry); roomRef.current = null; void room.disconnect(false); };
+  }, [key, stream, attempt]);
 
   // Camera/mic off: mute the publication too, so OpenVidu and the AI worker see a muted track, not black frames.
   useEffect(() => {

@@ -46,8 +46,12 @@ DEFAULT_RULES = {
     "HEAD_TURN": {"min_count": 1, "window_s": None},
     # one HEAD_TURN_REPEATED episode = 5 look-aways within 120 s (AI config); 4 such episodes per hour
     "HEAD_TURN_REPEATED": {"min_count": 4, "window_s": 3600.0},
-    "BOOK_VISIBLE": {"min_count": 3, "window_s": 3600.0},
+    "BOOK_VISIBLE": {"min_count": 1, "window_s": None},       # first book episode notifies (10 Nov 2026)
+    "BOOK_SOUND": {"min_count": 1, "window_s": None},         # paper/page sound (book), needs audio consent
     "WHISPER": {"min_count": 1, "window_s": None},
+    # camera / microphone switched off by the student during monitoring (app/device.py)
+    "CAMERA_OFF": {"min_count": 1, "window_s": None},
+    "MIC_OFF": {"min_count": 1, "window_s": None},
 }
 RULES = dict(DEFAULT_RULES)
 

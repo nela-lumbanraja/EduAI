@@ -190,13 +190,18 @@ SOUND_DEFAULTS = {
                     "min_duration_s": 3.0, "release_s": 2.0, "cooldown_s": 60.0},
     "STUDENT_SPEECH": {"enabled": True, "speech_min": 0.30,
                        "min_duration_s": 2.0, "release_s": 1.0, "cooldown_s": 60.0},
+    # Paper/page sound (YAMNet "Rustle", "Crumpling, crinkling", "Tearing", "Flap"): a book or notes being opened or
+    # leafed through. Independent of speech: it can sound together with talking. Provisional, NOT calibrated.
+    "BOOK_SOUND": {"enabled": True, "category": INDICATION, "paper_min": 0.25,
+                   "min_duration_s": 1.0, "release_s": 1.0, "cooldown_s": 30.0},
 }
-SOUND_NAMES = ("OTHER_VOICE", "STUDENT_SPEECH", "WHISPER", "MEDIA_SOUND")
+SOUND_NAMES = ("OTHER_VOICE", "STUDENT_SPEECH", "WHISPER", "MEDIA_SOUND", "BOOK_SOUND")
 SOUND_REASONS = {
     "OTHER_VOICE": "Suara bicara terdengar saat mulut siswa tampak diam",
     "STUDENT_SPEECH": "Siswa tampak berbicara (suara bicara, mulut bergerak); info, bukan indikasi",
     "WHISPER": "Suara bisikan terdengar",
     "MEDIA_SOUND": "Suara musik/media (TV, radio) terdengar",
+    "BOOK_SOUND": "Suara kertas/halaman buku terdengar (dibuka atau dibalik)",
 }
 
 
@@ -243,7 +248,7 @@ class EventEngine:
             self.trackers[n] = SustainedIndicator(c["min_duration_s"], c["release_s"], c["cooldown_s"])
         self._peaks = {}                    # sound label -> score maxima of the current episode
         self._mouth = None                  # jawOpen range over the mouth window, None = unknown
-        self._audio = None                  # (ts, speech, whisper, media) from the student's device
+        self._audio = None                  # (ts, speech, whisper, media, paper) from the student's device
         self._jaw = deque()                 # (ts, jawOpen) of recent analysed frames
         self.open_events = {}
         self.last_bad_reason = ""
@@ -277,9 +282,10 @@ class EventEngine:
                 events.append(e)
         return events
 
-    def update_audio(self, ts: float, speech: float, whisper: float, media: float):
-        """Latest speech-sound scores (0-1). Replaced as one tuple, so a frame update never sees half a sample."""
-        self._audio = (float(ts), float(speech), float(whisper), float(media))
+    def update_audio(self, ts: float, speech: float, whisper: float, media: float, paper: float = 0.0):
+        """Latest sound scores (0-1). Replaced as one tuple, so a frame update never sees half a sample.
+        paper: paper/page sound (book opened or leafed through); 0 from older browsers that do not send it."""
+        self._audio = (float(ts), float(speech), float(whisper), float(media), float(paper))
 
     def _sound_signals(self, s: FrameSignals, analyzed: bool) -> dict:
         """(active, peak) per sound label from the latest YAMNet scores and the mouth movement. At most one label is
@@ -296,8 +302,11 @@ class EventEngine:
         self._mouth = None
         if a is None or abs(s.ts - a[0]) > v["audio_max_age_s"]:
             return out
-        _, speech, whisper, media = a
+        _, speech, whisper, media, paper = a
         ws, ms, ss = self.sound["WHISPER"], self.sound["MEDIA_SOUND"], self.sound["STUDENT_SPEECH"]
+        bs = self.sound["BOOK_SOUND"]
+        if bs["enabled"]:                                   # paper sound: no face or mouth needed
+            out["BOOK_SOUND"] = (paper >= bs["paper_min"], paper)
         media_dom = media >= ms["media_min"] and media >= max(speech, whisper)
         whisper_dom = not media_dom and whisper >= ws["whisper_min"] and whisper > speech
         if ms["enabled"]:
@@ -318,9 +327,10 @@ class EventEngine:
     def _track_peak(self, name: str, active: Optional[bool]):
         if active is not True or self._audio is None:
             return
-        _, speech, whisper, media = self._audio
-        p = self._peaks.setdefault(name, {"speech": 0.0, "whisper": 0.0, "media": 0.0, "mouth_movement": None})
+        _, speech, whisper, media, paper = self._audio
+        p = self._peaks.setdefault(name, {"speech": 0.0, "whisper": 0.0, "media": 0.0, "paper": 0.0, "mouth_movement": None})
         p["speech"], p["whisper"], p["media"] = max(p["speech"], speech), max(p["whisper"], whisper), max(p["media"], media)
+        p["paper"] = max(p["paper"], paper)
         if self._mouth is not None:
             p["mouth_movement"] = max(p["mouth_movement"] or 0.0, self._mouth)
 
@@ -329,7 +339,7 @@ class EventEngine:
         if p is None:
             return None
         return {"sound_type": SOUND_OF[name], "speech": round(p["speech"], 2), "whisper": round(p["whisper"], 2),
-                "media": round(p["media"], 2),
+                "media": round(p["media"], 2), **({"paper": round(p["paper"], 2)} if name == "BOOK_SOUND" else {}),
                 "mouth_movement": None if p["mouth_movement"] is None else round(p["mouth_movement"], 3)}
 
     @staticmethod

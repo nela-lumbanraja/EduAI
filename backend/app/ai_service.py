@@ -158,7 +158,7 @@ class AIManager:
                              " AND p.joined_at IS NOT NULL AND p.left_at IS NULL"):
             await self.check_silent(r["exam_id"], r["student_id"])
 
-    def submit_audio(self, exam_id: int, student_id: int, speech: float, whisper: float, media: float) -> dict:
+    def submit_audio(self, exam_id: int, student_id: int, speech: float, whisper: float, media: float, paper: float = 0.0) -> dict:
         """Speech-sound scores from the student's browser (no audio). They are combined with mouth
         movement from the next video frames by the analyser (indicator OTHER_VOICE)."""
         if not self.available:
@@ -171,7 +171,7 @@ class AIManager:
         if e is None:                                                 # created by the first video frame
             return {"accepted": False, "reason": "no_video_yet"}
         self.audio_seen[key] = now
-        e.analyzer.update_audio(max(now, e.last_ts), speech, whisper, media)
+        e.analyzer.update_audio(max(now, e.last_ts), speech, whisper, media, paper)
         return {"accepted": True}
 
     def audio_active(self, exam_id: int, student_id: int) -> bool:

@@ -57,9 +57,9 @@ class StudentAnalyzer:
         return AnalysisResult(sig, events, packages, self.engine.analysis_state(),
                               (time.perf_counter() - t0) * 1000.0)
 
-    def update_audio(self, ts: float, speech: float, whisper: float, media: float):
+    def update_audio(self, ts: float, speech: float, whisper: float, media: float, paper: float = 0.0):
         """Speech-sound scores computed on the student's device (no audio reaches this module)."""
-        self.engine.update_audio(ts, speech, whisper, media)
+        self.engine.update_audio(ts, speech, whisper, media, paper)
 
     def stop(self) -> AnalysisResult:
         """Close open events and finish pending evidence (monitoring stopped / stream ended)."""

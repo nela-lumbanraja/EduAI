@@ -126,7 +126,7 @@ export class SpeechScorer {
     this.last = scores;
     this.inFlight = true;
     try {
-      const r = await api.audioScores(this.examId, { speech: scores.speech, whisper: scores.whisper, media: scores.media });
+      const r = await api.audioScores(this.examId, { speech: scores.speech, whisper: scores.whisper, media: scores.media, paper: scores.paper });
       if (r.accepted) this.sent++;
       this.lastError = "";
     } catch (e) {

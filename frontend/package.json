@@ -9,9 +9,12 @@
     "prebuild": "node scripts/copy-mediapipe-wasm.mjs",
     "build": "vite build",
     "preview": "vite preview",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test": "node --experimental-strip-types --test tests/*.test.ts"
   },
   "dependencies": {
+    "@fontsource/libre-baskerville": "^5.3.0",
+    "@fontsource/public-sans": "^5.3.0",
     "@mediapipe/tasks-audio": "0.10.32",
     "livekit-client": "^2.22.4",
     "react": "^19.0.0",

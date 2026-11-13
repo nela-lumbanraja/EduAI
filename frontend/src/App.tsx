@@ -1,9 +1,9 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
-  api, ApiError, examWindow, fmtDate, fmtDateTime, fmtDuration, fmtTime, FRAME_REASON, initials, minutesAgo, remaining, ROLE_LABEL, EVIDENCE_RESTRICTED,
+  api, ApiError, examWindow, fmtDate, fmtDateTime, fmtDuration, fmtTime, FRAME_REASON, initials, remaining, ROLE_LABEL, EVIDENCE_RESTRICTED,
   session, setUnauthorizedHandler, SOURCE_LABEL, STATE_LABEL, AUDIO_REASON,
   type AIEvent, type AIHealth, type AnalysisState, type AuditRow, type CaseSummary, type Decision, type Exam, type ExamSummary, type Health, type MonitoringInfo,
-  type MonitoringState, type AnalysisSource, type SebResult, type SebRow, type SebSettings, type Report as ReportData, type ReportEvent, type ReportSummary, type StudentRow, type TimelineItem, type User, type UserRow,
+  type MonitoringState, type AnalysisSource, type SebResult, type SebRow, type SebSettings, type Report as ReportData, type ReportEvent, type ReportSummary, type StudentRow, type TimelineItem, type User, type UserRow, type RoleCode,
 } from "./api";
 import { loadSeen, newCaseIds, newSummaryKeys, notifiableCaseIds, saveSeen, seenKey, seenSummariesKey } from "./notify";
 import { SpeechScorer } from "./audio";
@@ -12,10 +12,30 @@ import type { RemoteTrack } from "livekit-client";
 import { EVIDENCE_NOTICE, JITSI_NOTICE_UNKNOWN, jitsiNotice } from "./consent";
 import { jitsiRoomName, useJitsiRoom, useJitsiTrack, useJitsiWatch, type JitsiTrack } from "./jitsi";
 import { readSeb, sebLaunchLink, SEB_STATE_LABEL } from "./seb";
+import { ALLOWED_SCREENS, authErrorMessage, dashboardKind, initialScreen, landingAction, opensIndications, type Role } from "./routes";
+import { greetingWib, NO_DATA as NO_DATA_TEXT, timeAgo } from "./time";
+import { activeExams, analysisGaps, examTimes, indicatorIcon, remainingText, upcomingExams } from "./dashboard";
+import { attendanceParts, caseStatus, historyRows, caseStatusBreakdown, monitorStatus, reportResults, sessionTimeline, utcMs, wibDate } from "./chartData";
+import { BADGE_ROLES, NAV_MENUS, PROFILE_SCREEN, badgeText, isActive, mobileSplit, type NavItem } from "./nav";
+import { NavIcon } from "./navIcons";
+import { NotifPanel } from "./NotifPanel";
+import { useFocusTrap } from "./hooks";
+import { activityFeed, drawerCases, filterCases, filterQuery, jenisCounts, kindBars, kindSlices, kpi7, loadSlices, parseFilter, sinceIso, statusSummary, supervisorLoad, type DrawerSource, type Filter, type JenisKey, type StatusKey } from "./indikasi";
+import { FilterRow, KpiRow, StatusDonut } from "./IndikasiRingkasan";
+import { ActivityCard, KindBarChart, KindDonut, LoadDonut, StudentDrawer } from "./IndikasiDetail";
+import { ALL_STATUSES, filterSessions, filterStudentExams, sessionDateText, sessionTone, STATUS_OPTIONS, STUDENT_FILTERS, studentFilterCounts, type StudentFilter } from "./sessions";
 
-type Role = "Siswa" | "Pengawas" | "Penyelenggara Ujian" | "Admin" | "Pihak Sekolah";
+// Grafik dimuat terpisah (chunk sendiri) hanya saat halamannya dibuka.
+const DashboardCharts = lazy(() => import("./charts"));
+const HistoryChart = lazy(() => import("./charts").then((m) => ({ default: m.HistoryChart })));
+const MonitoringCharts = lazy(() => import("./charts").then((m) => ({ default: m.MonitoringCharts })));
+const ReportAttendance = lazy(() => import("./charts").then((m) => ({ default: m.ReportAttendance })));
+const ReportResults = lazy(() => import("./charts").then((m) => ({ default: m.ReportResults })));
+const ChartSkeleton = ({ h = 180 }: { h?: number }) => <div aria-hidden="true" className="rounded border border-line bg-white" style={{ height: h }} />;
 
 type Screen =
+  | "beranda"
+  | "loading"
   | "login"
   | "dashboard"
   | "sessions"
@@ -92,6 +112,14 @@ function useCurrentExam() {
   return { exam, exams, loading: list.loading, error: list.error, reload: list.reload };
 }
 
+// Nama sekolah dari EDUAI_SCHOOL_NAME (lewat /api/health), diambil sekali per halaman. Kosong = belum diisi.
+const NO_DATA = NO_DATA_TEXT;
+let schoolName: Promise<string | null> | null = null;
+function useSchoolName(): string | null | undefined {
+  const r = usePoll(() => (schoolName ??= api.health().then((h) => h.school_name ?? null).catch((e) => { schoolName = null; throw e; })), []);
+  return r.loading ? undefined : r.data;
+}
+
 function Notice({ children, tone = "amber" }: { children: ReactNode; tone?: "amber" | "red" | "blue" }) {
   const s = { amber: "border-amber-200 bg-amber-50 text-amber-900", red: "border-red-200 bg-red-50 text-red-700", blue: "border-blue-100 bg-blue-50 text-blue-800" };
   return <div role={tone === "red" ? "alert" : "status"} className={`mb-5 rounded-md border px-4 py-3 text-sm leading-6 ${s[tone]}`}>{children}</div>;
@@ -102,6 +130,7 @@ function SampleTag() {
 }
 
 type IconName =
+  | "edit"
   | "grid"
   | "monitor"
   | "report"
@@ -125,6 +154,10 @@ type IconName =
   | "menu"
   | "close"
   | "shield"
+  | "logout"
+  | "phone"
+  | "eye"
+  | "book"
   | "file";
 
 function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
@@ -132,6 +165,7 @@ function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
     grid: <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></>,
     monitor: <><rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" /></>,
     report: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6M8 13h8M8 17h6" /></>,
+    edit: <><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></>,
     settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 9 19.37a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.63 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63a1.7 1.7 0 0 0 1-1.55V3h4v.08A1.7 1.7 0 0 0 15 4.63a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.37 9a1.7 1.7 0 0 0 1.55 1H21v4h-.08A1.7 1.7 0 0 0 19.4 15z" /></>,
     search: <><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></>,
     plus: <path d="M12 5v14M5 12h14" />,
@@ -153,34 +187,38 @@ function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
     close: <path d="M6 6l12 12M18 6 6 18" />,
     shield: <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="m9 12 2 2 4-4" /></>,
     file: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /></>,
+    logout: <path d="M10 5H5v14h5M14 8l4 4-4 4M18 12H9" />,
+    phone: <><rect x="7" y="2" width="10" height="20" rx="2" /><path d="M10 5h4M11 18h2" /></>,
+    eye: <><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.5" /></>,
+    book: <><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5A2.5 2.5 0 0 0 4 21.5z" /><path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H13v16h4.5a2.5 2.5 0 0 1 2.5 2.5z" /></>,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
 
-function Logo({ large = false, tagline = "Pengawasan Ujian" }: { large?: boolean; tagline?: string }) {
+function Logo({ large = false, inverse = false, tagline = "Pengawasan Ujian" }: { large?: boolean; inverse?: boolean; tagline?: string }) {
   return (
     <div className="flex items-center gap-3">
-      <img src="/brand/eduai-seal.svg" alt="Lambang EduAI" className={large ? "size-20" : "size-11"} />
-      <div className="leading-tight"><div className={`brand-caps font-semibold text-navy ${large ? "text-3xl" : "text-lg"}`}>EduAI</div><div className={`brand-caps mt-0.5 text-gold-700 ${large ? "text-xs" : "text-[10px]"}`}>{tagline}</div></div>
+      <img src="/brand/smart-exam-integrity.webp" alt="Logo EduAI Smart Exam Integrity" className={large ? "size-20" : "size-11"} />
+      <div className="leading-tight"><div className={`font-extrabold tracking-tight ${inverse ? "text-white" : "text-navy"} ${large ? "text-3xl" : "text-[1.4rem]"}`}>Edu<span className="text-gold-500">AI</span></div><div className={`brand-caps mt-0.5 ${inverse ? "text-blue-300" : "text-gold-700"} ${large ? "text-xs" : "text-[10px]"}`}>{tagline}</div></div>
     </div>
   );
 }
 
 function Button({ children, variant = "primary", icon, disabled, onClick, className = "", type = "button" }: { children: ReactNode; variant?: "primary" | "secondary" | "ghost" | "success"; icon?: IconName; disabled?: boolean; onClick?: () => void; className?: string; type?: "button" | "submit" }) {
-  const styles = { primary: "bg-blue-700 text-white hover:bg-blue-800", secondary: "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50", ghost: "text-slate-600 hover:bg-slate-100", success: "bg-emerald-600 text-white hover:bg-emerald-700" };
-  return <button type={type} disabled={disabled} onClick={onClick} className={`inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-semibold transition disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none ${styles[variant]} ${className}`}>{icon && <Icon name={icon} size={18} />}{children}</button>;
+  const styles = { primary: "bg-navy text-gold-300 hover:bg-navy-2", secondary: "border border-line bg-white text-navy hover:bg-paper", ghost: "text-slate-600 hover:bg-paper", success: "bg-[#23856d] text-white hover:bg-[#1d6f5b]" };
+  return <button type={type} disabled={disabled} onClick={onClick} className={`inline-flex h-10 items-center justify-center gap-2 rounded px-4 text-sm font-semibold transition disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none ${styles[variant]} ${className}`}>{icon && <Icon name={icon} size={18} />}{children}</button>;
 }
 
-function Badge({ children, tone = "gray" }: { children: ReactNode; tone?: "blue" | "green" | "amber" | "gray" }) {
-  const styles = { blue: "bg-blue-50 text-blue-700 ring-blue-100", green: "bg-emerald-50 text-emerald-700 ring-emerald-100", amber: "bg-amber-50 text-amber-700 ring-amber-100", gray: "bg-slate-100 text-slate-600 ring-slate-200" };
-  return <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${styles[tone]}`}>{children}</span>;
+function Badge({ children, tone = "gray", pulse = false }: { children: ReactNode; tone?: "blue" | "green" | "amber" | "gray" | "red" | "gold"; pulse?: boolean }) {
+  const styles = { gold: "bg-[#f5edd0] text-[#745b0d]", blue: "bg-[#e6eef8] text-[#3d628e]", green: "bg-[#e5f3ed] text-[#26745f]", amber: "bg-[#f7edcf] text-[#8c621a]", gray: "bg-[#eceff1] text-[#687386]", red: "bg-[#f8e6e4] text-[#9b3f3f]" };
+  return <span className={`inline-flex w-fit items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-bold ${styles[tone]}`}><i aria-hidden="true" className={`size-1.5 shrink-0 rounded-full bg-current ${pulse ? "animate-pulse" : ""}`} />{children}</span>;
 }
 
 function Field({ label, placeholder, type = "text", value, name }: { label: string; placeholder?: string; type?: string; value?: string; name?: string }) {
   return <label className="block"><span className="mb-2 block text-sm font-semibold text-slate-700">{label}</span><input name={name} type={type} defaultValue={value} placeholder={placeholder} className="h-11 w-full rounded-md border border-slate-200 bg-white px-3.5 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-50" /></label>;
 }
 
-const statusTone = (s: string) => (s === "Selesai" ? "green" : s === "Sedang Berlangsung" ? "blue" : "gray") as "green" | "blue" | "gray";
+const statusTone = sessionTone;
 const stateTone = (s?: AnalysisState | null) => (s === "normal" ? "green" : s === "indication" || s === "ai_offline" ? "amber" : s === "warming_up" ? "blue" : "gray") as "green" | "amber" | "blue" | "gray";
 const mayOpenEvidence = (role: Role) => role === "Pengawas" || role === "Admin";   // the backend enforces this; here it only avoids 403s
 const reviewTone = (l?: string | null) => (l === "Valid" ? "green" : !l || l === "Perlu Tinjauan Lanjut" ? "amber" : "gray") as "green" | "amber" | "gray";
@@ -193,12 +231,170 @@ const caseTone = (c: CaseSummary) => (c.unreviewed_count > 0 ? "amber" : reviewT
 const scoreText = (e: AIEvent) => (e.score == null ? "—" : `${Math.round(e.score * 100)}%`);
 const examTime = (e: Exam) => { const { end } = examWindow(e); return `${e.start_time.replace(":", ".")}–${end.toTimeString().slice(0, 5).replace(":", ".")} WIB`; };
 
-// Tanda pilihan saja: peran sebenarnya selalu mengikuti akun yang masuk.
-const loginRoles = ["Siswa", "Penyelenggara", "Pengawas", "Admin"];
+// Tab peran di portal Sekolah hanya penanda: peran sebenarnya selalu mengikuti akun dari backend.
+const STAFF_TABS = ["Penyelenggara", "Pengawas", "Admin"];
 
-function Login({ go }: { go: (s: Screen) => void }) {
+type Portal = "siswa" | "sekolah";
+
+// Beranda (desain Figma "Landing"). Isinya teks tetap tentang cara kerja EduAI; tidak ada angka, berita, atau tautan contoh.
+// Foto sinyal AI ada di public/images/ai-signals (lokal, tidak di-commit).
+const SIGNALS: [string, string, string][][] = [
+  [["Ponsel terlihat", "Ponsel dipegang atau terlihat di depan kamera.", "/images/ai-signals/1_phone_in_view.png"],
+    ["Buku terlihat", "Buku terbuka terlihat di depan kamera.", "/images/ai-signals/2_book_in_view.png"]],
+  [["Orang lain terlihat", "Lebih dari satu wajah muncul di kamera.", "/images/ai-signals/3_another_person.png"],
+    ["Sering menoleh", "Kepala berulang kali menoleh dari layar.", "/images/ai-signals/4_looking_away.png"]],
+  [["Wajah tidak terlihat", "Wajah keluar dari kamera atau tertutup.", "/images/ai-signals/5_face_not_visible.png"],
+    ["Suara lain terdengar", "Suara bicara lain atau bisikan selama ujian.", "/images/ai-signals/6_other_voice.png"]],
+];
+const SIGNAL_ROWS = ["md:grid-rows-[340px_260px]", "md:grid-rows-[260px_340px]", "md:grid-rows-[380px_220px]"];
+// Photos: local copies of the Figma design's Unsplash photos (sources in public/images/beranda/CREDITS.md).
+// The app never loads images from the internet.
+const LANDING_CARDS: { image: string; alt: string; title: string; text: string; id?: string }[] = [
+  { image: "/images/beranda/cek-perangkat.webp", alt: "Seorang anak belajar dengan laptop di meja", title: "Cek perangkat", text: "Periksa kamera, mikrofon, peramban, dan koneksi sebelum ujian dimulai." },
+  { image: "/images/beranda/panduan-siswa.webp", alt: "Sekelompok pelajar berkumpul di sekitar sebuah laptop", title: "Panduan siswa", text: "Panduan singkat untuk bersiap dan mengikuti ujian EduAI.", id: "siswa" },
+  { image: "/images/beranda/laporan-pengawas.webp", alt: "Seorang perempuan bekerja dengan laptop di ruang kelas (foto hitam putih)", title: "Laporan pengawas", text: "Tinjau kemungkinan masalah lengkap dengan waktu, konteks, dan catatan keputusan.", id: "pengawas" },
+  { image: "/images/beranda/cara-kerja-ai.webp", alt: "Dua orang memperhatikan layar laptop bersama", title: "Cara kerja AI", text: "Apa yang dapat ditandai EduAI, dan mengapa EduAI tidak pernah membuat keputusan akhir." },
+  { image: "/images/beranda/privasi-persetujuan.webp", alt: "Seorang pengajar bekerja dengan laptop di depan papan tulis", title: "Privasi dan persetujuan", text: "Cara data ujian dikumpulkan, dilindungi, dan dihapus sesuai masa simpan.", id: "privasi" },
+];
+
+function Landing({ start, user, toDashboard }: { start: (p: Portal) => void; user: User | null; toDashboard: () => void }) {
+  const [active, setActive] = useState<string | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const action = landingAction(!!user);
+  const enter = (p: Portal) => (action.next === "dashboard" ? toDashboard() : start(p));
+  const menu: [string, string][] = [["#beranda", "Beranda"], ["#kabar", "Kabar"], ["#cara-kerja", "Cara Kerja"], ["#siswa", "Siswa"], ["#pengawas", "Pengawas"], ["#privasi", "Privasi"], ["#kontak", "Kontak"]];
+  const portals = user
+    ? <button onClick={toDashboard} className="whitespace-nowrap underline-offset-4 hover:underline">{action.label}</button>
+    : <><button onClick={() => enter("sekolah")} className="whitespace-nowrap underline-offset-4 hover:underline">Sekolah</button>
+      <button onClick={() => enter("siswa")} className="whitespace-nowrap underline-offset-4 hover:underline">Portal Siswa</button></>;
+  return <div className="min-h-screen bg-white text-[#273141]">
+    {/* Struktur lebar penuh seperti local.ed.ac.uk; ukuran di index.css (.bd-*) dan docs/beranda-ukuran.md. */}
+    {/* 1. Bilah menu atas (navy). Di bawah 1024 px menu menjadi tombol "Menu". */}
+    <div className="bg-navy text-white"><div className="bd-band">
+      <div className="bd-nav flex min-h-11 items-center justify-between gap-x-6 lg:min-h-[59.4px]">
+        <nav aria-label="Navigasi utama" className="hidden lg:block"><ul className="flex gap-x-8">
+          {menu.map(([href, label], i) => <li key={href}><a href={href} aria-current={i === 0 ? "page" : undefined}
+            className={`block whitespace-nowrap border-b-4 pb-2.5 pt-3.5 hover:text-gold-300 ${i === 0 ? "border-gold-500" : "border-transparent"}`}>{label}</a></li>)}
+        </ul></nav>
+        <button type="button" onClick={() => setMenuOpen((v) => !v)} aria-expanded={menuOpen} aria-controls="menu-hp" className="flex min-h-11 items-center gap-2 lg:hidden">
+          <Icon name={menuOpen ? "close" : "menu"} size={22} />Menu</button>
+        <nav aria-label={user ? "Dasbor" : "Masuk"} className="flex items-center gap-x-6">{portals}</nav>
+      </div>
+      {menuOpen && <nav id="menu-hp" aria-label="Navigasi utama (HP)" className="bd-nav border-t border-[#3c4861] pb-3 lg:hidden"><ul>
+        {menu.map(([href, label]) => <li key={href}><a href={href} onClick={() => setMenuOpen(false)} className="flex min-h-11 items-center hover:text-gold-300">{label}</a></li>)}
+      </ul></nav>}
+    </div></div>
+
+    {/* 2. Header putih: lambang + nama. Masuk lewat tautan portal di bilah menu navy. */}
+    <header className="bg-white"><div className="bd-band flex flex-wrap items-center justify-between gap-x-6 gap-y-3 py-[5px] sm:min-h-[79px] sm:py-5">
+      <a href="#beranda" className="flex items-center gap-3 sm:gap-4">
+        <img src="/brand/smart-exam-integrity.webp" alt="" className="h-14 w-14 sm:h-[79px] sm:w-[79px]" />
+        <span className="font-sans font-semibold text-2xl leading-tight text-navy sm:text-[32px]">Smart Exam Integrity</span>
+      </a>
+    </div></header>
+
+    <main id="beranda">
+      {/* 3. Banner lebar penuh: kolase webcam tim EduAI (4120x760). Tidak dipotong (contain, rasio asli), tanpa filter atau lapisan warna,
+             tanpa lazy loading karena terlihat saat halaman dibuka. */}
+      <img src="/images/beranda/banner_indikasi.webp" alt="Kolase foto webcam peserta ujian dengan bingkai deteksi emas sebagai contoh indikasi AI."
+        width={4120} height={760} loading="eager" decoding="async" fetchPriority="high" className="block aspect-[4120/760] w-full object-contain" />
+
+      {/* 4. Pita judul navy. */}
+      <section aria-labelledby="visi" className="bg-navy text-white"><div className="bd-band bd-title-top bd-title-bottom">
+        <h1 id="visi" className="bd-h1 bd-caps text-white">Visi kami</h1>
+        <p className="bd-text mt-3 max-w-[60rem]">Ujian daring yang adil bagi sekolah. AI hanya menandai indikasi. Pengawas yang mengambil keputusan.</p>
+        <a href="#cara-kerja" className="bd-text mt-3 inline-flex items-center gap-2 font-bold text-gold-300 underline underline-offset-4">Baca pendekatan kami <span aria-hidden="true">→</span></a>
+      </div></section>
+
+      {/* 5. Kartu foto: container maks 960 px di tengah, 3 kolom dengan jarak 20 px (sekitar 307 px per kartu), foto 16:9.
+             Grid dan container sama dengan "Yang diperhatikan AI", sehingga kolomnya sejajar. */}
+      <section id="cara-kerja" aria-label="Panduan dan informasi" className="scroll-mt-4 bg-paper pb-[78px] pt-6"><div className="bd-band bd-narrow">
+        <div className="grid items-start gap-5 md:grid-cols-3">
+          {LANDING_CARDS.map(({ image, alt, title, text, id }) => <article key={title} id={id} className="bd-card-shadow min-w-0 scroll-mt-4 border-t-8 border-navy bg-white">
+            <img src={image} alt={alt} width={1200} height={675} loading="lazy" decoding="async" className="block aspect-[16/9] w-full bg-paper object-cover" />
+            <h2 className="bd-card-title px-4 pt-4">{title}</h2>
+            <p className="bd-card-text px-4 pb-5 pt-1.5 text-[#334052]">{text}</p>
+          </article>)}
+          <article id="kabar" aria-labelledby="kabar-judul" className="bd-card-shadow min-w-0 scroll-mt-4 border-t-8 border-navy bg-white">
+            <h2 id="kabar-judul" className="bd-card-title px-4 pt-4">Kabar terbaru</h2>
+            <ul className="bd-card-text px-4 pb-3 pt-1.5">{["Mode ujian Jitsi kini tersedia", "Safe Exam Browser per ujian", "Hasil uji deteksi buku dan ponsel"].map((t) =>
+              <li key={t} className="flex min-h-11 items-center border-b border-[#d6d8da] font-bold text-[#765d0e] last:border-b-0">{t}</li>)}</ul>
+          </article>
+        </div>
+      </div></section>
+
+      <section className="bg-white py-20"><div className="bd-band bd-narrow">
+        <div className="mb-[38px]"><h2 className="text-[2rem] leading-[1.2] md:text-[42px]">Yang diperhatikan AI</h2><p className="mt-[13px] text-[15px] leading-[1.7] text-[#555f6c]">Ini tanda, bukan bukti. Pengawas selalu memeriksanya terlebih dahulu.</p></div>
+        <div className="grid gap-5 md:grid-cols-3">{SIGNALS.map((column, c) => <div key={c} className={`grid gap-5 ${SIGNAL_ROWS[c]}`}>
+          {column.map(([title, text, image]) => {
+            const still = title === "Suara lain terdengar";            // Figma: kartu suara tidak dapat dipilih
+            const on = active === title && !still;
+            return <article key={title} tabIndex={still ? undefined : 0} role={still ? undefined : "button"} aria-pressed={still ? undefined : on}
+              onClick={() => { if (!still) setActive(title); }} onKeyDown={(e) => { if (!still && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); setActive(title); } }}
+              className={`group relative h-64 overflow-hidden bg-[#c8ccd0] md:h-auto ${still ? "cursor-default" : "cursor-pointer focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-gold-500"}`}>
+              <img src={image} alt={title} className={`block size-full bg-[#c8ccd0] object-cover ${c === 0 ? "object-[center_70%]" : "object-center"}`} />
+              <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,rgba(20,33,61,.48),rgba(20,33,61,.8))]" />
+              {!still && <div className={`pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,rgba(201,162,39,0),rgba(201,162,39,.92))] transition-opacity duration-250 ${on ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`} />}
+              <div className="absolute inset-x-0 bottom-0 p-6 text-white">
+                <h3 className="font-sans text-[22px] font-bold leading-[1.25] text-white">{title}</h3>
+                <p className={`max-w-[310px] overflow-hidden text-sm leading-normal transition-all duration-250 ${still ? "max-h-0 opacity-0" : on ? "mt-2 max-h-12 opacity-100" : "max-h-0 opacity-0 group-hover:mt-2 group-hover:max-h-12 group-hover:opacity-100"}`}>{text}</p>
+              </div>
+            </article>;
+          })}
+        </div>)}</div>
+        <p className="mt-6 text-xs leading-[1.6] text-[#707985]">Bila kamera terlalu gelap atau buram, kejadian ditandai &lsquo;Tidak dapat dianalisis&rsquo;, bukan sebagai indikasi.</p>
+      </div></section>
+
+      <section className="bg-paper px-6 py-16 text-center">
+        <h2 className="text-[2rem] md:text-4xl">{user ? "Lanjutkan pekerjaan Anda" : "Siap memulai?"}</h2>
+        <p className="mt-3.5 text-[13px] text-[#64707e]">{user ? `Anda masuk sebagai ${user.name} (${ROLE_LABEL[user.role]}).` : "Siswa masuk lewat Portal Siswa. Penyelenggara, pengawas, dan admin masuk lewat Sekolah."}</p>
+        <button onClick={() => enter("siswa")} className="mt-[25px] inline-flex min-h-11 items-center justify-center bg-navy px-[21px] text-xs font-bold text-white hover:underline">{action.label}</button>
+      </section>
+    </main>
+
+    <footer id="kontak" className="bg-navy pb-[30px] pt-[58px] text-white"><div className={`bd-band grid gap-10 md:grid-cols-[1.5fr_1fr_.7fr] md:gap-20`}>
+      <div><h2 className="text-[27px] text-white">EduAI</h2><p className="mt-[17px] max-w-[470px] text-xs leading-[1.7] text-[#c5cbd5]">Proyek pengawasan ujian sekolah yang mengutamakan keadilan, privasi, dan penilaian manusia. Untuk bantuan akun, hubungi admin sekolah Anda.</p></div>
+      <nav aria-label="Tautan halaman" className="grid grid-cols-2 content-start gap-x-6 gap-y-3.5 pt-2 text-xs">{[["#cara-kerja", "Cara kerja"], ["#privasi", "Privasi"], ["#siswa", "Panduan siswa"], ["#pengawas", "Laporan pengawas"]].map(([href, label]) => <a key={href} href={href} className="w-fit underline underline-offset-3">{label}</a>)}</nav>
+      <div className="flex flex-col items-start gap-7 pt-2"><button onClick={() => enter("siswa")} className="text-xs underline underline-offset-3">{action.label}</button><span className="text-xs text-[#c5cbd5]">© 2026 EduAI</span></div>
+    </div></footer>
+  </div>;
+}
+
+// Layar transisi ke halaman masuk (desain Figma "LoginLoadingScreen"): 1,5 detik, lalu halaman Login.
+// Animasi mati bila pengguna memilih reduced motion (index.css).
+function LoginLoading({ onComplete }: { onComplete: () => void }) {
+  useEffect(() => { const t = window.setTimeout(onComplete, 1500); return () => window.clearTimeout(t); }, [onComplete]);
+  return <main className="grid min-h-screen place-items-center overflow-hidden bg-navy text-white" aria-live="polite">
+    <div className="flex w-[min(310px,calc(100%-3rem))] flex-col items-center">
+      <div className="rocket-stage relative h-[165px] w-[100px]" aria-hidden="true">
+        <div className="absolute left-[15px] top-7 h-[108px] w-[70px] drop-shadow-[0_14px_12px_rgba(0,0,0,0.24)]">
+          <svg viewBox="0 0 84 130" className="relative z-[2] block size-full">
+            <defs>
+              <linearGradient id="rocketBody" x1="17" y1="8" x2="67" y2="104"><stop offset="0" stopColor="#FFFFFF" /><stop offset=".6" stopColor="#F2F1EC" /><stop offset="1" stopColor="#C9CED5" /></linearGradient>
+              <linearGradient id="rocketGold" x1="12" y1="20" x2="57" y2="95"><stop offset="0" stopColor="#E6C95E" /><stop offset="1" stopColor="#A77E10" /></linearGradient>
+            </defs>
+            <path d="M42 4C25 19 20 40 21 77l21 21 21-21C64 40 59 19 42 4Z" fill="url(#rocketBody)" />
+            <path d="M21 63 7 91l18-7Z" fill="url(#rocketGold)" />
+            <path d="m63 63 14 28-18-7Z" fill="url(#rocketGold)" />
+            <path d="m31 91 11 20 11-20Z" fill="#C9A227" />
+            <circle cx="42" cy="44" r="11" fill="#14213D" />
+            <circle cx="39" cy="41" r="3" fill="#FFFFFF" opacity=".42" />
+            <path d="M29 25c6-9 13-13 21-11" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" opacity=".72" />
+          </svg>
+          <span className="rocket-flame absolute -bottom-[17px] left-7 z-[1] h-[30px] w-[15px] origin-top bg-gold-500 [clip-path:polygon(50%_100%,0_0,100%_0)]" />
+          <div className="absolute -bottom-[18px] left-[35px] z-0">{[-8, -16, 0].map((left, i) => <i key={i} className="rocket-smoke absolute top-0 size-4 rounded-full bg-white/90" style={{ left, animationDelay: `${i * 0.18}s` }} />)}</div>
+        </div>
+      </div>
+      <p className="mt-2 text-sm font-medium tracking-[0.1px]">Membuka halaman masuk…</p>
+      <div className="mt-[23px] h-0.5 w-[230px] overflow-hidden bg-white/[0.17]" aria-hidden="true"><span className="rocket-progress block size-full origin-left bg-gold-500" /></div>
+    </div>
+  </main>;
+}
+
+function Login({ go, portal = "siswa" }: { go: (s: Screen) => void; portal?: Portal }) {
   const { setRole } = useRole();
   const { setUser } = useUser();
+  const [mode, setMode] = useState<Portal>(portal);
   const [register, setRegister] = useState(false);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -206,140 +402,157 @@ function Login({ go }: { go: (s: Screen) => void }) {
   const [show, setShow] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const field = "h-12 w-full rounded-xl border border-slate-300 bg-white px-4 text-sm text-slate-900 outline-none placeholder:text-slate-500 focus:border-navy focus:ring-4 focus:ring-blue-100";
-  const [loginRole, setLoginRole] = useState<string>(loginRoles[0]);
+  const [staffTab, setStaffTab] = useState(STAFF_TABS[0]);
+  const student = mode === "siswa";
+  const signup = student && register;               // self-registration exists for students only
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     const mail = email.trim().toLowerCase();
-    if (register && password.length < 6) return setError("Kata sandi minimal 6 karakter.");
+    if (signup && password.length < 6) return setError("Kata sandi minimal 6 karakter.");
     setBusy(true);
     setError("");
     try {
-      const res = register ? await api.register(name.trim(), mail, password) : await api.login(mail, password);
+      const res = signup ? await api.register(name.trim(), mail, password) : await api.login(mail, password);
       session.set(res.token, res.user);
       setUser(res.user);
-      setRole(ROLE_LABEL[res.user.role]);
+      setRole(ROLE_LABEL[res.user.role]);             // the account decides the role, never the tab
       go("dashboard");
     } catch (err) {
-      setError((err as Error).message);
+      setError(authErrorMessage(err instanceof ApiError ? err.status : 0, (err as Error).message, signup));
     } finally {
       setBusy(false);
     }
   };
-  const switchMode = () => { setRegister(!register); setError(""); };
+  const switchPortal = () => { setMode(student ? "sekolah" : "siswa"); setRegister(false); setError(""); };
+  const field = "h-14 w-full rounded-lg border border-[#d8dee5] bg-white px-4 text-base text-[#263246] outline-none placeholder:text-[#9ba6b3] focus:border-navy";
+  const label = "mt-3.5 grid gap-[9px] text-base font-bold text-navy";
+  const title = signup ? "Daftar akun siswa" : student ? "Masuk Siswa" : "Masuk Staf Sekolah";
+  const lead = signup ? "Untuk siswa dengan email sekolah yang diawali siswa, misalnya siswa7@gmail.com." : student ? "Masuk untuk memulai ujian Anda." : "Kelola dan awasi ujian sekolah.";
 
   return (
-    <main className="grid min-h-screen bg-white lg:grid-cols-[minmax(0,2fr)_minmax(26rem,1fr)]">
-      <section className="relative hidden flex-col overflow-hidden p-14 lg:flex">
-        <img src="/brand/eduai-seal.svg" alt="" className="pointer-events-none absolute -right-20 -top-44 w-[52rem] max-w-none opacity-[0.045]" />
-        <div className="relative"><Logo large tagline="Smart Exam Integrity" /></div>
-        <p className="relative mt-10 max-w-xl text-lg leading-8 text-slate-600">EduAI memantau ujian daring secara real-time dengan computer vision, sehingga kampus bisa menjaga integritas tanpa mengganggu konsentrasi peserta.</p>
-        <div className="relative flex flex-1 items-center justify-center pt-6"><img src="/brand/login.jpg" alt="Ilustrasi peserta ujian yang dipantau secara langsung" className="w-full max-w-2xl" /></div>
+    <main className="grid min-h-screen bg-white text-navy min-[801px]:grid-cols-[55%_45%]">
+      <section className="relative grid min-h-[430px] grid-rows-[auto_auto_1fr] overflow-hidden border-b border-[#dfe2e5] px-6 py-[25px] min-[801px]:min-h-screen min-[801px]:border-b-0 min-[801px]:border-r min-[801px]:p-12">
+        <img src="/brand/smart-exam-integrity.webp" alt="" aria-hidden="true" className="pointer-events-none absolute left-[calc(39%-235px)] top-[calc(-13%-235px)] w-[536px] max-w-none opacity-[0.045]" />
+        <button type="button" onClick={() => go("beranda")} aria-label="Kembali ke Beranda" className="relative z-[2] flex w-fit items-center gap-[13px] text-left">
+          <img src="/brand/smart-exam-integrity.webp" alt="" className="size-16" />
+          <span className="flex flex-col gap-[3px]"><strong className="text-[21px] tracking-[6px] text-navy">EDUAI</strong><small className="font-sans font-semibold text-xs font-medium tracking-[1.3px] text-[#8a6b0d]">SMART EXAM INTEGRITY</small></span>
+        </button>
+        <p className="relative z-[2] mt-5 max-w-[650px] text-base leading-[1.65] text-[#536173] min-[801px]:mt-[30px] min-[801px]:text-lg">EduAI memantau ujian daring secara langsung dengan computer vision, membantu sekolah menjaga integritas tanpa mengganggu siswa.</p>
+        {/* Foto tim EduAI (latar transparan, 1151x798): langsung di atas latar panel, tidak dipotong, tanpa lazy loading. */}
+        <img src="/images/login/grid_indikasi.webp" width={1151} height={798} loading="eager" decoding="async"
+          alt="Tiga layar ujian siswa dengan bingkai deteksi emas serta label 'Ponsel terlihat' dan 'Perlu ditinjau', sebagai contoh indikasi AI."
+          className="relative z-[2] mt-6 block h-auto w-[min(78%,430px)] self-center justify-self-center object-contain min-[801px]:mt-0 min-[801px]:w-[min(100%,720px)]" />
       </section>
 
-      <section className="flex flex-col items-center justify-center border-slate-200 px-6 py-8 sm:px-12 lg:border-l lg:px-8">
-        <div className="w-full max-w-sm">
-          <img src="/brand/eduai-seal.svg" alt="Lambang EduAI" className="mx-auto size-24" />
-          <h1 className="mt-4 text-center text-3xl leading-tight text-navy">{register ? "Buat akun EduAI" : "Selamat datang kembali"}</h1>
-          <p className="mt-2 text-center text-sm leading-6 text-slate-500">{register ? "Pendaftaran mandiri hanya untuk siswa (email diawali siswa, misalnya siswa7@gmail.com). Akun staf dibuat oleh Admin." : "Masuk untuk memulai atau mengawasi ujian."}</p>
-          {!register && <div className="mt-5 flex justify-between rounded-full bg-slate-100 p-1" aria-label="Pilihan peran" title="Peran mengikuti akun yang masuk">{loginRoles.map((r) => <button key={r} type="button" aria-pressed={loginRole === r} onClick={() => setLoginRole(r)} className={`rounded-full px-3 py-2 text-[13px] font-semibold transition ${loginRole === r ? "bg-navy text-white" : "text-slate-700 hover:text-navy"}`}>{r}</button>)}</div>}
-          <form onSubmit={submit} className="mt-5 space-y-4">
-            {register && <label className="block"><span className="mb-1.5 block text-sm font-semibold text-navy">Nama lengkap</span><input value={name} onChange={(e) => setName(e.target.value)} className={field} placeholder="Nama sesuai data sekolah" /></label>}
-            <label className="block"><span className="mb-1.5 block text-sm font-semibold text-navy">Email kampus</span><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" className={field} placeholder="contoh: nama@kampus.ac.id" /></label>
-            <div><div className="mb-1.5 flex items-center justify-between"><label htmlFor="login-password" className="text-sm font-semibold text-navy">Kata sandi</label>{!register && <button type="button" onClick={() => alert("Hubungi admin sekolah untuk mengatur ulang kata sandi.")} className="text-xs font-semibold text-navy hover:underline">Lupa kata sandi?</button>}</div>
-              <div className="relative"><input id="login-password" type={show ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={register ? "new-password" : "current-password"} className={`${field} pr-24`} placeholder={register ? "Minimal 6 karakter" : "Masukkan kata sandi"} />
-                <button type="button" onClick={() => setShow(!show)} className="absolute right-4 top-4 text-xs font-medium text-slate-500 hover:text-slate-900">{show ? "Sembunyikan" : "Tampilkan"}</button></div>
-            </div>
-            {error && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm leading-5 text-red-700">{error}</p>}
-            <button type="submit" disabled={!email || !password || busy} className="brand-caps h-14 w-full rounded-xl bg-navy text-sm font-bold text-gold-300 transition hover:bg-blue-900 disabled:cursor-not-allowed">{busy ? "Memproses..." : register ? "Daftar" : "Masuk"}</button>
-          </form>
-          <div className="my-5 flex items-center gap-4 text-xs text-slate-500"><span className="h-px flex-1 bg-slate-200" />atau<span className="h-px flex-1 bg-slate-200" /></div>
-          <button type="button" disabled title="Belum tersedia" className="flex h-12 w-full cursor-not-allowed items-center justify-center gap-2.5 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-500"><span className="text-gold-700"><Icon name="shield" size={18} /></span>Masuk dengan akun kampus (SSO)</button>
-          <p className="mt-5 text-center text-sm text-slate-600">{register ? "Sudah punya akun?" : "Belum punya akun?"} <button type="button" onClick={switchMode} className="font-bold text-navy hover:underline">{register ? "Masuk" : "Daftar"}</button></p>
-          <p className="mt-6 text-center text-xs text-slate-500">Bahasa Indonesia · © 2026 EduAI</p>
-        </div>
+      <section className="flex items-center justify-center bg-paper px-6 pb-[70px] pt-[55px] min-[801px]:min-h-screen min-[801px]:p-8">
+        <form onSubmit={submit} className="flex w-[min(100%,480px)] flex-col border border-[#e0e3e6] bg-white px-6 py-10 sm:p-12">
+          <img src="/brand/smart-exam-integrity.webp" alt="Logo EduAI Smart Exam Integrity" className="size-[67px] self-center" />
+          <h1 className="mt-3 text-center font-sans text-[32px] font-bold leading-[1.18] tracking-[-1px] text-navy sm:text-[40px]">{title}</h1>
+          <p className="mt-1.5 text-center text-base leading-[1.45] text-[#778392] sm:text-lg">{lead}</p>
+
+          {!student && <div className="mt-[18px] grid grid-cols-3 rounded-3xl bg-[#f0f2f5] p-1" role="group" aria-label="Peran staf" title="Peran mengikuti akun yang masuk">
+            {STAFF_TABS.map((t) => <button key={t} type="button" aria-pressed={staffTab === t} onClick={() => setStaffTab(t)} className={`min-h-11 rounded-[22px] px-1 text-xs min-[1200px]:px-2 min-[1200px]:text-sm ${staffTab === t ? "bg-navy font-bold text-white" : "text-navy"}`}>{t}</button>)}
+          </div>}
+
+          {signup && <label className={label}>Nama lengkap<input value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" className={`${field} font-normal`} placeholder="Nama sesuai data sekolah" /></label>}
+          <label className={label}>Email kampus<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" className={`${field} font-normal`} placeholder="contoh: nama@kampus.ac.id" /></label>
+          <div className={label}>
+            <span className="flex items-center justify-between"><label htmlFor="login-password">Kata sandi</label>{!signup && <button type="button" onClick={() => alert("Hubungi admin sekolah untuk mengatur ulang kata sandi.")} className="text-xs font-normal text-navy hover:underline">Lupa kata sandi?</button>}</span>
+            <div className="relative"><input id="login-password" type={show ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={signup ? "new-password" : "current-password"} className={`${field} pr-28 font-normal`} placeholder={signup ? "Minimal 6 karakter" : "Masukkan kata sandi"} />
+              <button type="button" onClick={() => setShow(!show)} className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-normal text-[#6d7888] hover:text-navy">{show ? "Sembunyikan" : "Tampilkan"}</button></div>
+          </div>
+          {error && <p role="alert" className="mt-3.5 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm leading-5 text-red-700">{error}</p>}
+          <button type="submit" disabled={!email || !password || (signup && !name.trim()) || busy} className="mt-3.5 h-14 rounded-lg bg-navy text-base font-extrabold tracking-[2px] text-gold-300 transition hover:bg-navy-2 disabled:cursor-not-allowed">{busy ? "MEMPROSES…" : signup ? "DAFTAR" : "MASUK"}</button>
+
+          <p className="mt-3 text-center text-[13px] text-[#667386]">{student
+            ? <>{signup ? "Sudah punya akun?" : "Belum punya akun?"} <button type="button" onClick={() => { setRegister(!register); setError(""); }} className="font-extrabold text-navy">{signup ? "Masuk" : "Daftar"}</button></>
+            : "Akun staf dibuat oleh admin sekolah."}</p>
+          <button type="button" onClick={switchPortal} className="mx-auto mt-2.5 w-fit text-[13px] font-bold text-[#806411] underline underline-offset-4">{student ? "Staf sekolah? Masuk di sini" : "Siswa? Masuk di sini"}</button>
+          <p className="mt-3 text-center text-xs text-[#8290a0]">Bahasa Indonesia · © 2026 EduAI</p>
+        </form>
       </section>
     </main>
   );
 }
 
 function Sidebar({ active, go }: { active: Screen; go: (s: Screen) => void }) {
+  // Narrow icon sidebar (72 px, white). From 1280 px it widens to 240 px while the pointer (or keyboard focus) is on it.
+  // Phone (< 768 px): a bottom bar with 5 places; the other menus, Profil and Keluar are under "Lainnya".
   const [more, setMore] = useState(false);
   const { role } = useRole();
   const { user } = useUser();
-  const menus: Record<Role, { id: Screen; label: string; icon: IconName }[]> = {
-    Siswa: [
-      { id: "dashboard", label: "Dasbor", icon: "grid" },
-      { id: "my-exams", label: "Ujian Saya", icon: "calendar" },
-      { id: "meeting", label: "Rapat Video", icon: "video" },
-      { id: "settings", label: "Profil", icon: "settings" },
-    ],
-    Pengawas: [
-      { id: "dashboard", label: "Dasbor", icon: "grid" },
-      { id: "sessions", label: "Sesi Ujian", icon: "calendar" },
-      { id: "monitor", label: "Monitoring", icon: "monitor" },
-      { id: "indications", label: "Indikasi", icon: "bell" },
-      { id: "history", label: "Riwayat", icon: "clock" },
-      { id: "report", label: "Laporan", icon: "report" },
-      { id: "meeting", label: "Rapat Video", icon: "video" },
-      { id: "settings", label: "Profil", icon: "settings" },
-    ],
-    "Penyelenggara Ujian": [
-      { id: "dashboard", label: "Dasbor", icon: "grid" },
-      { id: "sessions", label: "Sesi Ujian", icon: "calendar" },
-      { id: "students", label: "Peserta", icon: "users" },
-      { id: "users", label: "Pengawas", icon: "shield" },
-      { id: "report", label: "Laporan", icon: "report" },
-      { id: "meeting", label: "Rapat Video", icon: "video" },
-    ],
-    Admin: [
-      { id: "dashboard", label: "Dasbor", icon: "grid" },
-      { id: "sessions", label: "Daftar Ujian", icon: "calendar" },
-      { id: "users", label: "Manajemen User", icon: "users" },
-      { id: "permissions", label: "Role & Izin", icon: "shield" },
-      { id: "configuration", label: "Konfigurasi", icon: "settings" },
-      { id: "retention", label: "Retensi Data", icon: "clock" },
-      { id: "audit", label: "Audit Log", icon: "file" },
-      { id: "meeting", label: "Rapat Video", icon: "video" },
-      { id: "settings", label: "Profil", icon: "settings" },
-    ],
-    "Pihak Sekolah": [
-      { id: "dashboard", label: "Dasbor", icon: "grid" },
-      { id: "sessions", label: "Informasi Sesi", icon: "calendar" },
-      { id: "indications", label: "Indikasi Tervalidasi", icon: "bell" },
-      { id: "report", label: "Laporan Final", icon: "report" },
-      { id: "meeting", label: "Rapat Video", icon: "video" },
-      { id: "settings", label: "Profil", icon: "settings" },
-    ],
-  };
-  const nav = menus[role];
-  const logout = () => { session.clear(); go("login"); };
-  const isOn = (id: Screen) => active === id || (["create", "exam-detail", "waiting"].includes(active) && id === "sessions") || (["detail", "student-detail", "timeline"].includes(active) && id === "monitor");
-  const open = (id: Screen) => { go(id); setMore(false); };
-  // HP: empat menu pertama di bottom navigation, sisanya dan tombol keluar di "Lainnya".
-  const primary = nav.slice(0, 4);
-  const rest = nav.slice(4);
-  const moreOn = more || rest.some((item) => isOn(item.id));
+  const notify = useContext(NotifyContext);
+  const nav = NAV_MENUS[role] as (NavItem & { id: Screen })[];
+  const unreviewed = BADGE_ROLES.includes(role) ? notify.items.filter((c) => caseStatus(c) === "belum").length : 0;
+  const badge = (id: Screen) => (id === "indications" ? badgeText(unreviewed) : null);
+  const labelOf = (item: NavItem) => { const b = badge(item.id as Screen); return b ? `${item.label}, ${b} belum ditinjau` : item.label; };
+  const logout = () => { setMore(false); session.clear(); go("login"); };
+  const open = (id: Screen) => { setMore(false); go(id); };
+  const profileOn = active === PROFILE_SCREEN;
+  const { bar, more: rest } = mobileSplit(nav) as { bar: typeof nav; more: typeof nav };
+  const PROFILE = PROFILE_SCREEN as Screen;
+  const moreOn = more || profileOn || rest.some((item) => isActive(active, item.id));
+  const moreRef = useRef<HTMLDivElement>(null), barRef = useRef<HTMLDivElement>(null), sheetRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!more) return;
+    const inside = (t: Node) => [moreRef, barRef, sheetRef].some((r) => r.current?.contains(t));
+    const close = (e: Event) => { if (e instanceof KeyboardEvent ? e.key === "Escape" : !inside(e.target as Node)) setMore(false); };
+    document.addEventListener("keydown", close); document.addEventListener("mousedown", close);
+    return () => { document.removeEventListener("keydown", close); document.removeEventListener("mousedown", close); };
+  }, [more]);
+  const ring = "outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#c9a227]";
+  const wideLabel = "hidden whitespace-nowrap min-[1280px]:group-hover/side:inline min-[1280px]:group-has-[:focus-visible]/side:inline";
+  const tip = (text: string) => <span role="tooltip" className="pointer-events-none invisible fixed left-[80px] z-[60] whitespace-nowrap rounded bg-navy px-2.5 py-1.5 text-xs font-medium text-white group-hover/item:visible group-focus-visible/item:visible min-[1280px]:hidden">{text}</span>;
+  const badgeEl = (text: string | null) => text ? <span aria-hidden="true" data-badge className="absolute -right-2.5 -top-2 h-[18px] min-w-[18px] rounded-full bg-[#D92D20] px-1 text-center text-[11px] font-semibold leading-[18px] text-white ring-2 ring-white">{text}</span> : null;
+  const avatar = (size: string) => <span className={`grid ${size} shrink-0 place-items-center rounded-full bg-gold-500 text-[11px] font-bold text-navy ${profileOn ? "ring-2 ring-navy ring-offset-2" : ""}`}>{initials(user?.name ?? "")}</span>;
+  const moreMenu = (id: string, bottom: string, phone: boolean) => <div id={id} role="menu" aria-label="Lainnya" className={`absolute z-[70] w-56 rounded border border-[#E2E5EA] bg-white py-1.5 text-sm text-navy shadow-[0_4px_12px_rgba(20,33,61,0.12)] ${bottom}`}>
+    {phone && rest.map((item) => { const on = isActive(active, item.id); return <button key={item.id} type="button" role="menuitem" onClick={() => open(item.id)} aria-current={on ? "page" : undefined} className={`flex h-11 w-full items-center gap-3 px-4 text-left hover:bg-[#F4F5F7] ${ring} ${on ? "font-semibold" : ""}`}><span className="relative"><NavIcon name={item.icon} filled={on} size={20} />{badgeEl(badge(item.id))}</span>{labelOf(item)}</button>; })}
+    {phone && <button type="button" role="menuitem" onClick={() => open(PROFILE)} aria-current={profileOn ? "page" : undefined} className={`flex h-11 w-full items-center gap-3 px-4 text-left hover:bg-[#F4F5F7] ${ring}`}>{avatar("size-5")}Profil</button>}
+    <button type="button" role="menuitem" onClick={() => open(PROFILE)} className={`flex h-11 w-full items-center gap-3 px-4 text-left hover:bg-[#F4F5F7] ${ring}`}><Icon name="settings" size={20} />Pengaturan</button>
+    <div className="my-1.5 border-t border-[#E2E5EA]" />
+    <button type="button" role="menuitem" onClick={logout} className={`flex h-11 w-full items-center gap-3 px-4 text-left hover:bg-[#F4F5F7] ${ring}`}><Icon name="logout" size={20} />Keluar</button>
+  </div>;
   return <>
-    <aside className="fixed inset-y-0 left-0 z-50 hidden w-[4.5rem] flex-col border-r border-slate-200 bg-white px-3 py-5 md:flex wide:w-64 wide:p-5">
-      <div className="border-b border-slate-200 pb-5"><div className="hidden wide:block"><Logo /></div><img src="/brand/eduai-seal.png" alt="Lambang EduAI" className="mx-auto size-11 wide:hidden" /></div>
-      <nav className="mt-6 flex-1 space-y-1 overflow-y-auto" aria-label="Menu utama">
-        <p className="brand-caps mb-3 hidden px-3 text-[11px] font-medium text-slate-500 wide:block">Ruang kerja</p>
-        {nav.map((item) => { const on = isOn(item.id); return <button key={item.id} onClick={() => go(item.id)} aria-label={item.label} aria-current={on ? "page" : undefined} className={`group flex w-full items-center justify-center gap-3 rounded-lg py-2.5 text-sm font-medium transition wide:justify-start wide:px-3.5 ${on ? "bg-navy text-white" : "text-slate-700 hover:bg-slate-100"}`}><span className={on ? "text-gold-300" : "text-slate-500"}><Icon name={item.icon} size={19} /></span><span className="hidden wide:inline">{item.label}</span><span role="tooltip" className="pointer-events-none invisible fixed left-[5rem] z-[60] whitespace-nowrap rounded-md bg-navy px-2.5 py-1.5 text-xs font-medium text-white group-hover:visible group-focus-visible:visible wide:hidden">{item.label}</span></button>; })}
+    <aside aria-label="Sidebar" className="group/side fixed inset-y-0 left-0 z-50 hidden w-[72px] flex-col border-r border-[#E2E5EA] bg-white py-5 text-navy transition-[width] duration-200 ease-out md:flex min-[1280px]:hover:w-60 min-[1280px]:has-[:focus-visible]:w-60">
+      <button type="button" onClick={() => go("beranda")} aria-label="Beranda Smart Exam Integrity" className={`group/item mb-5 flex h-14 shrink-0 items-center gap-3 px-[14px] text-left ${ring}`}>
+        <img src="/brand/smart-exam-integrity.webp" alt="" className="size-11 shrink-0" />
+        <span data-brand-name className="hidden leading-tight min-[1280px]:group-hover/side:block min-[1280px]:group-has-[:focus-visible]/side:block">
+          <span className="block whitespace-nowrap text-[15px] font-bold text-navy">Smart Exam</span>
+          <span className="block whitespace-nowrap text-[15px] font-bold text-navy">Integrity</span>
+        </span>{tip("Beranda")}
+      </button>
+      {/* No scrollbar: rows are 52 px and shrink together (down to 32 px) when the screen is short, e.g. the 9 admin menus. */}
+      <nav aria-label="Menu utama" className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        {nav.map((item) => { const on = isActive(active, item.id); return <button key={item.id} type="button" onClick={() => go(item.id)} aria-label={labelOf(item)} aria-current={on ? "page" : undefined}
+          className={`group/item flex min-h-8 w-full shrink basis-[52px] items-center gap-4 px-6 text-left text-[15px] ${ring} ${on ? "font-semibold" : ""}`}>
+          <span className="relative transition-transform duration-150 group-hover/item:scale-105"><NavIcon name={item.icon} filled={on} />{badgeEl(badge(item.id))}</span>
+          <span className={wideLabel}>{item.label}</span>{tip(item.label)}
+        </button>; })}
       </nav>
-      <div className="mt-4 rounded-xl border-slate-200 wide:border wide:p-3"><div className="flex flex-col items-center gap-3 wide:flex-row"><div className="grid size-9 shrink-0 place-items-center rounded-full bg-navy text-xs font-semibold text-gold-300">{initials(user?.name ?? "")}</div><div className="hidden min-w-0 flex-1 wide:block"><p className="truncate text-xs font-bold text-slate-900">{user?.name}</p><p className="truncate text-[11px] text-slate-500">{role}</p></div><button onClick={logout} className="text-slate-400 hover:text-slate-900" aria-label="Keluar" title="Keluar"><Icon name="arrow" size={16} /></button></div></div>
+      <div ref={moreRef} className="relative mt-3 shrink-0">
+        <button type="button" onClick={() => open(PROFILE)} aria-label="Profil" aria-current={profileOn ? "page" : undefined} className={`group/item flex h-[52px] w-full items-center gap-4 px-[22px] text-left text-[15px] ${ring} ${profileOn ? "font-semibold" : ""}`}>
+          <span className="transition-transform duration-150 group-hover/item:scale-105">{avatar("size-7")}</span><span className={wideLabel}>Profil</span>{tip("Profil")}
+        </button>
+        <button type="button" onClick={() => setMore(!more)} aria-label="Lainnya" aria-expanded={more} aria-haspopup="menu" aria-controls="menu-lainnya" className={`group/item flex h-[52px] w-full items-center gap-4 px-6 text-left text-[15px] ${ring}`}>
+          <span className="transition-transform duration-150 group-hover/item:scale-105"><NavIcon name="menu" filled={more} /></span><span className={wideLabel}>Lainnya</span>{!more && tip("Lainnya")}
+        </button>
+        {more && moreMenu("menu-lainnya", "bottom-14 left-3 hidden md:block", false)}
+      </div>
     </aside>
 
-    {more && <button className="fixed inset-0 z-40 bg-slate-900/30 md:hidden" aria-label="Tutup menu lainnya" onClick={() => setMore(false)} />}
-    {more && <div id="menu-lainnya" className="fixed inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-50 rounded-t-2xl border-t border-slate-200 bg-white p-4 md:hidden">
-      <div className="space-y-1">{rest.map((item) => { const on = isOn(item.id); return <button key={item.id} onClick={() => open(item.id)} aria-current={on ? "page" : undefined} className={`flex w-full items-center gap-3 rounded-lg px-3.5 py-2.5 text-sm font-medium transition ${on ? "bg-navy text-white" : "text-slate-700 hover:bg-slate-100"}`}><span className={on ? "text-gold-300" : "text-slate-500"}><Icon name={item.icon} size={19} /></span>{item.label}</button>; })}</div>
-        <div className="mt-4 rounded-xl border border-slate-200 p-3"><div className="flex items-center gap-3"><div className="grid size-9 shrink-0 place-items-center rounded-full bg-navy text-xs font-semibold text-gold-300">{initials(user?.name ?? "")}</div><div className="min-w-0 flex-1"><p className="truncate text-xs font-bold text-slate-900">{user?.name}</p><p className="truncate text-[11px] text-slate-500">{role}</p></div><button onClick={logout} className="text-slate-400 hover:text-slate-900" aria-label="Keluar" title="Keluar"><Icon name="arrow" size={16} /></button></div></div>
-    </div>}
-    <nav className="fixed inset-x-0 bottom-0 z-50 flex border-t border-slate-200 bg-white pb-[env(safe-area-inset-bottom)] md:hidden" aria-label="Navigasi bawah">
-      {primary.map((item) => { const on = isOn(item.id); return <button key={item.id} onClick={() => open(item.id)} aria-label={item.label} title={item.label} aria-current={on ? "page" : undefined} className="grid h-14 flex-1 place-items-center"><span className={`grid h-9 w-11 place-items-center rounded-lg ${on ? "bg-navy text-gold-300" : "text-slate-500"}`}><Icon name={item.icon} size={22} /></span></button>; })}
-      <button onClick={() => setMore(!more)} aria-label="Lainnya" title="Lainnya" aria-expanded={more} aria-controls="menu-lainnya" className="grid h-14 flex-1 place-items-center"><span className={`grid h-9 w-11 place-items-center rounded-lg ${moreOn ? "bg-navy text-gold-300" : "text-slate-500"}`}><Icon name="more" size={22} /></span></button>
+    <nav aria-label="Navigasi bawah" className="fixed inset-x-0 bottom-0 z-50 flex border-t border-[#E2E5EA] bg-white pb-[env(safe-area-inset-bottom)] text-navy md:hidden">
+      {bar.map((item) => { const on = isActive(active, item.id); return <button key={item.id} type="button" onClick={() => open(item.id)} aria-label={labelOf(item)} aria-current={on ? "page" : undefined} className={`grid h-14 flex-1 place-items-center ${ring}`}>
+        <span className="relative"><NavIcon name={item.icon} filled={on} />{badgeEl(badge(item.id))}</span></button>; })}
+      <div ref={barRef} className="relative flex flex-1">
+        <button type="button" onClick={() => setMore(!more)} aria-label="Lainnya" aria-expanded={more} aria-haspopup="menu" aria-controls="menu-lainnya-hp" className={`grid h-14 flex-1 place-items-center ${ring}`}>
+          <span className="relative"><NavIcon name="menu" filled={moreOn} />{badgeEl(rest.some((i) => badge(i.id)) ? "•" : null)}</span></button>
+      </div>
     </nav>
+    {more && <div className="md:hidden">
+      <button type="button" className="fixed inset-0 z-[60] bg-[#14213d]/20" aria-label="Tutup menu lainnya" onClick={() => setMore(false)} />
+      <div ref={sheetRef} className="fixed inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-[70]">{moreMenu("menu-lainnya-hp", "inset-x-0 bottom-0 w-full rounded-b-none", true)}</div>
+    </div>}
   </>;
 }
 
@@ -348,19 +561,20 @@ function Topbar({ title, go }: { title: string; go: (s: Screen) => void }) {
   const { user } = useUser();
   const { setEventId, setExamId } = useSel();
   const notify = useContext(NotifyContext);
+  const school = useSchoolName();
   const [notificationsOpen, setNotificationsOpen] = useState(false);
-  const [now, setNow] = useState(new Date());
-  useEffect(() => { const t = window.setInterval(() => setNow(new Date()), 1000); return () => window.clearInterval(t); }, []);
   const staff = role !== "Siswa";
   // Pop-up "Tinjau": the new case's first event in the existing evidence page. Bell item: the case on the Indikasi page.
   const openToast = (c: CaseSummary) => { setExamId(c.exam_id); setEventId(c.first_event_id); go(role === "Pihak Sekolah" ? "indications" : "detail"); };
   const openCase = (c: CaseSummary) => { setNotificationsOpen(false); setExamId(c.exam_id); setEventId(c.first_event_id); go("indications"); };
-  return <header className="sticky top-0 z-30 flex h-18 items-center justify-between border-b border-slate-200 bg-white/95 px-4 sm:px-8">
-    <div className="flex min-w-0 items-center gap-3"><img src="/brand/eduai-seal.svg" alt="Lambang EduAI" className="size-9 md:hidden" /><div className="min-w-0"><p className="truncate text-sm font-bold text-slate-900">{title}</p><p className="text-xs text-slate-500">SMA Negeri 8 Bandung</p></div></div>
-    <div className="flex items-center gap-3 sm:gap-5">
-      <div className="hidden items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold tabular-nums text-navy md:flex" title="Waktu sekarang"><Icon name="clock" size={17} />{now.toLocaleTimeString("id-ID", { hour12: false })}</div>
-      {staff && <div className="relative"><button onClick={() => { setNotificationsOpen(!notificationsOpen); notify.markRead(); }} className="relative rounded-md p-2 text-slate-500 hover:bg-slate-100" aria-label="Buka notifikasi"><Icon name="bell" />{notify.unread > 0 && <span className="absolute right-2 top-2 size-2 rounded-full bg-amber-500 ring-2 ring-white" />}</button>{notificationsOpen && <div className="absolute right-0 top-12 z-50 w-80 max-md:fixed max-md:inset-x-4 max-md:top-16 max-md:w-auto overflow-hidden rounded-md border border-slate-200 bg-white"><div className="border-b border-slate-100 p-4"><p className="text-sm font-bold text-slate-900">Notifikasi {role === "Pihak Sekolah" ? "Sekolah" : "Pengawas"}</p><p className="mt-1 text-xs text-slate-500">{notify.items.filter((i) => i.unreviewed_count > 0).length} kasus belum ditinjau</p></div><div className="max-h-96 divide-y divide-slate-100 overflow-y-auto">{notify.summaries.slice(0, 2).flatMap((sm) => sm.summary.students.filter((st) => st.indications.length).slice(0, 6).map((st) => <button key={`s-${sm.exam_id}-${st.student_id}`} onClick={() => { setNotificationsOpen(false); notify.openSummary(sm.exam_id); }} className="flex w-full gap-3 bg-blue-50/40 p-4 text-left hover:bg-slate-50"><span className="mt-0.5 text-blue-700"><Icon name="report" size={15} /></span><span className="min-w-0"><span className="block text-xs font-semibold leading-5 text-slate-800">Ringkasan · {st.name}</span><span className="block text-xs leading-5 text-slate-600">{st.indications.map((i) => `${i.label ?? i.indicator} ${i.occurrences}×`).join(" · ")}</span><span className="mt-1 block text-[10px] text-slate-400">{sm.kind === "pre_end" ? "10 menit sebelum selesai" : "Ringkasan akhir"} · {sm.summary.exam_name}</span></span></button>))}{notify.items.length === 0 ? <p className="p-4 text-xs text-slate-500">Belum ada indikasi.</p> : notify.items.slice(0, 8).map((item) => <button key={item.case_id} onClick={() => openCase(item)} className="flex w-full gap-3 p-4 text-left hover:bg-slate-50"><span className={`mt-1 size-2 shrink-0 rounded-full ${item.unreviewed_count > 0 ? "bg-amber-500" : "bg-blue-600"}`} /><span><span className="block text-xs leading-5 text-slate-700">{eventTitle(item)} — {item.student?.name}</span><span className="mt-1 block text-[10px] text-slate-400">{item.episode_count ?? item.event_count} kejadian{item.rule && !item.rule.met ? " · di bawah ambang" : ""} · {item.exam?.name} · {minutesAgo(item.last_start_ts)}</span></span></button>)}</div></div>}</div>}
-      <div className="flex items-center gap-3 border-l border-slate-200 pl-3 sm:pl-5"><div className="grid size-9 place-items-center rounded-full bg-navy text-xs font-semibold text-gold-300">{initials(user?.name ?? "")}</div><div className="hidden sm:block"><p className="text-sm font-bold text-slate-800">{user?.name}</p><p className="text-xs text-slate-500">{role}</p></div></div>
+  return <header className="sticky top-0 z-30 flex h-[4.875rem] items-center justify-between border-b border-slate-200 bg-white px-4 sm:px-8">
+    <div className="flex min-w-0 items-center gap-3"><button type="button" onClick={() => go("beranda")} aria-label="Beranda EduAI" title="Beranda" className="shrink-0 md:hidden"><img src="/brand/smart-exam-integrity.webp" alt="" className="size-9" /></button><div className="min-w-0"><p data-page-title className="truncate font-sans font-semibold text-lg leading-tight text-navy sm:text-[1.4rem]">{title}</p><p className="mt-1 text-xs text-[#77818f]">{school ?? role}</p></div></div>
+    <div className="flex items-center gap-3 sm:gap-4">
+      {staff && <button onClick={() => { setNotificationsOpen(true); notify.markRead(); }} className="relative grid size-9 place-items-center rounded border border-[#dfe2e5] bg-white text-navy hover:bg-paper" aria-label="Buka notifikasi" aria-haspopup="dialog" aria-expanded={notificationsOpen}><Icon name="bell" size={19} />{notify.unread > 0 && <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-gold-500 ring-2 ring-white" />}</button>}
+      {staff && user && <NotifPanel open={notificationsOpen} onClose={() => setNotificationsOpen(false)} cases={notify.items} summaries={notify.summaries} user={user}
+        canOpenEvidence={mayOpenEvidence(role)} canMark={mayOpenEvidence(role)} canReview={role === "Pengawas" || role === "Penyelenggara Ujian" || role === "Admin"}
+        onReview={openCase} onReport={(id) => { setNotificationsOpen(false); setExamId(id); go("report"); }} onOpenSummary={notify.openSummary} />}
+      <div className="flex items-center gap-3"><div className="grid size-9 place-items-center rounded-full bg-gold-500 text-xs font-extrabold text-navy">{initials(user?.name ?? "")}</div><div className="hidden sm:block"><p className="text-sm font-bold text-slate-800">{user?.name}</p><p className="text-xs text-slate-500">{role}</p></div></div>
     </div>
     {notify.summaryToast && <div role="alert" className="fixed right-6 top-20 z-[60] w-80 rounded-md border border-blue-300 bg-white p-4 shadow-lg"><div className="flex items-start gap-3"><span className="mt-0.5 text-blue-700"><Icon name="report" size={18} /></span><div className="min-w-0 flex-1"><p className="text-sm font-bold text-slate-900">{notify.summaryToast.kind === "pre_end" ? "Ringkasan indikasi · 10 menit lagi selesai" : "Ringkasan akhir indikasi"}</p><p className="mt-1 text-xs leading-5 text-slate-600">{notify.summaryToast.summary.exam_name} · {notify.summaryToast.summary.students.filter((s) => s.indications.length).length} siswa dengan indikasi tercatat</p><p className="mt-1 text-[11px] text-slate-400">Indikasi potensial untuk ditinjau — bukan keputusan pelanggaran.</p><div className="mt-3 flex gap-2"><Button className="h-8 px-3 text-xs" onClick={() => { const s = notify.summaryToast!; notify.dismissSummary(); notify.openSummary(s.exam_id); }}>Lihat ringkasan</Button><Button variant="ghost" className="h-8 px-3 text-xs" onClick={notify.dismissSummary}>Tutup</Button></div></div></div></div>}
     {notify.summaryExam !== null && <SummaryDialog examId={notify.summaryExam} onClose={notify.closeSummary} go={go} />}
@@ -396,72 +610,173 @@ function SummaryDialog({ examId, onClose, go }: { examId: number; onClose: () =>
 }
 
 function AppShell({ children, active, go, title }: { children: ReactNode; active: Screen; go: (s: Screen) => void; title: string }) {
-  return <div className="min-h-screen bg-slate-50"><Sidebar active={active} go={go} /><div className="pb-16 md:pb-0 md:pl-[4.5rem] wide:pl-64"><Topbar title={title} go={go} />{children}</div></div>;
+  return <div className="min-h-screen bg-paper"><Sidebar active={active} go={go} /><div className="pb-16 md:pb-0 md:pl-[72px]"><Topbar title={title} go={go} />{children}</div></div>;
 }
 
 function PageTitle({ eyebrow, title, description, action }: { eyebrow?: string; title: ReactNode; description: string; action?: ReactNode }) {
-  return <div className="mb-7 flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div>{eyebrow && <p className="brand-caps mb-2 text-xs font-semibold text-gold-700">{eyebrow}</p>}<h1 className="text-2xl leading-tight text-slate-900 sm:text-3xl">{title}</h1><p className="mt-2 text-sm text-slate-500">{description}</p></div>{action}</div>;
+  return <div className="mb-7 flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div>{eyebrow && <p className="brand-caps mb-2 text-xs font-semibold text-gold-700">{eyebrow}</p>}<h1 className="text-2xl leading-tight tracking-tight text-navy sm:text-[1.875rem]">{title}</h1><p className="mt-2 text-sm text-[#687483]">{description}</p></div>{action}</div>;
 }
 
-function greeting() { const h = new Date().getHours(); return h < 11 ? "Selamat pagi" : h < 15 ? "Selamat siang" : h < 18 ? "Selamat sore" : "Selamat malam"; }
+function greeting() { return greetingWib(); }
 
 function Dashboard({ go }: { go: (s: Screen) => void }) {
   const { role } = useRole();
-  if (role === "Siswa") return <StudentDashboard go={go} />;
-  if (role === "Admin") return <AdminDashboard go={go} />;
-  if (role === "Penyelenggara Ujian" || role === "Pihak Sekolah") return <InstitutionDashboard go={go} role={role} />;
+  const kind = dashboardKind(role);
+  if (kind === "siswa") return <StudentDashboard go={go} />;
+  if (kind === "admin") return <AdminDashboard go={go} />;
+  if (kind === "institusi") return <InstitutionDashboard go={go} role={role as "Penyelenggara Ujian" | "Pihak Sekolah"} />;
   return <SupervisorDashboard go={go} />;
 }
 
+/** Re-render every `every` ms so relative times ("5 mnt lalu") stay current. */
+function useNow(every = 30_000) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const t = window.setInterval(() => setNow(Date.now()), every); return () => window.clearInterval(t); }, [every]);
+  return now;
+}
+
+// Dasbor pengawas (desain Figma "ProctorPortalDashboard"). Semua angka dari API; kosong = "Belum ada data".
+// Hanya teks dan angka: tidak ada video atau audio di halaman ini.
 function SupervisorDashboard({ go }: { go: (s: Screen) => void }) {
   const { user } = useUser();
   const { setExamId, setEventId } = useSel();
+  const now = useNow();
   const d = usePoll(() => api.dashboard(), [], 10000);
   const s = d.data?.summary;
+  const caseList = usePoll(() => api.cases(), [], 15000);
+  const day = wibDate(now);
+  // today's indications (WIB day) for the stacked hourly columns, same chart as Monitoring
+  const dayStart = Date.parse(`${day}T00:00:00+07:00`);
+  const todayEvents = usePoll(() => api.events({ category: "indication", since: new Date(dayStart).toISOString(), limit: 500 }), [dayStart], 30000);
+  const breakdown = caseList.data && s?.cases_total != null ? caseStatusBreakdown(caseList.data.cases, s.cases_total) : null;
+  const today = todayEvents.data ? { data: sessionTimeline(todayEvents.data.events, dayStart, Math.max(now, dayStart + 60_000)), capped: todayEvents.data.events.length >= 500 } : null;
   const exams = d.data?.exams ?? [];
-  const active = exams.find((e) => e.status === "Sedang Berlangsung");
-  const scheduled = exams.find((e) => e.status === "Terjadwal");
-  const summary = [
-    [String(s?.active_sessions ?? "—"), "Sesi aktif", "video", "blue"],
-    [String(s?.students_online ?? "—"), "Siswa sedang ujian", "users", "gold"],
-    [String(s?.cases_unreviewed ?? "—"), "Kasus belum ditinjau", "bell", "orange"],
-    [String(s?.valid ?? "—"), "Deteksi valid", "check", "green"],
-    [String(s?.further ?? "—"), "Perlu tinjauan lanjut", "clock", "amber"],
-  ];
-  const tiles: Record<string, string> = { blue: "bg-blue-50 text-navy", gold: "bg-cream text-gold-700", orange: "bg-orange-50 text-orange-700", green: "bg-emerald-50 text-emerald-700", amber: "bg-amber-50 text-amber-700" };
+  const active = activeExams(exams);
+  const upcoming = upcomingExams(exams);
+  const statusOf = new Map(exams.map((e) => [e.id, e.status]));
+  const activeIds = active.map((e) => e.id).join(",");
+  const rows = usePoll(() => Promise.all(active.map((e) => api.students(e.id).then((r) => [e.id, r] as const))), [activeIds], 10000);
+  const gaps = new Map((rows.data ?? []).map(([id, r]) => [id, analysisGaps(r)]));
+  const cases = (d.data?.recent_cases ?? []).slice(0, 3);
+  const loading = d.loading && !d.data;
   const openExam = (id: number, screen: Screen) => { setExamId(id); go(screen); };
+  const panel = "overflow-hidden rounded border border-line bg-white";
+  const heading = (title: string, sub: string, action?: ReactNode) => <div className="flex min-h-[68px] items-start justify-between gap-3 border-b border-[#e4e6e8] px-[18px] py-4"><div><h2 className="text-[17px] leading-[1.3]">{title}</h2><p className="mt-1 text-xs text-[#89919d]">{sub}</p></div>{action}</div>;
+  const link = (label: string, to: Screen) => <button onClick={() => go(to)} className="shrink-0 text-xs font-bold text-[#836713] underline underline-offset-3">{label}</button>;
+  const empty = (text: string) => <div className="px-6 py-10 text-center"><p className="text-sm font-bold text-navy">{loading ? "Memuat…" : NO_DATA}</p>{!loading && <p className="mx-auto mt-1.5 max-w-72 text-xs leading-5 text-[#7d8794]">{text}</p>}</div>;
+
   return <AppShell active="dashboard" go={go} title="Dasbor"><main className="p-4 sm:p-8">
-    <PageTitle title={`${greeting()}, ${user?.name.split(" ")[0] ?? ""}`} description="Berikut ringkasan kegiatan ujian yang ditugaskan kepada Anda hari ini." />
-    {d.error && <Notice tone="red">{d.error}</Notice>}
-    {s?.cases_total != null && <p className="mb-3 text-sm text-slate-600"><span className="font-bold text-slate-900">{s.cases_total} kasus</span> terkelompok dari <span className="font-bold text-slate-900">{s.detections_total} deteksi AI</span>. Satu kasus = kejadian berulang dari siswa, ujian, dan jenis indikasi yang sama; setiap deteksi asli tetap tersimpan.</p>}
-    <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5" aria-label="Ringkasan">{summary.map(([num, label, icon, tone]) => <div key={label} className="flex items-start gap-3.5 rounded-md border border-slate-200 bg-white p-4"><span className={`grid size-10 shrink-0 place-items-center rounded-xl ${tiles[tone]}`}><Icon name={icon as IconName} size={19} /></span><div className="min-w-0"><p className="text-2xl font-bold leading-7 text-navy">{num}</p><p className="mt-1 text-xs leading-5 text-slate-500">{label}</p></div></div>)}</section>
-    <div className="mt-6 grid gap-6 xl:grid-cols-[1.4fr_.8fr]">
-      <section className="overflow-hidden rounded-md border border-slate-200 bg-white"><div className="flex items-center justify-between border-b border-slate-100 p-5"><div><h2 className="font-bold text-slate-900">Sesi aktif</h2><p className="mt-1 text-xs text-slate-500">Ujian yang sedang membutuhkan pengawasan.</p></div><button onClick={() => go("sessions")} className="text-xs font-semibold text-gold-700">Lihat semua</button></div>
-        <div className="p-4 sm:p-6">{active ? <button onClick={() => openExam(active.id, "monitor")} className="w-full rounded-xl border border-slate-200 bg-white text-left shadow-sm transition hover:border-gold-500"><div className="flex flex-col justify-between gap-4 p-5 sm:flex-row sm:items-start"><div><div className="flex items-center gap-2"><Badge tone="green"><span className="size-1.5 animate-pulse rounded-full bg-emerald-600" />Berlangsung</Badge><span className="text-xs text-slate-500">{examTime(active)}</span></div><h3 className="mt-3 text-slate-900">{active.name}</h3><p className="mt-1 text-sm text-slate-500">{active.subject} · {active.class_name}</p></div><div className="grid grid-cols-3 gap-6 text-center"><div><p className="text-2xl font-bold text-navy">{active.student_count}</p><p className="text-[11px] text-slate-500">Peserta</p></div><div><p className="text-2xl font-bold text-emerald-700">{active.online ?? 0}</p><p className="text-[11px] text-slate-500">Terhubung</p></div><div><p className="text-2xl font-bold text-amber-700">{active.indications?.total ?? 0}</p><p className="text-[11px] text-slate-500">Indikasi</p></div></div></div><div className="flex items-center justify-between gap-3 border-t border-slate-100 px-5 py-3.5"><p className="text-sm text-slate-600">Sisa waktu <span className="font-bold text-slate-900">{remaining(active)}</span></p><span className="flex items-center gap-2 rounded-lg bg-navy px-4 py-2.5 text-sm font-semibold text-gold-300">Buka pemantauan <Icon name="chevron" size={15} /></span></div></button> : <p className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-500">{d.loading ? "Memuat..." : "Tidak ada sesi yang sedang berlangsung."}</p>}</div>
-        {scheduled && <div className="px-4 pb-4 sm:px-6 sm:pb-6"><button onClick={() => openExam(scheduled.id, "waiting")} className="flex w-full items-center justify-between gap-3 rounded-xl bg-slate-50 p-4 text-left hover:bg-slate-100"><div><p className="text-sm font-bold text-slate-800">{scheduled.name}</p><p className="mt-1 text-xs text-slate-500">{scheduled.class_name} · {fmtDate(scheduled.date)} pukul {scheduled.start_time.replace(":", ".")} · {scheduled.student_count} siswa</p></div><span className="shrink-0 rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-600">Dijadwalkan</span></button></div>}
+    <section className="flex flex-col justify-between gap-2 sm:flex-row sm:items-end">
+      <div><h1 className="text-[1.6rem] leading-[1.2] tracking-[-0.5px] sm:text-[30px]">{greeting()}, {user?.name.split(" ")[0] ?? ""}</h1><p className="mt-[7px] text-xs text-[#687483] sm:text-[13px]">Ringkasan ujian yang ditugaskan kepada Anda hari ini.</p></div>
+    </section>
+    {d.error && <div className="mt-4"><Notice tone="red">{d.error}</Notice></div>}
+
+    <div className="mt-6"><Suspense fallback={<div className="grid gap-[18px] lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">{[0, 1].map((i) => <div key={i} className="h-[260px] rounded border border-line bg-white" />)}</div>}>
+      <DashboardCharts breakdown={breakdown} today={today} />
+    </Suspense></div>
+
+    <div className="mt-5 grid items-start gap-[18px] lg:grid-cols-[minmax(0,3fr)_minmax(320px,2fr)]">
+      <section className={panel}>
+        {heading("Sesi aktif", "Ujian yang sedang ditugaskan kepada Anda", link("Lihat semua", "sessions"))}
+        {active.length === 0 ? empty("Tidak ada sesi yang sedang berlangsung.") : active.map((e) => { const g = gaps.get(e.id); return (
+          <article key={e.id} className="grid gap-[18px] border-b border-[#e5e7e9] px-[18px] py-[17px] last:border-b-0 sm:min-h-[137px] sm:grid-cols-[1fr_160px]">
+            <div className="min-w-0">
+              <span className="flex w-fit items-center gap-1.5 text-xs font-bold text-[#586474]"><i className="size-1.5 rounded-full bg-gold-500" />Berlangsung</span>
+              <h3 className="mt-[7px] font-sans text-[15px] font-semibold leading-[1.35] text-[#273246]">{e.name}</h3>
+              <p className="mt-[5px] flex flex-wrap items-center gap-2 text-xs text-[#798391]">{e.class_name || NO_DATA}<span className="size-[3px] rounded-full bg-[#aeb5bd]" />{examTime(e)}</p>
+              {g?.label && <p className="mt-2.5"><Badge tone="gray">{g.label}</Badge></p>}
+              <div className="mt-[15px] flex flex-wrap gap-5 text-xs text-[#7c8694]">
+                <span><b className="mr-[3px] text-[13px] text-navy">{e.student_count}</b>Peserta</span>
+                <span><b className="mr-[3px] text-[13px] text-navy">{e.online ?? 0}</b>Terhubung</span>
+                <span><b className="mr-[3px] text-[13px] text-navy">{e.indications?.total ?? 0}</b>Indikasi</span>
+              </div>
+            </div>
+            <div className="flex items-end justify-between gap-3 border-t border-[#e4e6e8] pt-3 sm:flex-col sm:items-end sm:border-l sm:border-t-0 sm:pl-[17px] sm:pt-0">
+              <div className="sm:text-right"><small className="block text-xs text-[#8b949f]">Sisa waktu</small><strong className="mt-[3px] block text-sm text-navy">{remainingText(e, now)}</strong></div>
+              <button onClick={() => openExam(e.id, "monitor")} className="flex min-h-[34px] w-[150px] items-center justify-center gap-1.5 rounded bg-navy text-xs font-bold text-white hover:bg-navy-2 sm:mt-auto">Buka pemantauan <Icon name="chevron" size={14} /></button>
+            </div>
+          </article>); })}
       </section>
-      <section className="rounded-md border border-slate-200 bg-white"><div className="border-b border-slate-100 p-5"><h2 className="font-bold text-slate-900">Indikasi terbaru</h2><p className="mt-1 text-xs text-slate-500">Hanya menampilkan yang memerlukan perhatian.</p></div><div className="divide-y divide-slate-100">{(d.data?.recent_cases ?? []).slice(0, 3).map((item) => <button key={item.case_id} onClick={() => { setExamId(item.exam_id); setEventId(item.first_event_id); go("indications"); }} className="flex w-full gap-3 p-4 text-left hover:bg-slate-50"><div className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-full bg-amber-50 text-amber-600"><Icon name="bell" size={15} /></div><div className="min-w-0 flex-1"><p className="text-sm font-semibold text-slate-800">{eventTitle(item)} <span className="font-normal text-slate-500">· {item.event_count} kejadian</span></p><p className="mt-1 truncate text-xs text-slate-500">{item.student?.name} • {item.exam?.name}</p></div><span className="text-[10px] text-slate-400">{minutesAgo(item.last_start_ts)}</span></button>)}{!d.loading && !(d.data?.recent_cases ?? []).length && <div className="px-6 py-12 text-center"><div className="mx-auto grid size-14 place-items-center rounded-full border border-slate-200 bg-slate-50 text-gold-700"><Icon name="shield" size={24} /></div><p className="mt-4 text-sm font-bold text-slate-900">Belum ada indikasi dari AI</p><p className="mx-auto mt-2 max-w-60 text-xs leading-5 text-slate-500">Indikasi kecurangan akan muncul di sini secara real-time selama ujian berlangsung.</p></div>}</div></section>
+
+      <div className="grid gap-[18px]">
+        <section className={panel}>
+          {heading("Ujian berikutnya", "Jadwal yang ditugaskan kepada Anda")}
+          {upcoming.length === 0 ? empty("Belum ada ujian terjadwal.") : <table className="w-full border-collapse text-left">
+            <thead><tr><th className="px-3.5 py-2.5">Waktu</th><th className="px-3.5 py-2.5">Ujian</th><th className="px-3.5 py-2.5">Kelas</th></tr></thead>
+            <tbody>{upcoming.map((e) => <tr key={e.id} onClick={() => openExam(e.id, "waiting")} className="cursor-pointer border-t border-[#e5e7e9]">
+              <td className="whitespace-nowrap px-3.5 py-3 text-xs text-[#536071]">{fmtDate(e.date)}<br />{e.start_time.replace(":", ".")} WIB</td>
+              <td className="px-3.5 py-3 text-[13px] font-bold text-navy">{e.name}</td>
+              <td className="px-3.5 py-3 text-xs text-[#536071]">{e.class_name || NO_DATA}</td></tr>)}</tbody>
+          </table>}
+        </section>
+
+        <section className={panel}>
+          {heading("Indikasi terbaru", "Aktivitas terbaru yang perlu ditinjau", link("Tinjau semua", "indications"))}
+          {cases.length === 0 ? empty("Indikasi dari AI akan muncul di sini selama ujian berlangsung.") : cases.map((c) => (
+            <button key={c.case_id} onClick={() => { setExamId(c.exam_id); setEventId(c.first_event_id); go("indications"); }} className="grid min-h-[70px] w-full grid-cols-[34px_1fr] items-center gap-[11px] border-b border-[#e5e7e9] px-4 py-3 text-left last:border-b-0 hover:bg-[#fbfaf7]">
+              <span className="grid size-8 place-items-center rounded border border-[#dfd8bd] bg-[#faf7ea] text-[#806511]"><Icon name={indicatorIcon(c.indicator)} size={17} /></span>
+              <span className="min-w-0"><strong className="block text-[13px] leading-[1.4] text-[#334054]">{eventTitle(c)} — {c.episode_count ?? c.event_count} kali</strong>
+                <span className="mt-[5px] flex justify-between gap-3 text-xs text-[#7d8794]"><span className="truncate">{c.student?.name ?? NO_DATA}{c.exam?.name ? ` · ${c.exam.name}` : ""}</span><span className="shrink-0 text-[#9aa2ac]">{timeAgo(c.last_start_ts, now, { finished: statusOf.get(c.exam_id) === "Selesai" })}</span></span></span>
+            </button>))}
+          <p className="border-t border-[#e5e7e9] bg-[#fbfaf7] px-4 py-2.5 text-xs leading-5 text-[#687382]">Indikasi bukan bukti pelanggaran. Keputusan tetap di tangan pengawas.</p>
+        </section>
+      </div>
     </div>
-    <section className="mt-6 overflow-hidden rounded-md border border-slate-200 bg-white"><div className="flex items-center justify-between border-b border-slate-100 p-5"><div><h2 className="font-bold text-slate-900">Ujian yang ditugaskan</h2><p className="mt-1 text-xs text-slate-500">Hanya sesi yang ditugaskan kepada {user?.name}.</p></div><button onClick={() => go("sessions")} className="text-xs font-semibold text-gold-700">Lihat semua sesi</button></div><div className="overflow-x-auto"><table className="w-full min-w-[980px] text-left text-sm"><thead className="text-xs text-slate-500"><tr><th className="px-5 py-3">Nama ujian</th><th className="px-5 py-3">Tanggal</th><th className="px-5 py-3">Jam</th><th className="px-5 py-3">Durasi</th><th className="px-5 py-3">Peserta</th><th className="px-5 py-3">Status</th><th className="px-5 py-3">Indikasi</th><th className="px-5 py-3">Aksi</th></tr></thead><tbody>{exams.slice(0, 5).map((s) => <tr key={s.id} className="border-t border-slate-100"><td className="px-5 py-4 font-semibold text-slate-800">{s.name}</td><td className="px-5 py-4 text-slate-600">{fmtDate(s.date)}</td><td className="px-5 py-4 text-slate-600">{s.start_time.replace(":", ".")} WIB</td><td className="px-5 py-4 text-slate-600">{s.duration_min} menit</td><td className="px-5 py-4 text-slate-600">{s.student_count}</td><td className="px-5 py-4"><Badge tone={statusTone(s.status)}>{s.status === "Terjadwal" ? "Akan Dimulai" : s.status}</Badge></td><td className="px-5 py-4 font-semibold text-slate-700">{s.indications?.total ?? 0}</td><td className="px-5 py-4"><button onClick={() => openExam(s.id, "exam-detail")} className="text-xs font-bold text-blue-700">Lihat</button></td></tr>)}</tbody></table></div></section>
   </main></AppShell>;
 }
 
+// Sesi Ujian (desain Figma "ExamSessionsPage"): pencarian, filter status, tabel; kartu bertumpuk di HP.
 function Sessions({ go }: { go: (s: Screen) => void }) {
   const { role } = useRole();
   const { setExamId } = useSel();
   const canCreate = role === "Admin";
   const list = usePoll(() => api.exams(), []);
   const [q, setQ] = useState("");
-  const [status, setStatus] = useState("Semua status");
-  const rows = (list.data ?? []).filter((s) => s.name.toLowerCase().includes(q.toLowerCase()) && (status === "Semua status" || s.status === status));
-  return <AppShell active="sessions" go={go} title="Daftar Sesi Ujian"><main className="p-4 sm:p-8">
-    <PageTitle title={role === "Admin" ? "Daftar Ujian" : "Daftar Sesi Ujian"} description={role === "Pengawas" ? "Sesi yang ditugaskan kepada Anda." : role === "Admin" ? "Atur jadwal, peserta, pengawas, dan status ujian." : "Lihat jadwal dan aktivitas ujian sekolah."} action={canCreate ? <Button icon="plus" onClick={() => go("create")}>Create Ujian</Button> : undefined} />
-    {list.error && <Notice tone="red">{list.error}</Notice>}
-    <div className="overflow-hidden rounded-md border border-slate-200 bg-white">
-      <div className="flex flex-col gap-3 border-b border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between"><div className="relative max-w-sm flex-1"><span className="absolute left-3 top-2.5 text-slate-400"><Icon name="search" size={18} /></span><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Cari nama ujian..." className="h-10 w-full rounded-md border border-slate-200 pl-10 pr-3 text-sm outline-none focus:border-blue-500" /></div><select value={status} onChange={(e) => setStatus(e.target.value)} className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600"><option>Semua status</option><option>Sedang Berlangsung</option><option>Terjadwal</option><option>Selesai</option><option>Draft</option></select></div>
-      <div className="overflow-x-auto"><table className="w-full min-w-[1100px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3.5">Nama ujian</th><th className="px-5 py-3.5">Tanggal & waktu</th><th className="px-5 py-3.5">Durasi</th><th className="px-5 py-3.5">Peserta</th><th className="px-5 py-3.5">Pengawas</th><th className="px-5 py-3.5">Status</th><th className="px-5 py-3.5">Aksi</th></tr></thead><tbody>{rows.map((s) => <tr key={s.id} className="border-t border-slate-100 hover:bg-slate-50/70"><td className="px-5 py-4 font-semibold text-slate-800">{s.name}<p className="mt-1 text-xs font-normal text-slate-400">{s.subject} • {s.class_name}</p></td><td className="px-5 py-4 text-slate-600">{fmtDate(s.date)}<span className="ml-2 text-slate-400">• {s.start_time.replace(":", ".")}</span></td><td className="px-5 py-4 text-slate-600">{s.duration_min} menit</td><td className="px-5 py-4 text-slate-600">{s.student_count} siswa</td><td className="px-5 py-4 text-slate-600">{s.supervisor?.name ?? "—"}</td><td className="px-5 py-4"><Badge tone={statusTone(s.status)}>{s.status}</Badge></td><td className="px-5 py-4"><div className="flex items-center gap-3 whitespace-nowrap"><button onClick={() => { setExamId(s.id); go("exam-detail"); }} className="text-xs font-bold text-blue-700">Lihat Detail</button>{role === "Admin" && <span className="text-xs text-slate-400" title="Edit/hapus ujian belum tersedia di backend">Edit & hapus belum tersedia</span>}</div></td></tr>)}</tbody></table></div>
-      {!list.loading && rows.length === 0 && <p className="p-8 text-center text-sm text-slate-500">Belum ada sesi ujian.</p>}
+  const [status, setStatus] = useState<string>(ALL_STATUSES);
+  const rows = filterSessions(list.data ?? [], q, status);
+  const title = role === "Admin" ? "Daftar Ujian" : "Sesi Ujian";
+  const desc = role === "Pengawas" ? "Sesi ujian yang ditugaskan kepada Anda." : role === "Admin" ? "Atur jadwal, peserta, pengawas, dan status ujian." : "Jadwal dan aktivitas ujian sekolah.";
+  const open = (id: number) => { setExamId(id); go("exam-detail"); };
+  const detail = (id: number, name: string) => <button onClick={() => open(id)} aria-label={`Lihat detail ${name}`} className="text-xs font-bold text-[#806511] underline underline-offset-3">Lihat detail</button>;
+  const emptyText = list.loading && !list.data ? "Memuat…" : (list.data ?? []).length ? "Tidak ada sesi yang cocok dengan pencarian atau status ini." : NO_DATA;
+  return <AppShell active="sessions" go={go} title={title}><main className="p-4 sm:p-8">
+    <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
+      <div><h1 className="text-[1.6rem] leading-[1.2] tracking-[-0.5px] sm:text-[30px]">{title}</h1><p className="mt-[7px] text-xs text-[#687483]">{desc}</p></div>
+      <div className="flex items-center gap-4"><span className="text-xs text-[#7b8593]" aria-live="polite">{list.data ? `${rows.length} sesi` : ""}</span>{canCreate && <Button icon="plus" onClick={() => go("create")}>Buat Ujian</Button>}</div>
     </div>
+    {list.error && <div className="mt-4"><Notice tone="red">{list.error}</Notice></div>}
+    <div className="mt-[25px] flex flex-col gap-3.5 rounded border border-line bg-white p-[15px] sm:flex-row sm:items-end">
+      <label className="relative flex h-[42px] flex-1 items-center"><span className="sr-only">Cari sesi ujian</span><span className="absolute left-[13px] text-[#7c8795]"><Icon name="search" size={17} /></span>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Cari nama ujian, mata pelajaran, atau kelas" className="h-[42px] w-full rounded border border-[#d9dde1] bg-white pl-10 pr-[13px] text-sm text-[#2f3a4b] outline-none focus:border-navy" /></label>
+      <label className="grid gap-1.5 text-xs font-bold text-[#687382]">Status
+        <select value={status} onChange={(e) => setStatus(e.target.value)} className="h-[42px] rounded border border-[#d9dde1] bg-white pl-3 pr-8 text-sm font-normal text-[#344053] outline-none focus:border-navy">{STATUS_OPTIONS.map((o) => <option key={o}>{o}</option>)}</select></label>
+    </div>
+    <section className="mt-4 overflow-hidden rounded border border-line bg-white" aria-label="Daftar sesi ujian">
+      {rows.length > 0 && <table className="hidden w-full border-collapse text-left lg:table">
+        <thead><tr>{["Nama ujian", "Tanggal & waktu", "Durasi", "Peserta", "Pengawas", "Status", "Aksi"].map((h) => <th key={h} className="px-[15px] py-[13px]">{h}</th>)}</tr></thead>
+        <tbody>{rows.map((e) => <tr key={e.id} className="border-t border-[#e5e7e9]">
+          <td className="w-[27%] px-[15px] py-4"><strong className="block text-[13px] text-[#263246]">{e.name}</strong><span className="mt-1 block text-xs text-[#8b949f]">{[e.subject, e.class_name].filter(Boolean).join(" · ") || NO_DATA}</span></td>
+          <td className="whitespace-nowrap px-[15px] py-4 text-[13px] text-[#657080]">{sessionDateText(e)}</td>
+          <td className="whitespace-nowrap px-[15px] py-4 text-[13px] text-[#657080]">{e.duration_min} menit</td>
+          <td className="whitespace-nowrap px-[15px] py-4 text-[13px] text-[#657080]">{e.student_count} siswa</td>
+          <td className="px-[15px] py-4 text-[13px] text-[#657080]">{e.supervisor?.name ?? NO_DATA}</td>
+          <td className="px-[15px] py-4"><Badge tone={sessionTone(e.status)}>{e.status}</Badge></td>
+          <td className="px-[15px] py-4">{detail(e.id, e.name)}</td>
+        </tr>)}</tbody>
+      </table>}
+      {rows.length > 0 && <ul className="divide-y divide-[#e5e7e9] lg:hidden">{rows.map((e) => <li key={e.id} className="px-4 py-4">
+        <div className="flex items-start justify-between gap-3"><div className="min-w-0"><strong className="block text-[14px] text-[#263246]">{e.name}</strong><span className="mt-1 block text-xs text-[#8b949f]">{[e.subject, e.class_name].filter(Boolean).join(" · ") || NO_DATA}</span></div><Badge tone={sessionTone(e.status)}>{e.status}</Badge></div>
+        <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-[#657080] sm:grid-cols-4">
+          <div><dt className="text-[#8b949f]">Tanggal & waktu</dt><dd className="mt-0.5 text-[#344053]">{sessionDateText(e)}</dd></div>
+          <div><dt className="text-[#8b949f]">Durasi</dt><dd className="mt-0.5 text-[#344053]">{e.duration_min} menit</dd></div>
+          <div><dt className="text-[#8b949f]">Peserta</dt><dd className="mt-0.5 text-[#344053]">{e.student_count} siswa</dd></div>
+          <div><dt className="text-[#8b949f]">Pengawas</dt><dd className="mt-0.5 text-[#344053]">{e.supervisor?.name ?? NO_DATA}</dd></div>
+        </dl>
+        <div className="mt-3">{detail(e.id, e.name)}</div>
+      </li>)}</ul>}
+      {rows.length === 0 && <p className="px-5 py-14 text-center text-xs text-[#7c8694]">{emptyText}</p>}
+    </section>
+    {role === "Admin" && <p className="mt-3 text-xs text-[#8b949f]">Edit dan hapus ujian belum tersedia di backend.</p>}
   </main></AppShell>;
 }
 
@@ -513,7 +828,7 @@ function ExamDetail({ go }: { go: (s: Screen) => void }) {
     <button onClick={() => go("sessions")} className="mb-5 flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-slate-800"><Icon name="arrow" size={18} />Kembali ke daftar ujian</button>
     {exam.error && <Notice tone="red">{exam.error}</Notice>}
     {e && <>
-      <div className="rounded-md border border-slate-200 bg-white p-6"><div className="flex flex-col justify-between gap-5 xl:flex-row xl:items-start"><div><div className="flex items-center gap-3"><Badge tone={statusTone(e.status)}><span className="size-1.5 rounded-full bg-current" />{e.status}</Badge><span className="text-xs text-slate-400">Kode ujian EX-{e.id}</span></div><h1 className="mt-4 text-3xl font-bold tracking-tight text-slate-900">{e.name}</h1><p className="mt-2 text-sm text-slate-500">{e.subject} • Kelas {e.class_name}</p></div><div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => go("students")}>Daftar Siswa</Button><Button variant="secondary" onClick={() => go("indications")}>Lihat Indikasi</Button><Button variant="secondary" onClick={() => go("report")}>Lihat Laporan</Button>{canMonitor && <Button icon="monitor" onClick={() => go("monitor")}>Mulai Monitoring</Button>}</div></div>
+      <div className="rounded-md border border-slate-200 bg-white p-6"><div className="flex flex-col justify-between gap-5 xl:flex-row xl:items-start"><div><div className="flex items-center gap-3"><Badge tone={statusTone(e.status)}>{e.status}</Badge><span className="text-xs text-slate-400">Kode ujian EX-{e.id}</span></div><h1 className="mt-4 text-3xl font-bold tracking-tight text-slate-900">{e.name}</h1><p className="mt-2 text-sm text-slate-500">{e.subject} • Kelas {e.class_name}</p></div><div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => go("students")}>Daftar Siswa</Button><Button variant="secondary" onClick={() => go("indications")}>Lihat Indikasi</Button><Button variant="secondary" onClick={() => go("report")}>Lihat Laporan</Button>{canMonitor && <Button icon="monitor" onClick={() => go("monitor")}>Mulai Monitoring</Button>}</div></div>
         <div className="mt-7 grid gap-4 border-t border-slate-100 pt-6 sm:grid-cols-2 lg:grid-cols-4">{[["Tanggal & waktu", `${fmtDate(e.date)}, ${e.start_time.replace(":", ".")}`, "calendar"], ["Durasi", `${e.duration_min} menit`, "clock"], ["Peserta", `${e.student_count} siswa`, "users"], ["Pengawas", e.supervisor?.name ?? "—", "shield"]].map(([k, v, i]) => <div key={k} className="flex gap-3"><div className="grid size-9 shrink-0 place-items-center rounded-md bg-slate-50 text-slate-500"><Icon name={i as IconName} size={17} /></div><div><p className="text-xs text-slate-400">{k}</p><p className="mt-1 text-sm font-semibold text-slate-800">{v}</p></div></div>)}</div>
       </div>
       <div className="mt-6 border-b border-slate-200"><div className="flex gap-7 overflow-x-auto">{["Ringkasan", "Peserta", "Pemantauan", "Laporan"].map((x) => <button key={x} onClick={() => setTab(x)} className={`whitespace-nowrap border-b-2 px-1 pb-3 text-sm font-semibold ${tab === x ? "border-blue-600 text-blue-700" : "border-transparent text-slate-500"}`}>{x}</button>)}</div></div>
@@ -914,6 +1229,8 @@ function Monitoring({ go }: { go: (s: Screen) => void }) {
   const examId = exam?.id ?? null;
   const students = usePoll(() => (examId ? api.students(examId) : Promise.resolve([] as StudentRow[])), [examId], 3000);
   const events = usePoll(() => (examId ? api.examEvents(examId, { limit: 30 }) : Promise.resolve({ server_time: "", events: [] as AIEvent[] })), [examId], 3000);
+  // All indications of this exam for the timeline (text data only; no video or audio).
+  const indEvents = usePoll(() => (examId ? api.examEvents(examId, { category: "indication", limit: 500 }) : Promise.resolve({ server_time: "", events: [] as AIEvent[] })), [examId], 5000);
   const mon = usePoll(() => (examId ? api.monitoring(examId) : Promise.reject(new Error(""))), [examId], 5000);
   const live = useExamLiveVideo(examId, exam?.status === "Sedang Berlangsung", mon.data);
   const [filter, setFilter] = useState("Semua");
@@ -934,11 +1251,10 @@ function Monitoring({ go }: { go: (s: Screen) => void }) {
   const needsAttention = (s: StudentRow) => (s.counts?.unreviewed ?? 0) > 0 || s.ai?.state === "indication";
   const connIssue = (s: StudentRow) => ["Terputus", "Kamera mati", "Mikrofon mati"].includes(studentStatus(s));
   const attention = rows.filter(needsAttention).length;
-  const cannot = rows.filter((s) => s.ai?.state === "cannot_analyze").length;
   const list = rows.filter((s) => (filter === "Semua" || (filter === "Perlu perhatian" && needsAttention(s)) || (filter === "Normal" && !needsAttention(s) && studentStatus(s) === "Hadir") || (filter === "Masalah koneksi" && connIssue(s)) || (filter === "Tidak dapat dianalisis" && s.ai?.state === "cannot_analyze")) && s.name.toLowerCase().includes(query.toLowerCase()));
-  const online = rows.filter((s) => s.presence?.online).length;
-  const indTotal = rows.reduce((a, s) => a + (s.counts?.session_indications ?? s.counts?.indications ?? 0), 0);
-  const stats: [string, string, IconName, string][] = [["Total siswa", String(rows.length), "users", "Terdaftar"], ["Sedang online", String(online), "wifi", rows.length ? `${Math.round((online / rows.length) * 100)}% terhubung` : "—"], ["Perlu perhatian", String(attention), "bell", `${cannot} tak terbaca`], ["Indikasi tercatat", String(indTotal), "report", "Sesi ini"]];
+  const status = students.data ? monitorStatus(rows) : null;
+  const win = exam ? examTimes(exam) : null;
+  const timeline = win && indEvents.data ? sessionTimeline(indEvents.data.events, win.start, win.end) : null;
   const ctl = (icon: IconName, off: boolean) => <span className={`grid size-6 place-items-center rounded text-white ${off ? "bg-red-600" : "bg-slate-900/70"}`}><Icon name={icon} size={13} /></span>;
   const canControl = MONITOR_ROLES.includes(role);
   const notify = useContext(NotifyContext);
@@ -960,17 +1276,18 @@ function Monitoring({ go }: { go: (s: Screen) => void }) {
   const exp = rows.find((s) => s.id === expanded);
   const openStudent = (id: number) => { setStudentId(id); go("student-detail"); };
   return <AppShell active="monitor" go={go} title="Pemantauan Langsung"><main className="p-4 sm:p-8">
-    <div className="mb-6 flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-2xl font-semibold text-slate-900">Pemantauan siswa</h1><p className="mt-1 text-sm text-slate-500">{exam ? `${exam.class_name} · ${exam.subject} · ${fmtDate(exam.date)}` : "Memuat sesi..."}</p></div><div className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-4 py-2.5"><span className={`size-2.5 rounded-full ${m?.active ? "animate-pulse bg-red-500" : "bg-slate-300"}`} /><div><p className="text-sm font-semibold text-slate-900">{exam?.name ?? "—"}</p><p className="text-xs text-slate-500">{exam ? `${exam.status} · sisa ${remaining(exam, now)}` : ""} · AI {m?.active ? "aktif" : "belum aktif"}{m?.active && m.source ? ` · Sumber: ${SOURCE_LABEL[m.source]}` : ""}</p></div>{canControl && examId && <Button variant="ghost" className="ml-2 h-9" onClick={() => notify.openSummary(examId)}>Ringkasan</Button>}{canControl && exam?.status === "Sedang Berlangsung" && !m?.active && <select aria-label="Sumber analisis" value={source} onChange={(e) => setSource(e.target.value as AnalysisSource)} className="ml-2 h-9 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700">{(["browser", "livekit", "jitsi"] as AnalysisSource[]).map((x) => <option key={x} value={x} disabled={!sourceReady[x]}>{SOURCE_LABEL[x]}{sourceReady[x] ? "" : " (belum dikonfigurasi)"}</option>)}</select>}{canControl && exam?.status === "Sedang Berlangsung" && <Button variant={m?.active ? "secondary" : "primary"} className="ml-2 h-9" onClick={toggleMonitoring}>{m?.active ? "Hentikan AI" : `Mulai AI · ${SOURCE_LABEL[source]}`}</Button>}</div></div>
+    <div className="mb-6 flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-2xl font-semibold text-slate-900">Pemantauan siswa</h1><p className="mt-1 text-sm text-slate-500">{exam ? `${exam.class_name} · ${exam.subject} · ${fmtDate(exam.date)}` : "Memuat sesi..."}</p></div><div className="flex max-w-full flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white px-4 py-2.5"><span className={`size-2.5 rounded-full ${m?.active ? "animate-pulse bg-red-500" : "bg-slate-300"}`} /><div><p className="text-sm font-semibold text-slate-900">{exam?.name ?? "—"}</p><p className="text-xs text-slate-500">{exam ? `${exam.status} · sisa ${remaining(exam, now)}` : ""} · AI {m?.active ? "aktif" : "belum aktif"}{m?.active && m.source ? ` · Sumber: ${SOURCE_LABEL[m.source]}` : ""}</p></div>{canControl && examId && <Button variant="ghost" className="ml-2 h-9" onClick={() => notify.openSummary(examId)}>Ringkasan</Button>}{canControl && exam?.status === "Sedang Berlangsung" && !m?.active && <select aria-label="Sumber analisis" value={source} onChange={(e) => setSource(e.target.value as AnalysisSource)} className="ml-2 h-9 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700">{(["browser", "livekit", "jitsi"] as AnalysisSource[]).map((x) => <option key={x} value={x} disabled={!sourceReady[x]}>{SOURCE_LABEL[x]}{sourceReady[x] ? "" : " (belum dikonfigurasi)"}</option>)}</select>}{canControl && exam?.status === "Sedang Berlangsung" && <Button variant={m?.active ? "secondary" : "primary"} className="ml-2 h-9" onClick={toggleMonitoring}>{m?.active ? "Hentikan AI" : `Mulai AI · ${SOURCE_LABEL[source]}`}</Button>}</div></div>
     {actionMsg && <Notice tone="blue">{actionMsg}</Notice>}
     {exam && <div data-testid="seb-summary" className={`mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border px-4 py-3 text-sm ${!sebRequired ? "border-slate-200 bg-white text-slate-600" : sebProblems.length ? "border-amber-200 bg-amber-50 text-amber-900" : "border-emerald-200 bg-emerald-50 text-emerald-900"}`}><Icon name="shield" size={17} /><strong>Keamanan ujian:</strong>{!sebRequired ? <span>Safe Exam Browser tidak diwajibkan untuk ujian ini.</span> : <><span>Safe Exam Browser wajib · {sebVerified}/{rows.length} siswa terverifikasi.</span>{sebProblems.length > 0 && <span>Perlu dicek: {sebProblems.map((s) => `${s.name} (${sebStatus(s.seb!)[0]})`).join(", ")}.</span>}</>}</div>}
     {jitsiLost.length > 0 && <Notice>Koneksi Jitsi terputus: {jitsiLost.map((s) => s.name).join(", ")}. Ini catatan koneksi, bukan indikasi; analisis tetap berjalan selama kamera siswa hidup.</Notice>}
     {students.error && <Notice tone="red">{students.error}</Notice>}
     {workerDown && <Notice>Worker AI OpenVidu belum mengirim heartbeat{m?.worker.process_running ? "" : " (proses worker berhenti)"}. Pastikan server OpenVidu berjalan dan dapat dihubungi backend; sampai itu, status AI siswa tampil "Analisis AI terputus". {canControl && <button className="ml-1 font-semibold underline" onClick={async () => { if (!examId) return; try { await api.startMonitoring(examId, "browser"); setActionMsg("Analisis dialihkan ke frame dari browser siswa."); void mon.reload(); } catch (e) { setActionMsg((e as Error).message); } }}>Pakai frame dari browser</button>}</Notice>}
     {live.reason && <Notice tone="blue">Video langsung tidak ditampilkan: {live.reason}. Status kamera dan hasil AI tetap diperbarui.</Notice>}
-    <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{stats.map(([label, value, icon, note]) => <div key={label} className="flex items-center gap-4 rounded-lg border border-slate-200 bg-white p-4"><div className="grid size-11 place-items-center rounded-lg bg-blue-50 text-blue-700"><Icon name={icon} size={21} /></div><div className="min-w-0 flex-1"><p className="text-xs text-slate-500">{label}</p><p className="text-2xl font-semibold leading-8 text-slate-900">{value}</p></div><span className="whitespace-nowrap rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-600">{note}</span></div>)}</div>
+    <div className="mb-6"><Suspense fallback={<div className="grid gap-[18px]"><ChartSkeleton h={150} /><ChartSkeleton h={170} /></div>}><MonitoringCharts status={status} timeline={timeline} /></Suspense>
+      {(indEvents.data?.events.length ?? 0) >= 500 && <p className="mt-2 text-xs text-[#8c621a]">Linimasa menampilkan 500 indikasi terbaru dari sesi ini.</p>}</div>
     <div className="grid gap-6 xl:grid-cols-[1fr_340px]">
-      <section>
-        <div className="mb-4 flex flex-wrap items-center gap-3"><div className="flex gap-1 overflow-x-auto rounded-lg bg-slate-200/70 p-1">{["Semua", "Normal", "Perlu perhatian", "Tidak dapat dianalisis", "Masalah koneksi"].map((t) => <button key={t} onClick={() => setFilter(t)} className={`flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium ${filter === t ? "bg-white text-slate-900 shadow-sm" : "text-slate-600"}`}>{t}{t === "Perlu perhatian" && <span className="rounded-full bg-amber-100 px-1.5 text-[11px] text-amber-700">{attention}</span>}</button>)}</div>
+      <section className="min-w-0">
+        <div className="mb-4 flex flex-wrap items-center gap-3"><div className="flex min-w-0 max-w-full gap-1 overflow-x-auto rounded-lg bg-slate-200/70 p-1">{["Semua", "Normal", "Perlu perhatian", "Tidak dapat dianalisis", "Masalah koneksi"].map((t) => <button key={t} onClick={() => setFilter(t)} className={`flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium ${filter === t ? "bg-white text-slate-900 shadow-sm" : "text-slate-600"}`}>{t}{t === "Perlu perhatian" && <span className="rounded-full bg-amber-100 px-1.5 text-[11px] text-amber-700">{attention}</span>}</button>)}</div>
           <div className="relative ml-auto min-w-52 flex-1 sm:max-w-xs"><span className="absolute left-3 top-2.5 text-slate-400"><Icon name="search" size={17} /></span><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Cari nama siswa" className="h-10 w-full rounded-md border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-blue-500" /></div></div>
         {view !== "active" ? <div className="flex min-h-[420px] rounded-lg border border-slate-200 bg-white"><MonitorState state={view} reason={m?.ai.reason} onRetry={() => void mon.reload()} /></div> : list.length === 0 ? <div className="rounded-lg border border-slate-200 bg-white p-12 text-center text-sm text-slate-500">Tidak ada siswa yang cocok dengan filter ini.</div> : <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-3">{list.map((s, i) => {
           const st = studentStatus(s);
@@ -1173,7 +1490,8 @@ function Report({ go }: { go: (s: Screen) => void }) {
     {!r && !rep.error && !examsError && <p role="status" className="rounded-md border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">{exam || examsLoading || rep.loading ? "Memuat laporan..." : "Belum ada sesi ujian untuk dilaporkan."}</p>}
     {r && <>
       {r.final && <div className="mb-5 flex items-start gap-3 rounded-md border border-emerald-200 bg-emerald-50 p-4"><span className="text-emerald-700"><Icon name="shield" size={18} /></span><div><p className="text-sm font-bold text-emerald-900">Laporan final, data terkunci</p><p className="mt-1 text-xs leading-5 text-emerald-800">Difinalisasi oleh {r.final.finalized_by} pada {fmtDateTime(r.final.finalized_at)}. Gambar bukti dihapus otomatis {r.frame_retention_hours} jam setelah finalisasi.</p></div></div>}
-      <div className="mb-5 grid gap-4 xl:grid-cols-3"><section className="rounded-md border border-slate-200 bg-white p-5"><p className="text-xs font-bold uppercase tracking-widest text-slate-400">Informasi Sesi</p><div className="mt-4 space-y-2 text-sm">{[["Nama", r.exam.name], ["Tanggal", fmtDate(r.exam.date)], ["Jam", examTime(r.exam)], ["Durasi", `${r.exam.duration_min} menit`], ["Pengawas", r.exam.supervisor?.name ?? "—"]].map(([k, v]) => <div key={k} className="flex justify-between gap-4"><span className="text-slate-500">{k}</span><span className="text-right font-semibold text-slate-800">{v}</span></div>)}</div></section><section className="rounded-md border border-slate-200 bg-white p-5"><p className="text-xs font-bold uppercase tracking-widest text-slate-400">Kehadiran</p><div className="mt-4 grid grid-cols-2 gap-4">{[[r.attendance.enrolled, "Total peserta"], [r.attendance.joined, "Hadir"], [r.attendance.not_joined, "Tidak hadir"], [ind!.cannot_analyze, "Periode tak terbaca"]].map(([value, label]) => <div key={label}><p className="text-xl font-bold text-slate-900">{value}</p><p className="text-xs text-slate-500">{label}</p></div>)}</div></section><section className="rounded-md border border-slate-200 bg-white p-5"><p className="text-xs font-bold uppercase tracking-widest text-slate-400">Indikasi</p><div className="mt-4 grid grid-cols-2 gap-4">{[[ind!.total, "Total"], [ind!.valid, "Valid"], [ind!.invalid, "Tidak Valid"], [ind!.further, "Perlu Tinjauan"]].map(([value, label]) => <div key={label}><p className="text-xl font-bold text-slate-900">{value}</p><p className="text-xs text-slate-500">{label}</p></div>)}</div></section></div>
+      <div className="mb-5 grid gap-4 xl:grid-cols-3"><section className="rounded-md border border-slate-200 bg-white p-5"><p className="text-xs font-bold uppercase tracking-widest text-slate-400">Informasi Sesi</p><div className="mt-4 space-y-2 text-sm">{[["Nama", r.exam.name], ["Tanggal", fmtDate(r.exam.date)], ["Jam", examTime(r.exam)], ["Durasi", `${r.exam.duration_min} menit`], ["Pengawas", r.exam.supervisor?.name ?? "—"]].map(([k, v]) => <div key={k} className="flex justify-between gap-4"><span className="text-slate-500">{k}</span><span className="text-right font-semibold text-slate-800">{v}</span></div>)}</div></section><section className="rounded-md border border-slate-200 bg-white p-5"><p className="text-xs font-bold uppercase tracking-widest text-slate-400">Kehadiran</p><div className="mt-4"><Suspense fallback={<ChartSkeleton h={160} />}><ReportAttendance attendance={attendanceParts(r.attendance)} unreadable={{ periods: ind!.cannot_analyze, seconds: ind!.cannot_analyze_s }} /></Suspense></div></section>
+        <section className="rounded-md border border-slate-200 bg-white p-5"><p className="text-xs font-bold uppercase tracking-widest text-slate-400">Hasil indikasi</p><p className="mt-1 text-xs text-slate-500">Valid = dikonfirmasi pengawas, bukan bukti dari AI.</p><div className="mt-4"><Suspense fallback={<ChartSkeleton h={120} />}><ReportResults results={reportResults(ind!)} /></Suspense></div></section></div>
       {ind!.unreviewed > 0 && <div className="mb-5 flex items-start gap-3 rounded-md border border-amber-200 bg-amber-50 p-4"><span className="text-amber-600"><Icon name="bell" size={18} /></span><div><p className="text-sm font-bold text-amber-900">{ind!.unreviewed} indikasi belum ditinjau</p><p className="mt-1 text-xs leading-5 text-amber-800">Laporan baru dapat difinalisasi setelah semua indikasi ditinjau.</p></div></div>}
       <div className="overflow-x-auto rounded-md border border-slate-200 bg-white"><div className="flex min-w-[620px] divide-x divide-slate-200">{[[`${r.attendance.joined} dari ${r.attendance.enrolled}`, "Kehadiran", "green"], [String(ind!.total), "Total Indikasi", "amber"], [String(ind!.total - ind!.unreviewed), "Sudah ditinjau", "blue"], [String(ind!.unreviewed), "Belum ditinjau", "gray"]].map(([num, label, tone]) => <div key={label} className="flex flex-1 items-center gap-3 px-4 py-3"><span className={`size-2 rounded-full ${tone === "green" ? "bg-emerald-500" : tone === "amber" ? "bg-amber-500" : tone === "blue" ? "bg-blue-700" : "bg-slate-400"}`} /><div><p className="text-lg font-bold leading-5 text-slate-900">{num}</p><p className="mt-0.5 whitespace-nowrap text-xs text-slate-500">{label}</p></div></div>)}</div></div>
       <section className="mt-6 overflow-hidden rounded-md border border-slate-200 bg-white"><div className="flex items-center justify-between gap-3 border-b border-slate-100 p-5"><div><h2 className="font-bold text-slate-900">Rincian Indikasi</h2><p className="mt-1 text-xs leading-5 text-slate-500">{r.ai_notice}</p></div><Badge tone={ind!.unreviewed ? "amber" : "green"}>{ind!.unreviewed} belum ditinjau</Badge></div>{r.events.length === 0 ? <p className="p-8 text-center text-sm text-slate-500">Belum ada kejadian yang tercatat oleh sistem pemantauan pada sesi ini.</p> : <div className="overflow-x-auto"><table className="w-full min-w-[960px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3.5">Siswa</th><th className="px-5 py-3.5">Jenis Indikasi</th><th className="px-5 py-3.5">Waktu</th><th className="px-5 py-3.5">Status validasi</th><th className="px-5 py-3.5">Catatan Pengawas</th><th className="px-5 py-3.5">Gambar bukti</th></tr></thead><tbody>{r.events.map((e) => <ReportRow key={e.event_id} e={e} editable={r.can_edit} retentionText={r.retention_text} restrictedText={r.restricted_text} canViewEvidence={r.can_view_evidence} onSaved={onSaved} onEnlarge={setEnlarged} onImageError={onImageError} go={go} />)}</tbody></table></div>}</section>
@@ -1208,16 +1526,49 @@ function StudentList({ go }: { go: (s: Screen) => void }) {
 function Settings({ go }: { go: (s: Screen) => void }) {
   const [section, setSection] = useState("Profil");
   const { role } = useRole();
-  const { user } = useUser();
+  const { user, setUser } = useUser();
+  const school = useSchoolName();
+  // Profil: the full name is saved on the server (PATCH /api/auth/me). Email (login), institution and role are read-only.
+  const [name, setName] = useState(user?.name ?? "");
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const cleanName = name.trim().replace(/\s+/g, " ");
+  const nameError = cleanName.length < 2 ? "Nama lengkap minimal 2 karakter." : cleanName.length > 120 ? "Nama lengkap maksimal 120 karakter." : "";
+  const dirty = !!user && cleanName !== user.name;
+  const saveProfile = async () => {
+    if (!dirty || nameError) return;
+    setSaving(true); setMsg(null);
+    try {
+      const u = await api.updateMe(cleanName);
+      setUser(u); const t = session.token(); if (t) session.set(t, u);
+      setName(u.name); setMsg({ ok: true, text: "Profil tersimpan." });
+    } catch (e) { setMsg({ ok: false, text: (e as Error).message || "Profil tidak tersimpan. Coba lagi." }); }
+    finally { setSaving(false); }
+  };
+  const readOnlyField = (label: string, value: string, hint: string) => <label className="block"><span className="mb-2 block text-sm font-semibold text-slate-700">{label}</span>
+    <input readOnly value={value} aria-describedby={`hint-${label}`} className="h-11 w-full cursor-not-allowed rounded-md border border-slate-200 bg-slate-50 px-3.5 text-sm text-slate-600 outline-none" />
+    <span id={`hint-${label}`} className="mt-1 block text-xs text-slate-500">{hint}</span></label>;
   const menu = role === "Pengawas" ? ["Profil", "Preferensi pemantauan", "Notifikasi", "Privasi", "Keamanan akun"] : ["Profil", "Keamanan akun"];
   return <AppShell active="settings" go={go} title="Pengaturan"><main className="mx-auto max-w-6xl p-4 sm:p-8"><PageTitle title="Pengaturan" description="Kelola preferensi akun, pemantauan, keamanan, dan privasi data." /><div className="grid gap-6 lg:grid-cols-[250px_1fr]"><aside className="h-fit rounded-md border border-slate-200 bg-white p-2">{menu.map(x => <button key={x} onClick={() => setSection(x)} className={`w-full rounded-md px-3 py-2.5 text-left text-sm font-semibold ${section === x ? "bg-blue-50 text-blue-700" : "text-slate-600 hover:bg-slate-50"}`}>{x}</button>)}</aside>
     <section className="rounded-md border border-slate-200 bg-white p-6"><div className="border-b border-slate-100 pb-5"><h2 className="font-bold text-slate-900">{section}{section !== "Profil" && section !== "Privasi" && <SampleTag />}</h2><p className="mt-1 text-sm text-slate-500">{section === "Privasi" ? "Atur akses dan penggunaan data pemantauan ujian." : `Kelola pengaturan ${section.toLowerCase()} Anda.`}</p></div>
-      {section === "Profil" ? <div className="mt-6 grid gap-5 sm:grid-cols-2"><Field label="Nama lengkap" value={user?.name} /><Field label="Email" value={user?.email} /><Field label="Institusi" value="SMA Negeri 8 Bandung" /><Field label="Peran" value={role} /></div> : section === "Privasi" ? <div className="mt-6 space-y-4"><div className="rounded-md bg-blue-50 p-5"><div className="flex gap-3"><Icon name="shield" size={20} /><div><p className="text-sm font-bold text-blue-900">Data untuk pengawasan ujian</p><p className="mt-2 text-sm leading-6 text-blue-800">Cuplikan gambar bukti Indikasi hanya digunakan untuk pengawasan, peninjauan, dan pelaporan ujian oleh pihak berwenang, dan dihapus otomatis sesuai aturan masa simpan yang ditampilkan saat persetujuan. Video penuh dan audio tidak disimpan oleh EduAI.</p></div></div></div></div> : <div className="mt-6 space-y-3">{["Pemberitahuan Indikasi baru", "Peringatan masalah koneksi", "Keamanan akun"].map((x, i) => <div key={x} className="flex items-center justify-between rounded-md border border-slate-200 p-4"><div><p className="text-sm font-semibold text-slate-800">{x}</p><p className="mt-1 text-xs text-slate-500">{i === 0 ? "Tampilkan notifikasi tanpa mengganggu pemantauan." : "Kirimkan informasi penting ke pengguna."}</p></div><span className="relative h-6 w-11 rounded-full bg-blue-700"><span className="absolute right-1 top-1 size-4 rounded-full bg-white" /></span></div>)}</div>}
-      <div className="mt-6 flex justify-end"><Button disabled>Simpan perubahan</Button></div></section></div></main></AppShell>;
+      {section === "Profil" ? <form id="form-profil" onSubmit={(e) => { e.preventDefault(); void saveProfile(); }} className="mt-6 grid gap-5 sm:grid-cols-2">
+        <label className="block"><span className="mb-2 block text-sm font-semibold text-slate-700">Nama lengkap</span>
+          <input name="name" value={name} onChange={(e) => { setName(e.target.value); setMsg(null); }} maxLength={120} autoComplete="name" aria-invalid={!!nameError} aria-describedby="hint-nama"
+            className={`h-11 w-full rounded-md border bg-white px-3.5 text-sm text-slate-800 outline-none transition focus:ring-4 ${nameError ? "border-red-400 focus:ring-red-50" : "border-slate-200 focus:border-blue-500 focus:ring-blue-50"}`} />
+          <span id="hint-nama" className={`mt-1 block text-xs ${nameError ? "text-red-600" : "text-slate-500"}`}>{nameError || "Nama ini tampil untuk pengawas dan di laporan."}</span></label>
+        {readOnlyField("Email", user?.email ?? NO_DATA, "Dipakai untuk masuk. Hubungi admin untuk mengubahnya.")}
+        {readOnlyField("Institusi", school ?? NO_DATA, "Diatur oleh sekolah.")}
+        {readOnlyField("Peran", role, "Diatur oleh admin.")}
+      </form> : section === "Privasi" ? <div className="mt-6 space-y-4"><div className="rounded-md bg-blue-50 p-5"><div className="flex gap-3"><Icon name="shield" size={20} /><div><p className="text-sm font-bold text-blue-900">Data untuk pengawasan ujian</p><p className="mt-2 text-sm leading-6 text-blue-800">Cuplikan gambar bukti Indikasi hanya digunakan untuk pengawasan, peninjauan, dan pelaporan ujian oleh pihak berwenang, dan dihapus otomatis sesuai aturan masa simpan yang ditampilkan saat persetujuan. Video penuh dan audio tidak disimpan oleh EduAI.</p></div></div></div></div> : <div className="mt-6 space-y-3">{["Pemberitahuan Indikasi baru", "Peringatan masalah koneksi", "Keamanan akun"].map((x, i) => <div key={x} className="flex items-center justify-between rounded-md border border-slate-200 p-4"><div><p className="text-sm font-semibold text-slate-800">{x}</p><p className="mt-1 text-xs text-slate-500">{i === 0 ? "Tampilkan notifikasi tanpa mengganggu pemantauan." : "Kirimkan informasi penting ke pengguna."}</p></div><span className="relative h-6 w-11 rounded-full bg-blue-700"><span className="absolute right-1 top-1 size-4 rounded-full bg-white" /></span></div>)}</div>}
+      <div className="mt-6 flex items-center justify-end gap-4">
+        {section === "Profil" && msg && <p role="status" className={`text-sm ${msg.ok ? "text-emerald-700" : "text-red-600"}`}>{msg.text}</p>}
+        {section === "Profil" ? <Button onClick={() => void saveProfile()} disabled={!dirty || !!nameError || saving}>{saving ? "Menyimpan…" : "Simpan perubahan"}</Button> : <Button disabled>Simpan perubahan</Button>}
+      </div></section></div></main></AppShell>;
 }
 
 function StudentDashboard({ go }: { go: (s: Screen) => void }) {
   const { user } = useUser();
+  const school = useSchoolName();
   const { setExamId } = useSel();
   const list = usePoll(() => api.exams(), [], 15000);
   const exams = list.data ?? [];
@@ -1226,7 +1577,7 @@ function StudentDashboard({ go }: { go: (s: Screen) => void }) {
   return <AppShell active="dashboard" go={go} title="Dasbor Siswa"><main className="p-4 sm:p-8">
     <PageTitle title={`${greeting()}, ${user?.name.split(" ")[0] ?? ""}`} description="Lihat jadwal dan status ujian Anda di satu tempat." />
     {list.error && <Notice tone="red">{list.error}</Notice>}
-    <div className="grid gap-5 lg:grid-cols-3">{cards.map(([status, e, tone]) => <section key={status} className="rounded-md border border-slate-200 bg-white p-5"><Badge tone={tone as "blue" | "gray" | "green"}>{status}</Badge><h2 className="mt-4 font-bold text-slate-900">{e?.name ?? "Tidak ada ujian"}</h2><p className="mt-2 text-sm text-slate-500">{e ? (status === "Sedang berlangsung" ? examTime(e) : `${fmtDate(e.date)} • ${e.start_time.replace(":", ".")} WIB`) : "—"}</p><p className="mt-1 text-xs text-slate-400">{e?.class_name ?? user?.class_name} • SMA Negeri 8 Bandung</p>{status === "Sedang berlangsung" && e && <Button className="mt-5 w-full" onClick={() => { setExamId(e.id); go("device"); }}>Cek perangkat & masuk</Button>}</section>)}</div>
+    <div className="grid gap-5 lg:grid-cols-3">{cards.map(([status, e, tone]) => <section key={status} className="rounded-md border border-slate-200 bg-white p-5"><Badge tone={tone as "blue" | "gray" | "green"}>{status}</Badge><h2 className="mt-4 font-bold text-slate-900">{e?.name ?? "Tidak ada ujian"}</h2><p className="mt-2 text-sm text-slate-500">{e ? (status === "Sedang berlangsung" ? examTime(e) : `${fmtDate(e.date)} • ${e.start_time.replace(":", ".")} WIB`) : "—"}</p><p className="mt-1 text-xs text-slate-400">{e?.class_name ?? user?.class_name} • {school === undefined ? "…" : school ?? NO_DATA}</p>{status === "Sedang berlangsung" && e && <Button className="mt-5 w-full" onClick={() => { setExamId(e.id); go("device"); }}>Cek perangkat & masuk</Button>}</section>)}</div>
     <section className="mt-6 rounded-md border border-blue-100 bg-blue-50 p-5"><div className="flex gap-3"><Icon name="shield" size={20} /><div><p className="text-sm font-bold text-blue-900">Privasi peserta dilindungi</p><p className="mt-1 text-sm leading-6 text-blue-800">Siswa hanya dapat mengikuti ujian dan tidak memiliki akses ke video pemantauan, Indikasi, validasi, atau laporan final.</p></div></div></section>
   </main></AppShell>;
 }
@@ -1235,12 +1586,24 @@ function MyExams({ go }: { go: (s: Screen) => void }) {
   const { user } = useUser();
   const { setExamId } = useSel();
   const list = usePoll(() => api.exams(), [], 15000);
-  const rows = (list.data ?? []).map((e) => ({ ...e, timing: e.status === "Sedang Berlangsung" ? "active" : e.status === "Selesai" ? "ended" : "upcoming" }));
-  return <AppShell active="my-exams" go={go} title="Ujian Saya"><main className="p-4 sm:p-8"><PageTitle title="Ujian Saya" description={`Hanya ujian yang didaftarkan Admin untuk ${user?.name ?? ""} • ${user?.class_name ?? ""}.`} />{list.error && <Notice tone="red">{list.error}</Notice>}<section className="overflow-hidden rounded-md border border-slate-200 bg-white"><div className="overflow-x-auto"><table className="w-full min-w-[900px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3.5">Nama ujian</th><th className="px-5 py-3.5">Tanggal</th><th className="px-5 py-3.5">Jam mulai</th><th className="px-5 py-3.5">Durasi</th><th className="px-5 py-3.5">Status</th><th className="px-5 py-3.5">Aksi</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id} className="border-t border-slate-100"><td className="px-5 py-4 font-semibold text-slate-800">{row.name}</td><td className="px-5 py-4 text-slate-600">{fmtDate(row.date)}</td><td className="px-5 py-4 text-slate-600">{row.start_time.replace(":", ".")} WIB</td><td className="px-5 py-4 text-slate-600">{row.duration_min} menit</td><td className="px-5 py-4"><Badge tone={row.timing === "ended" ? "green" : row.timing === "active" ? "blue" : "gray"}>{row.status}</Badge></td><td className="px-5 py-4">{row.timing === "active" ? <Button className="h-9" onClick={() => { setExamId(row.id); go(row.seb?.required ? "seb-check" : "device"); }}>Mulai Ujian</Button> : <div><Button className="h-9" disabled>Mulai Ujian</Button><p className="mt-1.5 text-[10px] text-slate-400">{row.timing === "upcoming" ? "Aktif saat jadwal dimulai" : "Waktu ujian telah berakhir"}</p></div>}</td></tr>)}</tbody></table>{!list.loading && rows.length === 0 && <p className="p-6 text-center text-sm text-slate-500">Belum ada ujian yang didaftarkan untuk Anda.</p>}</div><div className="border-t border-blue-100 bg-blue-50 p-4 text-xs leading-5 text-blue-800">Akses ujian divalidasi berdasarkan daftar peserta dan status ujian yang ditentukan Admin.</div></section></main></AppShell>;
+  // Status filter so a student finds running, scheduled or finished exams quickly (counts from the same list).
+  const [filter, setFilter] = useState<StudentFilter>("semua");
+  const all = list.data ?? [];
+  const counts = studentFilterCounts(all);
+  const rows = filterStudentExams(all, filter).map((e) => ({ ...e, timing: e.status === "Sedang Berlangsung" ? "active" : e.status === "Selesai" ? "ended" : "upcoming" }));
+  return <AppShell active="my-exams" go={go} title="Ujian Saya"><main className="p-4 sm:p-8"><PageTitle title="Ujian Saya" description={`Hanya ujian yang didaftarkan Admin untuk ${user?.name ?? ""} • ${user?.class_name ?? ""}.`} />{list.error && <Notice tone="red">{list.error}</Notice>}
+    <div role="toolbar" aria-label="Saring status ujian" className="-mx-4 mb-4 flex gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:flex-wrap sm:px-0">
+      {STUDENT_FILTERS.map((f) => { const on = filter === f.key; return <button key={f.key} type="button" aria-pressed={on} data-exam-filter={f.key} data-count={counts[f.key]} onClick={() => setFilter(f.key)}
+        className={`flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3.5 text-[13px] font-semibold outline-none focus-visible:ring-2 focus-visible:ring-[#c9a227] ${on ? "border-navy bg-navy text-white" : "border-line bg-white text-[#334054] hover:bg-paper"}`}>
+        {f.key !== "semua" && <i aria-hidden="true" className={`size-2 rounded-full ${f.key === "berlangsung" ? "bg-gold-500" : f.key === "terjadwal" ? "bg-[#3d628e]" : "bg-[#23856d]"}`} />}
+        {f.label}<span className={`rounded-full px-1.5 text-xs tabular-nums ${on ? "bg-white/15 text-white" : "bg-paper text-[#687382]"}`}>{counts[f.key]}</span></button>; })}
+    </div>
+    <section className="overflow-hidden rounded-md border border-slate-200 bg-white"><div className="overflow-x-auto"><table className="w-full min-w-[900px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3.5">Nama ujian</th><th className="px-5 py-3.5">Tanggal</th><th className="px-5 py-3.5">Jam mulai</th><th className="px-5 py-3.5">Durasi</th><th className="px-5 py-3.5">Status</th><th className="px-5 py-3.5">Aksi</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id} className="border-t border-slate-100"><td className="px-5 py-4 font-semibold text-slate-800">{row.name}</td><td className="px-5 py-4 text-slate-600">{fmtDate(row.date)}</td><td className="px-5 py-4 text-slate-600">{row.start_time.replace(":", ".")} WIB</td><td className="px-5 py-4 text-slate-600">{row.duration_min} menit</td><td className="px-5 py-4"><Badge tone={row.timing === "ended" ? "green" : row.timing === "active" ? "blue" : "gray"}>{row.status}</Badge></td><td className="px-5 py-4">{row.timing === "active" ? <Button className="h-9" onClick={() => { setExamId(row.id); go(row.seb?.required ? "seb-check" : "device"); }}>Mulai Ujian</Button> : <div><Button className="h-9" disabled>Mulai Ujian</Button><p className="mt-1.5 text-[10px] text-slate-400">{row.timing === "upcoming" ? "Aktif saat jadwal dimulai" : "Waktu ujian telah berakhir"}</p></div>}</td></tr>)}</tbody></table>{!list.loading && rows.length === 0 && <p data-empty-exams className="p-8 text-center text-sm text-slate-500">{filter === "semua" ? "Belum ada ujian untuk Anda." : `Tidak ada ujian dengan status "${STUDENT_FILTERS.find((f) => f.key === filter)!.label}".`}</p>}{!list.loading && rows.length === 0 && <p className="p-6 text-center text-sm text-slate-500">Belum ada ujian yang didaftarkan untuk Anda.</p>}</div><div className="border-t border-blue-100 bg-blue-50 p-4 text-xs leading-5 text-blue-800">Akses ujian divalidasi berdasarkan daftar peserta dan status ujian yang ditentukan Admin.</div></section></main></AppShell>;
 }
 
 function InstitutionDashboard({ go, role }: { go: (s: Screen) => void; role: "Penyelenggara Ujian" | "Pihak Sekolah" }) {
   const organizer = role === "Penyelenggara Ujian";
+  const school = useSchoolName();
   const { setExamId } = useSel();
   const d = usePoll(() => api.dashboard(), [], 15000);
   const exams = d.data?.exams ?? [];
@@ -1251,7 +1614,7 @@ function InstitutionDashboard({ go, role }: { go: (s: Screen) => void; role: "Pe
   return <AppShell active="dashboard" go={go} title={`Dasbor ${role}`}><main className="p-4 sm:p-8"><PageTitle title={organizer ? "Koordinasi ujian semester" : "Ringkasan akademik sekolah"} description={organizer ? "Pantau sesi, peserta, pengawas, dan laporan sesuai kewenangan yang diberikan." : "Pantau informasi sesi dan laporan final yang telah melalui validasi."} />
     {d.error && <Notice tone="red">{d.error}</Notice>}
     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{cards.map(([value, label]) => <section key={label} className="rounded-md border border-slate-200 bg-white p-5"><p className="text-2xl font-bold text-slate-900">{value}</p><p className="mt-1 text-sm text-slate-500">{label}</p></section>)}</div>
-    <section className="mt-6 overflow-hidden rounded-md border border-slate-200 bg-white"><div className="flex items-center justify-between border-b border-slate-100 p-5"><div><h2 className="font-bold text-slate-900">{organizer ? "Sesi dalam kewenangan Anda" : "Laporan terbaru"}</h2><p className="mt-1 text-xs text-slate-500">Data SMA Negeri 8 Bandung</p></div><Button variant="ghost" onClick={() => go(organizer ? "sessions" : "report")}>Lihat semua</Button></div><div className="divide-y divide-slate-100">{exams.slice(0, 5).map((session) => <button key={session.id} onClick={() => { setExamId(session.id); go(organizer ? "exam-detail" : "report"); }} className="flex w-full items-center justify-between gap-4 p-5 text-left hover:bg-slate-50"><div><p className="text-sm font-semibold text-slate-800">{session.name}</p><p className="mt-1 text-xs text-slate-500">{fmtDate(session.date)} • {session.student_count} peserta</p></div><Badge tone={statusTone(session.status)}>{session.status}</Badge></button>)}</div></section>
+    <section className="mt-6 overflow-hidden rounded-md border border-slate-200 bg-white"><div className="flex items-center justify-between border-b border-slate-100 p-5"><div><h2 className="font-bold text-slate-900">{organizer ? "Sesi dalam kewenangan Anda" : "Laporan terbaru"}</h2><p className="mt-1 text-xs text-slate-500">Data {school === undefined ? "…" : school ?? NO_DATA}</p></div><Button variant="ghost" onClick={() => go(organizer ? "sessions" : "report")}>Lihat semua</Button></div><div className="divide-y divide-slate-100">{exams.slice(0, 5).map((session) => <button key={session.id} onClick={() => { setExamId(session.id); go(organizer ? "exam-detail" : "report"); }} className="flex w-full items-center justify-between gap-4 p-5 text-left hover:bg-slate-50"><div><p className="text-sm font-semibold text-slate-800">{session.name}</p><p className="mt-1 text-xs text-slate-500">{fmtDate(session.date)} • {session.student_count} peserta</p></div><Badge tone={statusTone(session.status)}>{session.status}</Badge></button>)}</div></section>
   </main></AppShell>;
 }
 
@@ -1274,24 +1637,82 @@ function IndicationsPage({ go }: { go: (s: Screen) => void }) {
   const { role } = useRole();
   const { eventId } = useSel();
   const readOnly = role === "Pihak Sekolah";
-  const [filter, setFilter] = useState("Semua");
-  const [selId, setSelId] = useState<string | null>(null);
+  // Kind and status filter; kept in the URL query (?jenis=hp&status=belum) without changing the path. Only this staff
+  // page writes the query (students in Safe Exam Browser never open it); the query is removed when leaving the page.
+  const [filter, setFilterState] = useState<Filter>(() => parseFilter(window.location.search));
+  const setFilter = (f: Filter) => { setFilterState(f); setSelId(null); };
+  useEffect(() => {
+    const { pathname, search, hash } = window.location;
+    const next = filterQuery(filter, search);
+    if (next !== search) window.history.replaceState(window.history.state, "", pathname + next + hash);
+  }, [filter]);
+  useEffect(() => () => {
+    const { pathname, search, hash } = window.location;
+    const q = new URLSearchParams(filterQuery({ jenis: null, status: null }, search)); q.delete("kasus");
+    const next = q.toString() ? `?${q}` : "";
+    if (next !== search) window.history.replaceState(window.history.state, "", pathname + next + hash);
+  }, []);
+  // ?kasus=<case_id> (link copied from the evidence viewer) selects that case.
+  const [selId, setSelId] = useState<string | null>(() => new URLSearchParams(window.location.search).get("kasus"));
+  const [since] = useState(() => sinceIso(Date.now()));
   const list = usePoll(() => api.cases(), [], 5000);
+  const recent = usePoll(() => api.events({ category: "indication", since, limit: 500 }), [since], 30000);
+  // last review per event (reviewer, decision, time) for "Aktivitas terbaru"; exams for the supervisor of each case
+  const reviewed = usePoll(() => api.events({ category: "indication", limit: 500 }), [], 15000);
+  const exams = usePoll(() => api.exams(), [], 60000);
+  // Click = see the students: a kind button, a bar, a kind name or a donut part opens the drawer.
+  const [drawer, setDrawer] = useState<DrawerSource | null>(null);
+  // Kind buttons in the filter row: filter, then go straight to "Daftar kasus" below ("Tidak dapat dianalisis" is not a
+  // case: go to its card). Bars, kind names and donut parts still open the student drawer.
+  const scrollTo = (id: string) => window.setTimeout(() => document.getElementById(id)?.scrollIntoView({
+    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }), 60);
+  const filterAndGo = (j: JenisKey | null) => { setFilter({ ...filter, jenis: j }); scrollTo("judul-daftar-kasus"); };
+  const pickJenis = (j: JenisKey | null) => { const f = { ...filter, jenis: j }; setFilter(f); if (j && j !== "tidak-terbaca") setDrawer({ jenis: j, status: f.status }); };
+  const pickStatus = (st: StatusKey | null) => { const f = { ...filter, status: st }; setFilter(f); if (st) setDrawer({ jenis: f.jenis, status: st }); };
   const rows = list.data?.cases ?? [];
-  const label = (c: CaseSummary) => (c.unreviewed_count > 0 ? "BELUM DITINJAU" : c.review_status ?? "BELUM DITINJAU");
-  const visible = rows.filter((r) => filter === "Semua" || label(r) === filter);
+  const visible = filterCases(rows, filter);
+  const ofKind = filterCases(rows, { jenis: filter.jenis, status: null });
+  const counts = jenisCounts(rows, [], filter.status);
+  const ofStatus = filterCases(rows, { jenis: null, status: filter.status });
+  const listRef = useRef<HTMLElement>(null);
+  const toList = () => listRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  // open a case in the existing review panel below the list (the filter is cleared if it would hide the case)
+  const openCase = (caseId: string) => {
+    setDrawer(null);
+    const c = rows.find((x) => x.case_id === caseId);
+    if (c && !visible.some((x) => x.case_id === caseId)) setFilterState({ jenis: null, status: null });
+    setSelId(caseId);
+    window.setTimeout(() => document.querySelector(`[data-case="${CSS.escape(caseId)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
+  };
+  const now = list.data ? utcMs(list.data.server_time) ?? 0 : 0;
   const cur = visible.find((c) => c.case_id === selId) ?? (eventId ? visible.find((c) => c.event_ids.includes(eventId)) : undefined) ?? visible[0];
-  const count = (l: string) => rows.filter((r) => label(r) === l).length;
-  const summary = [["Kasus", rows.length], ["Deteksi asli", list.data?.total_events ?? 0], ["Kasus belum ditinjau", count("BELUM DITINJAU")], ["Kasus perlu tinjauan lanjut", count("Perlu Tinjauan Lanjut")]];
-  return <AppShell active="indications" go={go} title="Daftar Indikasi"><main className="p-4 sm:p-8">
-    <PageTitle title={readOnly ? "Indikasi Tervalidasi" : "Indikasi perilaku yang perlu ditinjau"} description={readOnly ? "Hanya hasil yang telah divalidasi ditampilkan untuk pihak sekolah." : "Kejadian berulang dikelompokkan menjadi satu kasus. Pilih kasus untuk melihat semua kejadian aslinya dan memvalidasi sekaligus."} />
+  return <AppShell active="indications" go={go} title="Daftar Indikasi"><main className="min-h-full bg-white p-4 sm:p-8">
+    <div className="mb-5">
+      <h1 className="text-2xl leading-tight">{readOnly ? "Indikasi Tervalidasi" : "Indikasi"}</h1>
+      <p className="mt-1.5 text-sm text-[#626F86]">Indikasi bukan bukti pelanggaran. Keputusan tetap di tangan pengawas.{readOnly ? " Pihak sekolah hanya melihat hasil yang sudah ditinjau." : ""}</p>
+    </div>
     {list.error && <Notice tone="red">{list.error}</Notice>}
-    <div className="mb-2 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-slate-200 bg-slate-200 xl:grid-cols-4">{summary.map(([l, n]) => <div key={l} className="bg-white px-5 py-4"><p className="text-2xl font-semibold text-slate-900">{n}</p><p className="text-xs text-slate-500">{l}</p></div>)}</div>
+    <div className="space-y-4">
+      <FilterRow filter={filter} counts={counts} readOnly={readOnly} onJenis={filterAndGo} onStatus={(st) => setFilter({ ...filter, status: st })} />
+      <KpiRow kpi={list.data && recent.data ? kpi7(visible, recent.data.events, utcMs(list.data.server_time) ?? 0) : null} />
+      {/* three donuts side by side (one column on phones) */}
+      <div className="grid gap-4 lg:grid-cols-3">
+        <StatusDonut data={list.data ? statusSummary(ofKind) : null} selected={filter.status} onSelect={pickStatus} onAll={toList} />
+        <KindDonut slices={list.data ? kindSlices(ofStatus) : null} selected={filter.jenis}
+          onSelect={(sl) => (sl.kinds.length === 1 ? pickJenis(sl.kinds[0]) : setDrawer({ jenis: null, status: filter.status, kinds: sl.kinds, label: sl.label }))} />
+        <LoadDonut slices={list.data && exams.data ? loadSlices(supervisorLoad(visible, exams.data)) : null} />
+      </div>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <KindBarChart bars={list.data ? kindBars(ofStatus) : null} selected={filter.jenis} onSelect={pickJenis} />
+        <ActivityCard items={list.data && reviewed.data ? activityFeed(visible, reviewed.data.events) : null} now={now} capped={(reviewed.data?.events.length ?? 0) >= 500} onOpenCase={openCase} />
+      </div>
+    </div>
+    {drawer && <StudentDrawer source={drawer} cases={drawerCases(rows, drawer)} canOpenEvidence={mayOpenEvidence(role)} onClose={() => setDrawer(null)} onOpenCase={openCase} />}
+    <h2 id="judul-daftar-kasus" className="mb-3 mt-8 scroll-mt-24 font-sans text-sm font-bold text-[#1D2433]">Daftar kasus</h2>
     {list.data && <p className="mb-5 text-xs text-slate-500">{rows.length} kasus dari {list.data.total_events} deteksi. {list.data.gap_s > 0 ? `Kejadian dengan siswa, ujian, dan jenis indikasi sama yang berjarak paling lama ${Math.round(list.data.gap_s)} detik digabung` : "Satu kasus per siswa dan jenis perilaku untuk seluruh ujian; setiap kejadian tetap tercatat di dalamnya"}; jenis indikasi berbeda selalu menjadi kasus terpisah. Notifikasi muncul sekali, saat ambang perilaku pertama kali terpenuhi.</p>}
-    <div className="grid gap-5 xl:grid-cols-[1fr_380px]">
-      <section className="overflow-hidden rounded-lg border border-slate-200 bg-white">
-        <div className="flex flex-wrap gap-2 border-b border-slate-100 p-4">{["Semua", "BELUM DITINJAU", "Valid", "Tidak Valid", "Perlu Tinjauan Lanjut", "Campuran"].filter((f) => !readOnly || f !== "BELUM DITINJAU").map((f) => <button key={f} onClick={() => { setFilter(f); setSelId(null); }} className={`rounded-full border px-3 py-1 text-xs font-medium ${filter === f ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>{f === "BELUM DITINJAU" ? "Belum ditinjau" : f}</button>)}</div>
-        <div className="overflow-x-auto"><table className="w-full min-w-[620px] text-left text-sm"><thead><tr><th className="px-3 py-3">Siswa</th><th className="px-3 py-3">Indikasi</th><th className="px-3 py-3">Kejadian</th><th className="px-3 py-3">Total durasi</th><th className="px-3 py-3">Pertama – terakhir</th><th className="px-3 py-3">Status</th></tr></thead><tbody>{visible.map((r) => <tr key={r.case_id} onClick={() => setSelId(r.case_id)} className={`cursor-pointer border-t border-slate-100 ${cur?.case_id === r.case_id ? "bg-blue-50" : ""}`}><td className="px-3 py-3.5 font-semibold text-slate-800">{r.student?.name}<p className="mt-0.5 text-xs font-normal text-slate-400">{r.exam?.name}</p></td><td className="px-3 py-3.5 text-slate-600">{eventTitle(r)}{r.status === "open" ? " (berlangsung)" : ""}{r.rule && !r.rule.met && <p className="mt-0.5 text-[11px] text-slate-400">Di bawah ambang ({r.rule.max_in_window}/{r.rule.min_count}{r.rule.window_s ? ` dalam ${Math.round(r.rule.window_s / 60)} mnt` : ""})</p>}</td><td className="px-3 py-3.5 font-semibold text-slate-700">{r.episode_count ?? r.event_count}×</td><td className="whitespace-nowrap px-3 py-3.5 text-slate-500">{fmtDuration(r.total_duration_s)}</td><td className="whitespace-nowrap px-3 py-3.5 text-slate-500">{fmtTime(r.first_start_ts)}{r.event_count > 1 ? ` – ${fmtTime(r.last_start_ts)}` : ""}</td><td className="px-3 py-3.5"><Badge tone={caseTone(r)}>{caseLabel(r)}</Badge></td></tr>)}</tbody></table></div>
+    <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+      <section ref={listRef} id="daftar-kasus" aria-label="Daftar kasus" className="scroll-mt-4 overflow-hidden rounded border border-[#DFE1E6] bg-white">
+        <div className="overflow-x-auto"><table className="w-full min-w-[620px] text-left text-sm"><thead><tr><th className="px-3 py-3">Siswa</th><th className="px-3 py-3">Indikasi</th><th className="px-3 py-3">Kejadian</th><th className="px-3 py-3">Total durasi</th><th className="px-3 py-3">Pertama – terakhir</th><th className="px-3 py-3">Status</th></tr></thead><tbody>{visible.map((r) => <tr key={r.case_id} data-case={r.case_id} onClick={() => setSelId(r.case_id)} className={`cursor-pointer border-t border-slate-100 ${cur?.case_id === r.case_id ? "bg-blue-50" : ""}`}><td className="px-3 py-3.5 font-semibold text-slate-800">{r.student?.name}<p className="mt-0.5 text-xs font-normal text-slate-400">{r.exam?.name}</p></td><td className="px-3 py-3.5 text-slate-600">{eventTitle(r)}{r.status === "open" ? " (berlangsung)" : ""}{r.rule && !r.rule.met && <p className="mt-0.5 text-[11px] text-slate-400">Di bawah ambang ({r.rule.max_in_window}/{r.rule.min_count}{r.rule.window_s ? ` dalam ${Math.round(r.rule.window_s / 60)} mnt` : ""})</p>}</td><td className="px-3 py-3.5 font-semibold text-slate-700">{r.episode_count ?? r.event_count}×</td><td className="whitespace-nowrap px-3 py-3.5 text-slate-500">{fmtDuration(r.total_duration_s)}</td><td className="whitespace-nowrap px-3 py-3.5 text-slate-500">{fmtTime(r.first_start_ts)}{r.event_count > 1 ? ` – ${fmtTime(r.last_start_ts)}` : ""}</td><td className="px-3 py-3.5"><Badge tone={caseTone(r)}>{caseLabel(r)}</Badge></td></tr>)}</tbody></table></div>
         {!list.loading && visible.length === 0 && <p className="p-8 text-center text-sm text-slate-500">Tidak ada indikasi pada filter ini.</p>}
       </section>
       {cur && <CasePanel key={cur.case_id} c={cur} readOnly={readOnly} go={go} onSaved={() => void list.reload()} />}
@@ -1316,14 +1737,21 @@ function CasePanel({ c, readOnly, go, onSaved }: { c: CaseSummary; readOnly: boo
   const evidenceEvent = [...events].reverse().find((e) => e.evidence_id);
   const thumbId = evidenceEvent?.evidence_id ?? c.latest_evidence_id;
   const thumb = loadedThumb && loadedThumb.id === thumbId ? loadedThumb.url : null;
-  useEffect(() => {
-    const id = thumbId;
-    if (!allowed || !id) return;
-    let url = "";
-    let cancelled = false;
-    api.evidence(id).then((m) => api.evidenceFrameUrl(m.evidence_id, m.key_index)).then((u) => { if (cancelled) URL.revokeObjectURL(u); else { url = u; setThumb({ id, url: u }); } }).catch(() => undefined);
-    return () => { cancelled = true; if (url) URL.revokeObjectURL(url); };
-  }, [allowed, thumbId]);
+  // The key frame of the selected case is shown right away (request 6 Nov 2026). Every opening is still written to the
+  // audit log by the backend ("Melihat evidence") and turns the notification ring grey. Each evidence is requested once
+  // per panel (the ref also covers React StrictMode's double effect in development); "Coba lagi" after an error.
+  const [thumbState, setThumbState] = useState<{ id: string; state: "loading" | "error" } | null>(null);
+  const thumbBusy = thumbState && thumbState.id === thumbId ? thumbState.state : null;
+  const asked = useRef(new Set<string>());
+  useEffect(() => () => { if (loadedThumb) URL.revokeObjectURL(loadedThumb.url); }, [loadedThumb]);
+  const fetchThumb = useCallback((id: string) => {
+    asked.current.add(id);
+    return api.evidence(id).then((m) => api.evidenceFrameUrl(m.evidence_id, m.key_index))
+      .then((u) => { setThumb({ id, url: u }); setThumbState(null); })
+      .catch(() => setThumbState({ id, state: "error" }));
+  }, []);
+  useEffect(() => { if (allowed && thumbId && !asked.current.has(thumbId)) void fetchThumb(thumbId); }, [allowed, thumbId, fetchThumb]);
+  const loadThumb = () => { if (allowed && thumbId) { setThumbState({ id: thumbId, state: "loading" }); void fetchThumb(thumbId); } };
   const save = async () => {
     if (!events.length) return;
     setBusy(true);
@@ -1335,10 +1763,12 @@ function CasePanel({ c, readOnly, go, onSaved }: { c: CaseSummary; readOnly: boo
   };
   const openEvent = (id: string) => { setExamId(c.exam_id); setEventId(id); go("detail"); };
   const partly = c.unreviewed_count > 0 && c.unreviewed_count < c.event_count;
-  return <aside className="h-fit rounded-lg border border-slate-200 bg-white p-5">
+  return <aside className="h-fit min-w-0 rounded-lg border border-slate-200 bg-white p-5">
     <div className="flex items-center justify-between gap-3"><h2 className="font-semibold text-slate-900">{c.student?.name}</h2><Badge tone={caseTone(c)}>{caseLabel(c)}</Badge></div>
     <p className="mt-1 text-sm text-slate-500">{eventTitle(c)} · {c.exam?.name}</p>
-    <div className="relative mt-4 grid aspect-video place-items-center overflow-hidden rounded-md bg-slate-800 text-xs text-slate-300">{thumb ? <img src={thumb} alt="Cuplikan evidence" className="absolute inset-0 size-full object-cover" /> : <Silhouette />}<span className="absolute bottom-2 left-2 rounded bg-slate-900/70 px-2 py-0.5">{!allowed ? EVIDENCE_RESTRICTED : evidenceEvent ? `Evidence ${fmtTime(evidenceEvent.start_ts)} (${c.evidence_count} dari ${c.event_count} kejadian punya evidence)` : "Evidence belum tersedia"}</span></div>
+    <div className="relative mt-4 grid aspect-video place-items-center overflow-hidden rounded-md bg-slate-800 text-xs text-slate-300">{thumb ? <img src={thumb} alt="Cuplikan evidence" data-thumb className="absolute inset-0 size-full object-cover" draggable={false} onContextMenu={(e) => e.preventDefault()} />
+      : allowed && thumbId ? <button type="button" onClick={loadThumb} disabled={thumbBusy !== "error"} data-case-thumb className="absolute inset-0 grid place-items-center bg-[#F4F5F7] text-[13px] font-medium text-[#14213d] outline-none hover:bg-[#EBECF0] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#c9a227]" aria-label={`Tampilkan cuplikan bukti ${c.student?.name ?? ""}`}>{thumbBusy === "error" ? "Gagal memuat cuplikan, coba lagi" : "Memuat cuplikan…"}</button>
+      : <Silhouette />}<span className="pointer-events-none absolute bottom-2 left-2 rounded bg-slate-900/70 px-2 py-0.5">{!allowed ? EVIDENCE_RESTRICTED : evidenceEvent ? `Evidence ${fmtTime(evidenceEvent.start_ts)} (${c.evidence_count} dari ${c.event_count} kejadian punya evidence)` : "Evidence belum tersedia"}</span></div>
     <dl className="mt-4 space-y-2.5 text-sm">{[["Jumlah kejadian", `${c.event_count} kejadian`], ["Kejadian pertama", fmtTime(c.first_start_ts)], ["Kejadian terakhir", c.status === "open" ? `${fmtTime(c.last_start_ts)} (berlangsung)` : fmtTime(c.last_start_ts)], ["Total durasi", fmtDuration(c.total_duration_s)], ["Skor model tertinggi", c.max_score == null ? "—" : `${Math.round(c.max_score * 100)}%`]].map(([k, v]) => <div key={k} className="flex justify-between gap-3"><dt className="text-slate-500">{k}</dt><dd className="text-right font-semibold text-slate-800">{v}</dd></div>)}</dl>
     {partly && <div className="mt-4"><Notice tone="amber">{c.unreviewed_count} kejadian baru masuk setelah kasus ini ditinjau. Keputusan sebelumnya tidak otomatis berlaku untuk kejadian baru.</Notice></div>}
     <h3 className="mt-5 text-sm font-bold text-slate-900">Kejadian asli ({events.length || c.event_count})</h3>
@@ -1362,23 +1792,165 @@ function HistoryPage({ go }: { go: (s: Screen) => void }) {
     const finished = (await api.exams()).filter((e) => e.status === "Selesai");
     return Promise.all(finished.map((e) => api.report(e.id)));
   }, []);
-  return <AppShell active="history" go={go} title="Riwayat Sesi"><main className="p-4 sm:p-8"><PageTitle title="Riwayat Sesi" description={`Sesi selesai yang pernah ditugaskan kepada ${user?.name ?? ""}.`} />{data.error && <Notice tone="red">{data.error}</Notice>}<section className="overflow-hidden rounded-md border border-slate-200 bg-white"><div className="overflow-x-auto"><table className="w-full min-w-[1100px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr>{["Nama Ujian", "Tanggal", "Peserta", "Indikasi", "Valid", "Tidak Valid", "Perlu Tinjauan", "Status Tinjauan", "Aksi"].map((head) => <th key={head} className="px-5 py-3.5">{head}</th>)}</tr></thead><tbody>{(data.data ?? []).map((r) => <tr key={r.exam.id} className="border-t border-slate-100">{[r.exam.name, fmtDate(r.exam.date), r.attendance.enrolled, r.indications.total, r.indications.valid, r.indications.invalid, r.indications.further].map((cell, index) => <td key={index} className={`px-5 py-4 ${index === 0 ? "font-semibold text-slate-800" : "text-slate-600"}`}>{cell}</td>)}<td className="px-5 py-4"><Badge tone={r.indications.unreviewed === 0 ? "green" : "amber"}>{r.indications.unreviewed === 0 ? "Semua ditinjau" : "Perlu Tinjauan"}</Badge></td><td className="px-5 py-4"><button onClick={() => { setExamId(r.exam.id); go("report"); }} className="text-xs font-bold text-blue-700">Lihat Detail</button></td></tr>)}</tbody></table>{!data.loading && !(data.data ?? []).length && <p className="p-6 text-center text-sm text-slate-500">Belum ada sesi yang selesai.</p>}</div></section></main></AppShell>;
+  return <AppShell active="history" go={go} title="Riwayat Sesi"><main className="p-4 sm:p-8"><PageTitle title="Riwayat Sesi" description={`Sesi selesai yang pernah ditugaskan kepada ${user?.name ?? ""}.`} />{data.error && <Notice tone="red">{data.error}</Notice>}
+    <div className="mb-6"><Suspense fallback={<ChartSkeleton h={260} />}><HistoryChart data={data.data ? historyRows(data.data) : null} onOpen={(id) => { setExamId(id); go("report"); }} /></Suspense></div>
+    <section className="overflow-hidden rounded-md border border-slate-200 bg-white"><div className="overflow-x-auto"><table className="w-full min-w-[1100px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr>{["Nama Ujian", "Tanggal", "Peserta", "Indikasi", "Valid", "Tidak Valid", "Perlu Tinjauan", "Status Tinjauan", "Aksi"].map((head) => <th key={head} className="px-5 py-3.5">{head}</th>)}</tr></thead><tbody>{(data.data ?? []).map((r) => <tr key={r.exam.id} className="border-t border-slate-100">{[r.exam.name, fmtDate(r.exam.date), r.attendance.enrolled, r.indications.total, r.indications.valid, r.indications.invalid, r.indications.further].map((cell, index) => <td key={index} className={`px-5 py-4 ${index === 0 ? "font-semibold text-slate-800" : "text-slate-600"}`}>{cell}</td>)}<td className="px-5 py-4"><Badge tone={r.indications.unreviewed === 0 ? "green" : "amber"}>{r.indications.unreviewed === 0 ? "Semua ditinjau" : "Perlu Tinjauan"}</Badge></td><td className="px-5 py-4"><button onClick={() => { setExamId(r.exam.id); go("report"); }} className="text-xs font-bold text-blue-700">Lihat Detail</button></td></tr>)}</tbody></table>{!data.loading && !(data.data ?? []).length && <p className="p-6 text-center text-sm text-slate-500">Belum ada sesi yang selesai.</p>}</div></section></main></AppShell>;
 }
 
 function UserManagement({ go }: { go: (s: Screen) => void }) {
   const { role } = useRole();
   const [modal, setModal] = useState(false);
+  const [editing, setEditing] = useState<UserRow | null>(null);
+  const [saved, setSaved] = useState("");
   const admin = role === "Admin";
-  const list = usePoll(() => api.users(admin ? undefined : "pengawas"), [admin]);
+  const school = role === "Pihak Sekolah";                 // "Akun Siswa": student accounts only
+  const canEdit = admin || school;
+  const list = usePoll(() => api.users(admin ? undefined : school ? "siswa" : "pengawas"), [admin, school]);
   const exams = usePoll(() => api.exams(), []);
   const [q, setQ] = useState("");
   const rows: UserRow[] = (list.data ?? []).filter((u) => u.name.toLowerCase().includes(q.toLowerCase()) || u.email.includes(q.toLowerCase()));
   const sessionsOf = (id: number) => (exams.data ?? []).filter((e) => e.supervisor?.id === id && e.status !== "Selesai").length;
-  return <AppShell active="users" go={go} title={admin ? "Manajemen User" : "Daftar Pengawas"}><main className="p-4 sm:p-8"><PageTitle title={admin ? "Manajemen User" : "Pengawas Ujian"} description={admin ? "Kelola akun, status, dan role pengguna EduAI." : "Tentukan pengawas untuk sesi yang menjadi kewenangan Anda."} action={<Button icon="plus" onClick={() => setModal(true)}>{admin ? "Tambah User" : "Tambah Pengawas"}</Button>} />
+  const pageTitle = admin ? "Manajemen User" : school ? "Akun Siswa" : "Pengawas Ujian";
+  return <AppShell active="users" go={go} title={admin ? "Manajemen User" : school ? "Akun Siswa" : "Daftar Pengawas"}><main className="p-4 sm:p-8"><PageTitle title={pageTitle} description={admin ? "Kelola akun, status, dan role pengguna EduAI." : school ? "Kelola data akun siswa: nama, email, NIS, kelas, dan status akun." : "Tentukan pengawas untuk sesi yang menjadi kewenangan Anda."} action={school ? undefined : <Button icon="plus" onClick={() => setModal(true)}>{admin ? "Tambah User" : "Tambah Pengawas"}</Button>} />
     {list.error && <Notice tone="red">{list.error}</Notice>}
-    <section className="overflow-hidden rounded-md border border-slate-200 bg-white"><div className="flex gap-3 border-b border-slate-100 p-4"><div className="relative max-w-sm flex-1"><span className="absolute left-3 top-2.5 text-slate-400"><Icon name="search" size={17} /></span><input value={q} onChange={(e) => setQ(e.target.value)} className="h-10 w-full rounded-md border border-slate-200 pl-9 pr-3 text-sm" placeholder="Cari nama atau email" /></div></div><div className="overflow-x-auto"><table className="w-full min-w-[880px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr>{(admin ? ["Nama", "Email", "Role", "Status", "Tanggal dibuat"] : ["Nama", "Email", "Penugasan", "Status", "Kelas"]).map((head) => <th key={head} className="px-5 py-3.5">{head}</th>)}</tr></thead><tbody>{rows.map((u) => { const cells = admin ? [u.name, u.email, u.role_label, u.active ? "Aktif" : "Nonaktif", fmtDate(u.created_at)] : [u.name, u.email, `${sessionsOf(u.id)} sesi aktif`, u.active ? "Aktif" : "Nonaktif", "—"]; return <tr key={u.id} className="border-t border-slate-100">{cells.map((cell, index) => <td key={index} className={`px-5 py-4 ${index === 0 ? "font-semibold text-slate-800" : "text-slate-600"}`}>{index === 3 ? <Badge tone={cell === "Aktif" ? "green" : "gray"}>{cell}</Badge> : cell}</td>)}</tr>; })}</tbody></table></div></section>
-    {modal && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/40 p-4"><section role="dialog" aria-modal="true" className="w-full max-w-lg rounded-md border border-slate-200 bg-white p-6"><div className="flex items-center justify-between"><h2 className="text-lg font-bold text-slate-900">{admin ? "Tambah User" : "Tambah Pengawas"}<SampleTag /></h2><button onClick={() => setModal(false)} className="text-slate-400"><Icon name="close" /></button></div><p className="mt-3 text-sm text-slate-500">Pembuatan akun staf melalui antarmuka belum tersedia di backend. Untuk uji coba gunakan akun demo atau tambahkan akun lewat basis data.</p><div className="mt-6 space-y-4"><Field label="Nama lengkap" placeholder="Masukkan nama lengkap" /><Field label="Email institusi" placeholder="nama@sman8bdg.sch.id" type="email" /></div><div className="mt-6 flex justify-end gap-3"><Button variant="secondary" onClick={() => setModal(false)}>Tutup</Button><Button disabled>Simpan</Button></div></section></div>}
+    {saved && <p role="status" className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{saved}</p>}
+    <section className="overflow-hidden rounded-md border border-slate-200 bg-white"><div className="flex gap-3 border-b border-slate-100 p-4"><div className="relative max-w-sm flex-1"><span className="absolute left-3 top-2.5 text-slate-400"><Icon name="search" size={17} /></span><input value={q} onChange={(e) => setQ(e.target.value)} className="h-10 w-full rounded-md border border-slate-200 pl-9 pr-3 text-sm" placeholder="Cari nama atau email" /></div></div><div className="overflow-x-auto"><table className="w-full min-w-[880px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr>{(admin ? ["Nama", "Email", "Role", "Status", "Tanggal dibuat", "Aksi"] : school ? ["Nama", "Email", "NIS/NISN", "Kelas", "Status", "Aksi"] : ["Nama", "Email", "Penugasan", "Status", "Kelas"]).map((head) => <th key={head} className="px-5 py-3.5">{head}</th>)}</tr></thead><tbody>{rows.map((u) => { const status = u.active ? "Aktif" : "Nonaktif"; const cells = admin ? [u.name, u.email, u.role_label, status, fmtDate(u.created_at)] : school ? [u.name, u.email, u.nis || "—", u.class_name || "—", status] : [u.name, u.email, `${sessionsOf(u.id)} sesi aktif`, status, "—"]; const statusAt = school ? 4 : 3; return <tr key={u.id} data-user={u.email} className="border-t border-slate-100">{cells.map((cell, index) => <td key={index} className={`px-5 py-4 ${index === 0 ? "font-semibold text-slate-800" : "text-slate-600"}`}>{index === statusAt ? <Badge tone={cell === "Aktif" ? "green" : "gray"}>{cell}</Badge> : cell}</td>)}
+        {canEdit && <td className="px-5 py-4"><button type="button" onClick={() => { setSaved(""); setEditing(u); }} aria-label={`Ubah ${u.name}`} className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#836713] underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-[#c9a227]"><Icon name="edit" size={14} />Ubah</button></td>}</tr>; })}</tbody></table></div></section>
+    {editing && <EditUserDialog u={editing} studentOnly={school} onClose={() => setEditing(null)} onSaved={(u) => { setEditing(null); setSaved(`Data ${u.name} tersimpan.`); void list.reload(); }} />}
+    {modal && admin && <AddUserDialog onClose={() => setModal(false)} onSaved={(u) => { setModal(false); setSaved(`Akun ${u.name} (${u.role_label}) ditambahkan.`); void list.reload(); }} />}
+    {modal && !admin && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/40 p-4"><section role="dialog" aria-modal="true" className="w-full max-w-lg rounded-md border border-slate-200 bg-white p-6"><div className="flex items-center justify-between"><h2 className="text-lg font-bold text-slate-900">{admin ? "Tambah User" : "Tambah Pengawas"}<SampleTag /></h2><button onClick={() => setModal(false)} className="text-slate-400"><Icon name="close" /></button></div><p className="mt-3 text-sm text-slate-500">Pembuatan akun staf melalui antarmuka belum tersedia di backend. Untuk uji coba gunakan akun demo atau tambahkan akun lewat basis data.</p><div className="mt-6 space-y-4"><Field label="Nama lengkap" placeholder="Masukkan nama lengkap" /><Field label="Email institusi" placeholder="nama@sman8bdg.sch.id" type="email" /></div><div className="mt-6 flex justify-end gap-3"><Button variant="secondary" onClick={() => setModal(false)}>Tutup</Button><Button disabled>Simpan</Button></div></section></div>}
   </main></AppShell>;
+}
+
+const ROLE_OPTIONS: [RoleCode, string][] = [["siswa", "Siswa"], ["pengawas", "Pengawas"], ["penyelenggara", "Penyelenggara Ujian"], ["admin", "Admin"], ["sekolah", "Pihak Sekolah"]];
+
+/** Manajemen User > Ubah: name, email, role, status (and NIS/class for students). The backend checks everything
+ *  again (unique email, own role/status, last admin, accounts still linked to unfinished exams). */
+function EditUserDialog({ u, studentOnly = false, onClose, onSaved }: { u: UserRow; studentOnly?: boolean; onClose: () => void; onSaved: (u: UserRow) => void }) {
+  const { user, setUser } = useUser();
+  const self = user?.id === u.id;
+  const ref = useRef<HTMLElement>(null);
+  useFocusTrap(ref, true, onClose);
+  const [f, setF] = useState({ name: u.name, email: u.email, role: u.role, active: u.active, nis: u.nis ?? "", class_name: u.class_name ?? "" });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const set = (k: keyof typeof f, v: string | boolean) => { setF((x) => ({ ...x, [k]: v })); setErr(""); };
+  const name = f.name.trim().replace(/\s+/g, " "), email = f.email.trim().toLowerCase();
+  const nameErr = name.length < 2 ? "Nama lengkap minimal 2 karakter." : "";
+  const emailErr = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) ? "" : "Format email tidak valid.";
+  const body: Parameters<typeof api.updateUser>[1] = {};
+  if (name !== u.name) body.name = name;
+  if (email !== u.email) body.email = email;
+  if (f.role !== u.role) body.role = f.role;
+  if (f.active !== u.active) body.active = f.active;
+  if (f.role === "siswa" && (f.nis.trim() || null) !== (u.nis ?? null)) body.nis = f.nis.trim() || null;
+  if (f.role === "siswa" && (f.class_name.trim() || null) !== (u.class_name ?? null)) body.class_name = f.class_name.trim() || null;
+  const changed = Object.keys(body).length > 0;
+  const save = async () => {
+    if (!changed || nameErr || emailErr) return;
+    setBusy(true);
+    try {
+      const r = await api.updateUser(u.id, body);
+      if (self && user) { const me = { ...user, name: r.name, email: r.email }; setUser(me); const t = session.token(); if (t) session.set(t, me); }
+      onSaved(r);
+    } catch (e) { setErr((e as Error).message || "Perubahan tidak tersimpan."); } finally { setBusy(false); }
+  };
+  const input = "h-11 w-full rounded-md border border-slate-200 bg-white px-3.5 text-sm text-slate-800 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500";
+  const lab = (text: string, control: ReactNode, hint?: string, error?: string) => <label className="block"><span className="mb-2 block text-sm font-semibold text-slate-700">{text}</span>{control}
+    {(error || hint) && <span className={`mt-1 block text-xs ${error ? "text-red-600" : "text-slate-500"}`}>{error || hint}</span>}</label>;
+  return <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/40 p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <section ref={ref} role="dialog" aria-modal="true" aria-labelledby="edit-user-title" className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-md border border-slate-200 bg-white p-6">
+      <div className="flex items-center justify-between"><h2 id="edit-user-title" className="text-lg font-bold text-slate-900">Ubah pengguna</h2>
+        <button type="button" onClick={onClose} aria-label="Tutup" className="text-slate-400 hover:text-slate-600"><Icon name="close" /></button></div>
+      <form id="form-user" onSubmit={(e) => { e.preventDefault(); void save(); }} className="mt-5 grid gap-4 sm:grid-cols-2">
+        <div className="sm:col-span-2">{lab("Nama lengkap", <input name="name" value={f.name} maxLength={120} onChange={(e) => set("name", e.target.value)} className={input} />, undefined, nameErr)}</div>
+        <div className="sm:col-span-2">{lab("Email", <input name="email" type="email" value={f.email} maxLength={200} onChange={(e) => set("email", e.target.value)} className={input} />, "Dipakai untuk masuk. Beri tahu pengguna bila diganti.", emailErr)}</div>
+        {studentOnly ? lab("Peran", <input readOnly value="Siswa" className={`${input} cursor-not-allowed bg-slate-50 text-slate-500`} />, "Peran diatur oleh admin.") : lab("Peran", <select name="role" value={f.role} disabled={self} onChange={(e) => set("role", e.target.value)} className={input}>{ROLE_OPTIONS.map(([v, t]) => <option key={v} value={v}>{t}</option>)}</select>,
+          self ? "Anda tidak dapat mengubah peran sendiri." : undefined)}
+        {lab("Status", <select name="active" value={f.active ? "1" : "0"} disabled={self} onChange={(e) => set("active", e.target.value === "1")} className={input}><option value="1">Aktif</option><option value="0">Nonaktif</option></select>,
+          self ? "Anda tidak dapat menonaktifkan akun sendiri." : !f.active ? "Akun nonaktif tidak bisa masuk; sesi yang sedang berjalan langsung berakhir." : undefined)}
+        {f.role === "siswa" && <>{lab("NIS/NISN", <input name="nis" value={f.nis} maxLength={40} onChange={(e) => set("nis", e.target.value)} className={input} />)}
+          {lab("Kelas", <input name="class_name" value={f.class_name} maxLength={60} onChange={(e) => set("class_name", e.target.value)} className={input} />)}</>}
+      </form>
+      {err && <p role="alert" className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{err}</p>}
+      <div className="mt-6 flex justify-end gap-3"><Button variant="secondary" onClick={onClose}>Batal</Button>
+        <Button onClick={() => void save()} disabled={!changed || !!nameErr || !!emailErr || busy}>{busy ? "Menyimpan…" : "Simpan"}</Button></div>
+    </section>
+  </div>;
+}
+
+const ROLE_INFO: Record<RoleCode, { about: string; email: string }> = {
+  siswa: { about: "Mengikuti ujian. Wajib NIS/NISN dan kelas.", email: "siswa7@sekolah.sch.id" },
+  pengawas: { about: "Mengawasi sesi ujian yang ditugaskan dan meninjau indikasi.", email: "nama.guru@sekolah.sch.id" },
+  penyelenggara: { about: "Mengatur sesi ujian, peserta, dan pengawas.", email: "kurikulum@sekolah.sch.id" },
+  admin: { about: "Akses penuh: pengguna, konfigurasi, retensi data, dan log audit.", email: "admin@sekolah.sch.id" },
+  sekolah: { about: "Melihat indikasi tervalidasi dan laporan final, serta mengelola data akun siswa.", email: "tu@sekolah.sch.id" },
+};
+
+/** Manajemen User > Tambah User (admin). The form follows the role: students need NIS/NISN and class; an admin
+ *  account asks for an explicit confirmation. The backend checks everything again (POST /api/users). */
+function AddUserDialog({ onClose, onSaved }: { onClose: () => void; onSaved: (u: UserRow) => void }) {
+  const ref = useRef<HTMLElement>(null);
+  useFocusTrap(ref, true, onClose);
+  const [f, setF] = useState({ role: "siswa" as RoleCode, name: "", email: "", password: "", nis: "", class_name: "" });
+  const [show, setShow] = useState(false);
+  const [adminOk, setAdminOk] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [touched, setTouched] = useState(false);
+  const set = (k: keyof typeof f, v: string) => { setF((x) => ({ ...x, [k]: v })); setErr(""); };
+  const student = f.role === "siswa";
+  const name = f.name.trim().replace(/\s+/g, " "), email = f.email.trim().toLowerCase();
+  const errors = {
+    name: name.length < 2 ? "Nama lengkap minimal 2 karakter." : "",
+    email: /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) ? "" : "Format email tidak valid.",
+    password: f.password.length < 8 ? "Kata sandi awal minimal 8 karakter." : "",
+    nis: student && !f.nis.trim() ? "NIS/NISN wajib untuk siswa." : "",
+    class_name: student && !f.class_name.trim() ? "Kelas wajib untuk siswa." : "",
+  };
+  const invalid = Object.values(errors).some(Boolean) || (f.role === "admin" && !adminOk);
+  const shown = (k: keyof typeof errors) => (touched ? errors[k] : "");
+  const generate = () => {
+    const abc = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+    const bytes = crypto.getRandomValues(new Uint8Array(12));
+    set("password", Array.from(bytes, (b) => abc[b % abc.length]).join("")); setShow(true);
+  };
+  const save = async () => {
+    setTouched(true);
+    if (invalid) return;
+    setBusy(true);
+    try {
+      onSaved(await api.createUser({ name, email, role: f.role, password: f.password, ...(student ? { nis: f.nis.trim(), class_name: f.class_name.trim() } : {}) }));
+    } catch (e) { setErr((e as Error).message || "Akun tidak tersimpan."); } finally { setBusy(false); }
+  };
+  const input = "h-11 w-full rounded-md border border-slate-200 bg-white px-3.5 text-sm text-slate-800 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50";
+  const lab = (text: string, control: ReactNode, hint?: string, error?: string) => <label className="block"><span className="mb-2 block text-sm font-semibold text-slate-700">{text}</span>{control}
+    {(error || hint) && <span className={`mt-1 block text-xs ${error ? "text-red-600" : "text-slate-500"}`}>{error || hint}</span>}</label>;
+  return <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/40 p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <section ref={ref} role="dialog" aria-modal="true" aria-labelledby="add-user-title" className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-md border border-slate-200 bg-white p-6">
+      <div className="flex items-center justify-between"><h2 id="add-user-title" className="text-lg font-bold text-slate-900">Tambah User</h2>
+        <button type="button" onClick={onClose} aria-label="Tutup" className="text-slate-400 hover:text-slate-600"><Icon name="close" /></button></div>
+      <form id="form-add-user" onSubmit={(e) => { e.preventDefault(); void save(); }} className="mt-5 grid gap-4 sm:grid-cols-2">
+        <div className="sm:col-span-2">{lab("Peran", <select name="role" value={f.role} onChange={(e) => { set("role", e.target.value); setAdminOk(false); }} className={input}>{ROLE_OPTIONS.map(([v, t]) => <option key={v} value={v}>{t}</option>)}</select>,
+          ROLE_INFO[f.role].about)}</div>
+        <div className="sm:col-span-2">{lab("Nama lengkap", <input name="name" value={f.name} maxLength={120} onChange={(e) => set("name", e.target.value)} placeholder="Masukkan nama lengkap" className={input} />, undefined, shown("name"))}</div>
+        <div className="sm:col-span-2">{lab(student ? "Email siswa" : "Email institusi", <input name="email" type="email" value={f.email} maxLength={200} onChange={(e) => set("email", e.target.value)} placeholder={ROLE_INFO[f.role].email} className={input} />,
+          "Dipakai untuk masuk.", shown("email"))}</div>
+        {student && <>{lab("NIS/NISN", <input name="nis" value={f.nis} maxLength={40} onChange={(e) => set("nis", e.target.value)} placeholder="2301040" className={input} />, undefined, shown("nis"))}
+          {lab("Kelas", <input name="class_name" value={f.class_name} maxLength={60} onChange={(e) => set("class_name", e.target.value)} placeholder="XI IPA 2" className={input} />, undefined, shown("class_name"))}</>}
+        <div className="sm:col-span-2">{lab("Kata sandi awal", <div className="flex gap-2"><input name="password" type={show ? "text" : "password"} value={f.password} maxLength={200} autoComplete="new-password" onChange={(e) => set("password", e.target.value)} className={input} />
+          <button type="button" onClick={() => setShow((v) => !v)} className="h-11 shrink-0 rounded-md border border-slate-200 px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50">{show ? "Sembunyikan" : "Tampilkan"}</button>
+          <button type="button" onClick={generate} className="h-11 shrink-0 rounded-md border border-slate-200 px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50">Buat acak</button></div>,
+          "Minimal 8 karakter. Berikan langsung kepada pengguna; tidak dikirim lewat email dan tidak dicatat di log.", shown("password"))}</div>
+        {f.role === "admin" && <label className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 sm:col-span-2">
+          <input type="checkbox" name="admin-ok" checked={adminOk} onChange={(e) => setAdminOk(e.target.checked)} className="mt-0.5" />
+          <span>Saya paham akun admin mendapat akses penuh, termasuk mengubah pengguna dan konfigurasi.</span></label>}
+      </form>
+      {err && <p role="alert" className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{err}</p>}
+      <div className="mt-6 flex justify-end gap-3"><Button variant="secondary" onClick={onClose}>Batal</Button>
+        <Button onClick={() => void save()} disabled={busy || (touched && invalid) || (f.role === "admin" && !adminOk)}>{busy ? "Menyimpan…" : "Tambah"}</Button></div>
+    </section>
+  </div>;
 }
 
 function PermissionsPage({ go }: { go: (s: Screen) => void }) {
@@ -1389,6 +1961,8 @@ function PermissionsPage({ go }: { go: (s: Screen) => void }) {
     ["Memvalidasi Indikasi", ["Pengawas", "Penyelenggara Ujian", "Admin"]],
     ["Melihat indikasi tervalidasi & laporan", ["Pengawas", "Penyelenggara Ujian", "Admin", "Pihak Sekolah"]],
     ["Membuat ujian & melihat audit log", ["Admin"]],
+    ["Mengubah data akun siswa (nama, email, NIS, kelas, status)", ["Admin", "Pihak Sekolah"]],
+    ["Mengubah peran dan akun staf", ["Admin"]],
   ];
   const roles: Role[] = ["Siswa", "Pengawas", "Penyelenggara Ujian", "Admin", "Pihak Sekolah"];
   return <AppShell active="permissions" go={go} title="Role & Permission"><main className="p-4 sm:p-8"><PageTitle title="Role & Permission" description="Matriks izin inti yang diterapkan oleh backend." /><section className="overflow-hidden rounded-md border border-slate-200 bg-white"><div className="overflow-x-auto"><table className="w-full min-w-[980px] text-center text-sm"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-4 text-left">Fitur</th>{roles.map((role) => <th key={role} className="px-5 py-4">{role}</th>)}</tr></thead><tbody>{permissions.map(([permission, allowedRoles]) => <tr key={permission} className="border-t border-slate-100"><td className="px-5 py-4 text-left font-semibold text-slate-800">{permission}</td>{roles.map((role) => { const allowed = allowedRoles.includes(role); return <td key={role} className="px-5 py-4"><span className={`mx-auto grid size-7 place-items-center rounded-full ${allowed ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-400"}`}>{allowed ? <Icon name="check" size={14} /> : "×"}</span></td>; })}</tr>)}</tbody></table></div></section><div className="mt-5 rounded-md border border-blue-100 bg-blue-50 p-4 text-sm leading-6 text-blue-800"><strong>Kontrol akses aktif.</strong> Pengawas hanya dapat membuka sesi yang ditugaskan. Siswa tidak pernah menerima akses ke data pemantauan, Indikasi, atau laporan. Pihak sekolah hanya melihat indikasi yang sudah divalidasi.</div></main></AppShell>;
@@ -1577,29 +2151,30 @@ function useIndicationNotifications(user: User | null): Notify {
 export default function App() {
   const stored = session.user();
   const [user, setUser] = useState<User | null>(stored);
-  const [screen, setScreen] = useState<Screen>(stored && session.token() ? "dashboard" : "login");
+  const [screen, setScreen] = useState<Screen>(() => {
+    const first = initialScreen(window.location.pathname, !!(stored && session.token()));
+    return first === "dashboard" && stored && opensIndications(window.location.search, ROLE_LABEL[stored.role]) ? "indications" : first;
+  });
+  const [portal, setPortal] = useState<Portal>("siswa");
+  const toLogin = useCallback(() => setScreen("login"), []);
   const [role, setRole] = useState<Role>(stored ? ROLE_LABEL[stored.role] : "Pengawas");
   const [examId, setExamId] = useState<number | null>(null);
   const [studentId, setStudentId] = useState<number | null>(null);
   const [eventId, setEventId] = useState<string | null>(null);
   const notify = useIndicationNotifications(user);
   useEffect(() => { setUnauthorizedHandler(() => { setUser(null); setScreen("login"); }); }, []);
-  const allowed: Record<Role, Screen[]> = {
-    Siswa: ["login", "dashboard", "my-exams", "seb-check", "consent", "device", "exam", "meeting", "settings", "access-denied"],
-    Pengawas: ["login", "dashboard", "sessions", "exam-detail", "waiting", "monitor", "student-detail", "detail", "timeline", "report", "indications", "history", "students", "meeting", "settings", "access-denied"],
-    "Penyelenggara Ujian": ["login", "dashboard", "sessions", "exam-detail", "waiting", "monitor", "student-detail", "detail", "timeline", "report", "indications", "history", "students", "users", "meeting", "settings", "access-denied"],
-    Admin: ["login", "dashboard", "sessions", "create", "exam-detail", "waiting", "seb-check", "consent", "device", "exam", "monitor", "student-detail", "detail", "timeline", "report", "indications", "history", "students", "users", "permissions", "configuration", "retention", "audit", "meeting", "settings", "access-denied"],
-    "Pihak Sekolah": ["login", "dashboard", "sessions", "exam-detail", "detail", "report", "indications", "history", "meeting", "settings", "access-denied"],
-  };
+  const allowed = ALLOWED_SCREENS as Record<Role, Screen[]>;
   const go = (next: Screen) => {
     if (next === "login") { session.clear(); setUser(null); }
-    setScreen(next === "login" || allowed[role].includes(next) ? next : "access-denied");
+    setScreen(next === "login" || next === "beranda" || allowed[role].includes(next) ? next : "access-denied");
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
   // Role comes from the server; going through setRole keeps the original context API.
   const setRoleAndGo = (r: Role) => setRole(r);
   let page: ReactNode;
-  if (screen === "login" || !user) page = <Login go={(s) => setScreen(s)} />;
+  if (screen === "beranda") page = <Landing user={user} start={(next) => { setPortal(next); setScreen("loading"); window.scrollTo(0, 0); }} toDashboard={() => go("dashboard")} />;
+  else if (screen === "loading" && !user) page = <LoginLoading onComplete={toLogin} />;
+  else if (screen === "login" || !user) page = <Login key={portal} portal={portal} go={(s) => setScreen(s)} />;
   else if (screen === "dashboard") page = <Dashboard go={go} />;
   else if (screen === "sessions") page = <Sessions go={go} />;
   else if (screen === "create") page = <AdminCreateExam go={go} />;
