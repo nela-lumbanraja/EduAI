@@ -1,5 +1,5 @@
-models/*.tflite
-models/*.task
+# models/*.tflite  (sejak 13 Nov 2026 ikut di-commit atas permintaan pemilik)
+# models/*.task
 clips/
 pilot/
 preds/

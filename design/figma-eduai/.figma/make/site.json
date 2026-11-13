@@ -1,0 +1,10 @@
+{
+  "description": "Membantu sekolah di Indonesia menyelenggarakan ujian online dengan pemantauan AI yang menandai indikasi kecurangan untuk ditinjau pengawas.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

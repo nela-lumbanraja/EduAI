@@ -6,8 +6,8 @@ backend/.env
 backend/data/
 frontend/node_modules/
 frontend/dist/
-ai/eduai-ai/models/*.tflite
-ai/eduai-ai/models/*.task
+# ai/eduai-ai/models/*.tflite  (sejak 13 Nov 2026: model ikut di-commit atas permintaan pemilik)
+# ai/eduai-ai/models/*.task
 *.y4m
 e2e-screenshots/
 
@@ -48,10 +48,10 @@ dev/jitsi/.jitsi-cfg/
 *.pem
 *.sock
 
-design/
+# design/  (sejak 13 Nov 2026: ikut di-commit atas permintaan pemilik; node_modules tetap diabaikan)
 
 # Foto contoh desain Figma (sinyal AI). Jangan di-commit sebelum dikonfirmasi pemilik proyek.
-frontend/public/images/ai-signals/
+# frontend/public/images/ai-signals/  (dikonfirmasi pemilik 13 Nov 2026)
 
 # Gambar acuan desain (mosaik Beranda, contoh dari situs lain): hanya acuan, jangan di-commit
 mosaik_beranda*
