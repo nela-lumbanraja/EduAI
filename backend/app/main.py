@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import cases as casing
-from . import report, store, summary
+from . import api, device, exam_status, report, store, summary
 from .ai_service import AIManager
 from .api import router
 from .db import Database
@@ -24,14 +24,27 @@ MAINTENANCE_EVERY_S = 30
 PURGE_EVERY_S = 600
 
 
+async def _exam_status(app: FastAPI):
+    """Exam status follows the schedule (app/exam_status.py); a finished exam stops being monitored."""
+    exam_status.sync(app.state.db, app.state.settings.exam_timezone)
+    for e in app.state.db.all("SELECT id FROM exams WHERE status='Selesai' AND monitoring_active=1"):
+        await api._stop_monitoring(app.state, e["id"])
+
+
 async def _maintenance(app: FastAPI):
     tick = 0
+    try:
+        await _exam_status(app)                              # right after start-up, not 30 s later
+    except Exception:
+        log.exception("exam status update failed")
     while True:
         await asyncio.sleep(MAINTENANCE_EVERY_S)
         tick += MAINTENANCE_EVERY_S
         try:
+            await _exam_status(app)
             await app.state.ai.reap_idle()
             await app.state.ai.sweep_silent()
+            device.sweep_offline(app.state, api.ONLINE_S)       # camera/mic indications of students who went offline
             await asyncio.to_thread(_check_summaries, app)
             if tick % PURGE_EVERY_S == 0:
                 await asyncio.to_thread(report.run_retention, app.state)

@@ -107,6 +107,42 @@ def test_flush_keeps_category_and_details(cfg):
 
 
 def test_sound_types_never_name_a_person():
-    assert set(SOUND_TYPES) == {"BICARA_MULUT_DIAM", "BICARA_SISWA", "BISIKAN", "MUSIK_MEDIA"}
+    assert set(SOUND_TYPES) == {"BICARA_MULUT_DIAM", "BICARA_SISWA", "BISIKAN", "MUSIK_MEDIA", "KERTAS_BUKU"}   # kinds of sound, never a person
     with pytest.raises(ValueError):
         Event("1", "1", "OTHER_VOICE", "keputusan", "open", 0.0)
+
+
+def paper_play(engine, seconds, paper, t0=0.0, faces=1):
+    from test_voice import frame, DT
+    events, t = [], t0
+    while t < t0 + seconds - 1e-9:
+        engine.update_audio(t, 0.0, 0.0, 0.0, paper)
+        events += engine.update(frame(t, 0.05, faces))
+        t += DT
+    return events, t
+
+
+def test_paper_sound_is_a_book_indication_with_its_score(cfg):
+    assert SOUND_TYPES["KERTAS_BUKU"].startswith("kertas")
+    e = EventEngine(cfg, "1", "1")
+    ev, t = paper_play(e, 0.5, 0.6)
+    assert opened(ev, "BOOK_SOUND") == []                         # under min_duration (1 s)
+    ev, t = paper_play(e, 1.5, 0.6, t0=t)
+    o = opened(ev, "BOOK_SOUND")
+    assert len(o) == 1 and o[0].category == "indication" and o[0].details["sound_type"] == "KERTAS_BUKU" and o[0].details["paper"] == 0.6
+    ev, _ = paper_play(e, 3, 0.0, t0=t)
+    c = closed(ev, "BOOK_SOUND")
+    assert c and c[0].event_id == o[0].event_id and "kertas" in c[0].reason
+
+
+def test_paper_sound_below_threshold_or_from_old_browsers_never_opens(cfg):
+    e = EventEngine(cfg, "1", "1")
+    assert opened(paper_play(e, 5, 0.2)[0], "BOOK_SOUND") == []    # paper_min 0.25
+    e = EventEngine(cfg, "1", "1")
+    ev, _ = play(e, 5, speech=0.1)                                # older browser: no paper score at all
+    assert opened(ev, "BOOK_SOUND") == []
+
+
+def test_paper_sound_needs_no_face(cfg):
+    e = EventEngine(cfg, "1", "1")
+    assert len(opened(paper_play(e, 3, 0.7, faces=0)[0], "BOOK_SOUND")) == 1

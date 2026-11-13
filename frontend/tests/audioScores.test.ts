@@ -8,12 +8,18 @@ test("groups YAMNet classes into speech / whisper / media (max over chunks)", ()
     [{ categoryName: "Speech", score: 0.42 }, { categoryName: "Pop music", score: 0.2 }, { categoryName: "Silence", score: 0.1 }],
     [{ categoryName: "Conversation", score: 0.61 }, { categoryName: "Whispering", score: 0.15 }, { categoryName: "Television", score: 0.3 }],
   ]);
-  assert.deepEqual(s, { speech: 0.61, whisper: 0.15, media: 0.3, top: "Conversation", topScore: 0.61 });
+  assert.deepEqual(s, { speech: 0.61, whisper: 0.15, media: 0.3, paper: 0, top: "Conversation", topScore: 0.61 });
 });
 
 test("unknown classes only affect the top label, empty input is all zero", () => {
-  assert.deepEqual(groupScores([[{ categoryName: "Dog", score: 0.9 }]]), { speech: 0, whisper: 0, media: 0, top: "Dog", topScore: 0.9 });
-  assert.deepEqual(groupScores([]), { speech: 0, whisper: 0, media: 0, top: "", topScore: 0 });
+  assert.deepEqual(groupScores([[{ categoryName: "Dog", score: 0.9 }]]), { speech: 0, whisper: 0, media: 0, paper: 0, top: "Dog", topScore: 0.9 });
+  assert.deepEqual(groupScores([]), { speech: 0, whisper: 0, media: 0, paper: 0, top: "", topScore: 0 });
+});
+
+test("paper/page sounds (book opened or leafed through) form their own score", () => {
+  const s = groupScores([[{ categoryName: "Rustle", score: 0.31 }, { categoryName: "Speech", score: 0.2 }], [{ categoryName: "Crumpling, crinkling", score: 0.44 }, { categoryName: "Flap", score: 0.1 }]]);
+  assert.equal(s.paper, 0.44); assert.equal(s.speech, 0.2);
+  assert.equal(groupScores([[{ categoryName: "Rustling leaves", score: 0.9 }]]).paper, 0);     // leaves outside are not paper
 });
 
 test("scores are clamped to 0..1 and rounded (what the backend accepts)", () => {

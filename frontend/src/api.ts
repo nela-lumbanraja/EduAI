@@ -17,6 +17,9 @@ export type Exam = {
 export type SebPublic = { required: boolean; ready: boolean; config_url: string | null };
 export type SebSettings = { required: boolean; config_keys: string[]; browser_exam_keys: string[]; config_url: string; ready: boolean; allowed_origins: string[]; updated_at: string | null };
 export type SebResult = { required: boolean; state: SebState | null; method?: "header" | "js" | null; verified: boolean; message: string | null };
+/** Per case: read (blue dot gone), dismissed (Abaikan; both reset by a new event), evidence_seen (from the user's own audit). */
+export type CaseMark = { read: boolean; dismissed: boolean; evidence_seen: boolean };
+export type NotifState = Record<string, CaseMark>;
 export type SebRow = { required: boolean; state: SebState | null; method: "header" | "js" | null; version: string | null; checked_at: string | null; fresh: boolean };
 // not_started / no_data / ai_offline are dashboard states set by the backend (see GET /exams/{id}/students):
 // AI monitoring off, on but no analysis result yet, on but the analysis itself is down.
@@ -75,6 +78,7 @@ export type Report = {
 };
 export type AuditRow = { id: number; ts: string; user_id: number | null; user_name: string; role: string; action: string; target: string; status: string };
 export type Dashboard = { exams: Exam[]; summary?: { active_sessions: number; students_online: number; unreviewed: number; valid: number; further: number; cases_total?: number; cases_unreviewed?: number; detections_total?: number }; recent_indications?: AIEvent[]; recent_cases?: CaseSummary[] };
+export type DetectionsPerHour = { date: string; timezone: string; server_time: string; hours: { hour: number; count: number }[]; total: number };
 // A case = repeated indication events of one student, one exam and one indicator (see backend app/cases.py).
 export type CaseSummary = {
   case_id: string; exam_id: number; student_id: number; indicator: string; label: string | null;
@@ -106,7 +110,7 @@ export type ExamSummary = {
 };
 export type CaseList = { server_time: string; gap_s: number; total_events: number; cases: CaseSummary[] };
 export type CaseDetail = { server_time: string; gap_s: number; case: CaseSummary; events: AIEvent[]; reviewed_event_ids?: string[] };
-export type Health = { status: string; time: string; ai: { available: boolean; reason: string }; livekit: { configured: boolean }; analysis_source: string };
+export type Health = { status: string; time: string; ai: { available: boolean; reason: string }; livekit: { configured: boolean }; analysis_source: string; school_name: string | null };
 export type AIHealth = {
   available: boolean; reason: string; config_version: string | null; models: Record<string, { loaded: boolean; exists: boolean; reason: string; file: string }>;
   active_analyzers: number; max_concurrent: number; evidence_retention_hours: number; evidence_encrypted: boolean;
@@ -172,16 +176,24 @@ export const api = {
   health: () => request<Health>("GET", "/api/health"),
   aiHealth: () => request<AIHealth>("GET", "/api/ai/health"),
   login: (email: string, password: string) => request<{ token: string; user: User }>("POST", "/api/auth/login", { email, password }),
+  updateMe: (name: string) => request<User>("PATCH", "/api/auth/me", { name }),
   register: (name: string, email: string, password: string) => request<{ token: string; user: User }>("POST", "/api/auth/register", { name, email, password }),
   users: (role?: RoleCode) => request<UserRow[]>("GET", `/api/users${qs({ role })}`),
+  createUser: (body: { name: string; email: string; role: RoleCode; password: string; nis?: string | null; class_name?: string | null }) =>
+    request<UserRow>("POST", "/api/users", body),
+  // Manajemen User (admin): only the fields sent change
+  updateUser: (id: number, body: Partial<{ name: string; email: string; role: RoleCode; active: boolean; nis: string | null; class_name: string | null }>) =>
+    request<UserRow>("PATCH", `/api/users/${id}`, body),
   dashboard: () => request<Dashboard>("GET", "/api/dashboard"),
+  /** AI detections per WIB hour of one day (only exams the user may see). */
+  detectionsPerHour: (date?: string) => request<DetectionsPerHour>("GET", `/api/dashboard/detections-per-hour${qs({ date })}`),
   exams: () => request<Exam[]>("GET", "/api/exams"),
   exam: (id: number) => request<Exam>("GET", `/api/exams/${id}`),
   createExam: (body: { name: string; description: string; subject?: string; class_name?: string; date: string; start_time: string; duration_min: number; status: ExamStatus; supervisor_id: number; student_ids: number[] }) => request<Exam>("POST", "/api/exams", body),
   students: (examId: number) => request<StudentRow[]>("GET", `/api/exams/${examId}/students`),
   timeline: (examId: number, studentId: number) => request<TimelineItem[]>("GET", `/api/exams/${examId}/students/${studentId}/timeline`),
   consent: (examId: number, audio = false) => request<{ ok: boolean; audio: boolean }>("POST", `/api/exams/${examId}/consent`, { accepted: true, notice_version: "2026-10-v2", audio }),
-  audioScores: (examId: number, s: { speech: number; whisper: number; media: number }) => request<{ accepted: boolean; reason?: string }>("POST", `/api/exams/${examId}/audio`, s),
+  audioScores: (examId: number, s: { speech: number; whisper: number; media: number; paper?: number }) => request<{ accepted: boolean; reason?: string }>("POST", `/api/exams/${examId}/audio`, s),
   join: (examId: number) => request<JoinInfo>("POST", `/api/exams/${examId}/join`),
   sessionState: (examId: number) => request<{ status: ExamStatus; monitoring: MonitoringInfo }>("GET", `/api/exams/${examId}/session-state`),
   presence: (examId: number, p: { camera_on: boolean; mic_on: boolean; connection: "baik" | "lemah" | "terputus"; rtt_ms?: number | null; jitsi?: "connected" | "disconnected" | null }) => request<{ ok: boolean }>("POST", `/api/exams/${examId}/presence`, p),
@@ -214,6 +226,10 @@ export const api = {
   summaries: () => request<{ server_time: string; summaries: ExamSummary[] }>("GET", "/api/summaries"),
   examSummary: (examId: number) => request<ExamSummary>("GET", `/api/exams/${examId}/summary`),
   reviewCase: (id: string, decision: Decision, note: string, eventIds: string[]) => request<CaseDetail>("POST", `/api/cases/${encodeURIComponent(id)}/reviews`, { decision, note, event_ids: eventIds }),
+  // notification panel state on the server, per account (pengawas of the exam and admin only)
+  notificationState: () => request<{ server_time: string; cases: NotifState }>("GET", "/api/notifications/state"),
+  notificationRead: (caseId: string) => request<{ case_id: string; read: boolean }>("PUT", `/api/notifications/${encodeURIComponent(caseId)}/read`),
+  notificationDismiss: (caseId: string, dismissed: boolean) => request<{ case_id: string; dismissed: boolean }>(dismissed ? "PUT" : "DELETE", `/api/notifications/${encodeURIComponent(caseId)}/dismiss`),
   addNote: (examId: number, body: { student_id?: number | null; time_text?: string; kind?: string; note: string }) => request<unknown>("POST", `/api/exams/${examId}/notes`, body),
   evidence: (id: string) => request<EvidenceMeta>("GET", `/api/evidence/${encodeURIComponent(id)}`),
   // Evidence images need the Authorization header, so they are fetched as blobs (never via a public URL).

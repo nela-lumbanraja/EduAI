@@ -1,35 +1,43 @@
 @import 'tailwindcss';
 
+/* Desain Figma EduAI: navy #14213D, emas #C9A227, latar #F7F6F2. Huruf disimpan lokal (@fontsource, lihat main.tsx):
+   Public Sans untuk teks DAN judul (judul semibold). Tidak ada koneksi ke Google Fonts. */
 @theme {
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-sans: 'Public Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   --breakpoint-wide: 79.0625rem; /* >1264px: sidebar penuh */
-  --color-navy: #0a2547;
-  --color-gold-300: #e3c67a;
-  --color-gold-500: #c7a44b;
-  --color-gold-700: #80631c;
-  --color-cream: #f9f3e4;
-  --color-blue-50: #eef1f6;
-  --color-blue-100: #dde3ec;
-  --color-blue-200: #bcc7d8;
-  --color-blue-300: #93a4bd;
-  --color-blue-500: #3f5a80;
-  --color-blue-600: #1f3f6b;
-  --color-blue-700: #0a2547;
-  --color-blue-800: #0a2547;
-  --color-blue-900: #071b35;
-  --color-slate-50: #f9fafb;
+  --color-navy: #14213d;
+  --color-navy-2: #1d2b49;
+  --color-paper: #f7f6f2;
+  --color-line: #dfe1e3;
+  --color-gold-300: #e3c35b;
+  --color-gold-500: #c9a227;
+  --color-gold-700: #836713;
+  --color-cream: #f5edd0;
+  --color-blue-50: #e6eef8;
+  --color-blue-100: #d5dfec;
+  --color-blue-200: #b7c5d9;
+  --color-blue-300: #8f9bad;
+  --color-blue-500: #3d628e;
+  --color-blue-600: #1d2d50;
+  --color-blue-700: #14213d;
+  --color-blue-800: #14213d;
+  --color-blue-900: #0e1830;
+  --color-slate-50: #f7f6f2;
 }
 
 @layer base {
-  h1, h2, h3 { font-weight: 600; color: var(--color-navy); }
+  h1, h2, h3, h4 { font-family: var(--font-sans); font-weight: 600; color: var(--color-navy); }
   h2 { font-size: 1.125rem; line-height: 1.3; }
-  h3 { font-size: 1.125rem; line-height: 1.3; }
+  h3 { font-size: 1.0625rem; line-height: 1.3; }
 }
+
+/* Judul memakai font yang sama dengan isi (Public Sans), semibold; kelas font-bold di judul tetap tebal. */
+:is(h1, h2, h3, h4).text-slate-900 { color: var(--color-navy); }
 
 :root {
   font-family: var(--font-sans);
-  color: #1a2438;
-  background: #fff;
+  color: #263142;
+  background: var(--color-paper);
   font-synthesis: none;
 }
 
@@ -39,16 +47,16 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  background: #fff;
+  background: var(--color-paper);
   -webkit-font-smoothing: antialiased;
 }
 
-::selection { background: #efe0b5; }
+::selection { background: #efd77f; }
 
 button { cursor: pointer; }
 
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
-  outline: 2px solid #0a2547;
+  outline: 2px solid var(--color-gold-500);
   outline-offset: 2px;
 }
 
@@ -58,30 +66,44 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .font-bold { font-weight: 600; }
 .brand-caps { text-transform: uppercase; letter-spacing: 0.2em; }
 
-/* Kartu: garis tipis, sudut lembut */
-:is(section, article, aside, div).border-slate-200.bg-white {
-  border-color: #e4e7ec;
-  box-shadow: 0 1px 2px rgba(10, 37, 71, 0.04);
-}
-section.rounded-md, article.rounded-md, aside.rounded-md, button.rounded-md.p-5 { border-radius: 14px; }
+/* Kartu (Figma .proctor-panel): garis tipis abu, sudut 4px, tanpa bayangan */
+:is(section, article, aside, div).border-slate-200.bg-white { border-color: var(--color-line); box-shadow: none; }
+section.rounded-md, article.rounded-md, aside.rounded-md, button.rounded-md.p-5 { border-radius: 4px; }
 
-/* Tabel */
-thead { background: #f4f5f8; color: #46526a; }
-thead th { font-size: 12px; font-weight: 600; border-bottom: 1px solid #e4e7ec; }
+/* Tabel (Figma .sessions-table-panel): kepala hangat, huruf kapital kecil */
+thead { background: #f3f3f0; color: #727d8b; }
+thead th { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; border-bottom: 1px solid #e5e7e9; }
 tbody tr { transition: background 0.12s; }
-tbody tr:hover { background: #f8f9fb; }
+tbody tr:hover { background: #fbfaf7; }
 
 /* Tombol utama: navy dengan teks emas */
-button.bg-blue-700:not(:disabled) { color: #e3c67a; border-radius: 10px; }
-button.border.bg-white { box-shadow: 0 1px 2px rgba(10, 37, 71, 0.05); }
+button.bg-blue-700:not(:disabled) { color: var(--color-gold-300); border-radius: 4px; }
+button.border.bg-white { box-shadow: none; }
 
-/* Topbar */
+/* Topbar (Figma .proctor-topbar) */
 header.sticky {
   background: #fff;
-  border-bottom: 1px solid #e4e7ec;
+  border-bottom: 1px solid #dde0e2;
 }
 
+/* Layar loading roket (Figma LoginLoadingScreen) */
+.rocket-stage { animation: rocket-rise 1.5s ease-in forwards; }
+.rocket-flame { animation: rocket-flame 0.16s ease-in-out infinite alternate; }
+.rocket-smoke { animation: rocket-smoke 0.72s ease-out infinite; }
+.rocket-progress { transform: scaleX(0); animation: rocket-progress 1.5s linear forwards; }
+@keyframes rocket-rise { 0% { transform: translateY(18px) rotate(2deg); } 65% { transform: translateY(-13px) rotate(-2deg); } 100% { transform: translateY(-27px) rotate(0); } }
+@keyframes rocket-flame { from { transform: scaleY(0.78); opacity: 0.82; } to { transform: scaleY(1.18); opacity: 1; } }
+@keyframes rocket-smoke { 0% { transform: translateY(0) scale(0.55); opacity: 0.8; } 100% { transform: translateY(38px) scale(1.25); opacity: 0; } }
+@keyframes rocket-progress { to { transform: scaleX(1); } }
+
+/* Notification panel slides in from the right (switched off with reduced motion, below). */
+.notif-panel { animation: notif-in 0.2s ease-out; }
+@keyframes notif-in { from { transform: translateX(100%); } to { transform: none; } }
+
 @media (prefers-reduced-motion: reduce) {
+  .rocket-stage, .rocket-flame, .rocket-smoke, .notif-panel { animation: none; }
+  .rocket-progress { animation: none; transform: scaleX(1); }
+
   *, *::before, *::after {
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;
@@ -89,3 +111,21 @@ header.sticky {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Beranda: full-width bands like local.ed.ac.uk (measured with Playwright at 1280/1440/390 px, 5 Nov 2026).
+   Only sizes are taken over; colours, fonts and content stay EduAI. Measurements: docs/beranda-ukuran.md. */
+.bd-band { box-sizing: content-box; max-width: 1440px; margin-inline: auto; padding-inline: 16px; }   /* background stays full width */
+@media (min-width: 576px) { .bd-band { padding-inline: 32px; } }                                     /* Edinburgh: 32 px, 16 px on phones */
+.bd-text { font-size: min(calc(14.7px + 0.23125vw), 18.4px); line-height: 1.5; }   /* 1280: 17.66, 1440: 18.03 */
+.bd-h1 { font-size: min(calc(16.5px + 1.7vw), 42px); line-height: 1.1; }           /* 1280: 38.26, 1440: 40.98 */
+.bd-h2 { font-size: min(calc(21.4px + 0.65vw), 31.8px); line-height: 1.2; }        /* 1280: 29.72, 1440: 30.76 */
+.bd-nav { font-size: 17.6px; line-height: 26.4px; }
+.bd-caps { text-transform: uppercase; letter-spacing: 0.02em; }                       /* Edinburgh: uppercase band title; .uppercase is switched off app-wide above */
+/* Gap above / below the band title (Edinburgh: 34.2 / 32.7 px at 1280, 36.5 / 35.4 px at 1440). */
+.bd-title-top { padding-top: min(calc(15.8px + 1.437vw), 37.4px); }
+.bd-title-bottom { padding-bottom: min(calc(11.1px + 1.6875vw), 36.4px); }
+/* Photo cards and "Yang diperhatikan AI": narrower content (max 960 px, centred), 3 columns with a 20 px gap (about 307 px each). */
+.bd-band.bd-narrow { max-width: 960px; }
+.bd-card-title { font-size: 18px; line-height: 1.3; }
+.bd-card-text { font-size: 12px; line-height: 1.6; }
+.bd-card-shadow { box-shadow: 0 4px 6px -5px rgba(0, 0, 0, .3), 0 0 1px rgba(0, 0, 0, .1); }

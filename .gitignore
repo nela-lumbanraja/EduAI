@@ -47,3 +47,19 @@ dev/jitsi/.jitsi-cfg/
 *.key
 *.pem
 *.sock
+
+design/
+
+# Foto contoh desain Figma (sinyal AI). Jangan di-commit sebelum dikonfirmasi pemilik proyek.
+frontend/public/images/ai-signals/
+
+# Gambar acuan desain (mosaik Beranda, contoh dari situs lain): hanya acuan, jangan di-commit
+mosaik_beranda*
+**/mosaik*.png
+**/acuan/
+**/referensi/
+
+# Screenshot tes ujung-ke-ujung dan pembanding desain
+**/shots*/
+**/screenshots/
+frontend/e2e/__pycache__/

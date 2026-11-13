@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 INDICATORS = ("FACE_ABSENT", "MULTIPLE_PERSONS", "HEAD_TURN", "HEAD_TURN_REPEATED", "PHONE_VISIBLE", "BOOK_VISIBLE", "CANNOT_ANALYZE",
               "WHISPER", "MEDIA_SOUND", "STUDENT_SPEECH",
-              "OTHER_VOICE")
+              "OTHER_VOICE", "CAMERA_OFF", "MIC_OFF", "BOOK_SOUND")
 STATES = ("no_data", "warming_up", "normal", "indication", "cannot_analyze", "model_unavailable")
 
 
@@ -17,6 +17,72 @@ class LoginIn(BaseModel):
 class RegisterIn(LoginIn):
     name: str = Field(default="", max_length=120)
     password: str = Field(min_length=6, max_length=200)
+
+
+class ProfileIn(BaseModel):
+    """What a user may change about themselves. Email (login), role and institution are managed elsewhere."""
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=120)
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v):
+        v = " ".join(v.split())
+        if len(v) < 2:
+            raise ValueError("Nama lengkap minimal 2 karakter.")
+        return v
+
+
+class UserPatch(BaseModel):
+    """Manajemen User (admin): fields left out stay as they are."""
+    model_config = ConfigDict(extra="forbid")
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    email: Optional[str] = Field(default=None, min_length=3, max_length=200)
+    role: Optional[Literal["siswa", "pengawas", "penyelenggara", "admin", "sekolah"]] = None
+    active: Optional[bool] = None
+    nis: Optional[str] = Field(default=None, max_length=40)
+    class_name: Optional[str] = Field(default=None, max_length=60)
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v):
+        if v is None:
+            return v
+        v = " ".join(v.split())
+        if len(v) < 2:
+            raise ValueError("Nama lengkap minimal 2 karakter.")
+        return v
+
+    @field_validator("email")
+    @classmethod
+    def _email(cls, v):
+        if v is None:
+            return v
+        v = v.strip().lower()
+        import re
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", v):
+            raise ValueError("Format email tidak valid.")
+        return v
+
+
+class UserCreate(BaseModel):
+    """Manajemen User > Tambah User (admin). NIS and class are for students only; the initial password is given
+    to the user by the school."""
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=120)
+    email: str = Field(min_length=3, max_length=200)
+    role: Literal["siswa", "pengawas", "penyelenggara", "admin", "sekolah"]
+    password: str = Field(min_length=8, max_length=200)
+    nis: Optional[str] = Field(default=None, max_length=40)
+    class_name: Optional[str] = Field(default=None, max_length=60)
+
+    _name = field_validator("name")(UserPatch._name.__func__)
+    _email = field_validator("email")(UserPatch._email.__func__)
+
+    @field_validator("nis", "class_name")
+    @classmethod
+    def _opt(cls, v):
+        return (v or "").strip() or None
 
 
 class ExamIn(BaseModel):
@@ -65,6 +131,7 @@ class AudioScoresIn(BaseModel):
     speech: float = Field(ge=0, le=1)
     whisper: float = Field(ge=0, le=1)
     media: float = Field(ge=0, le=1)
+    paper: float = Field(default=0.0, ge=0, le=1)    # paper/page sound (book); optional for older browsers
 
 
 class PresenceIn(BaseModel):
@@ -112,11 +179,12 @@ EVENT_CATEGORIES = {"CANNOT_ANALYZE": ("cannot_analyze",), "STUDENT_SPEECH": ("i
 class SoundDetails(BaseModel):
     """Peaks of an audio episode: what kind of sound, never who spoke. Scores only, no audio."""
     model_config = ConfigDict(extra="forbid")
-    sound_type: Literal["BICARA_MULUT_DIAM", "BICARA_SISWA", "BISIKAN", "MUSIK_MEDIA"]
+    sound_type: Literal["BICARA_MULUT_DIAM", "BICARA_SISWA", "BISIKAN", "MUSIK_MEDIA", "KERTAS_BUKU"]
     speech: float = Field(ge=0, le=1)
     whisper: float = Field(ge=0, le=1)
     media: float = Field(ge=0, le=1)
     mouth_movement: Optional[float] = Field(default=None, ge=0, le=1)
+    paper: Optional[float] = Field(default=None, ge=0, le=1)
 
 
 class EventIn(BaseModel):

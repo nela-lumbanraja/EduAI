@@ -99,6 +99,14 @@ def test_health(client):
     assert h["evidence_retention_hours"] == 24.0 and "models" in h
 
 
+@pytest.mark.parametrize("value,expected", [("SMA Negeri 3 Contoh", "SMA Negeri 3 Contoh"), ("", None)])
+def test_health_reports_school_name(tmp_path, monkeypatch, value, expected):
+    """The frontend shows EDUAI_SCHOOL_NAME; empty means "not set" (the UI then says "Belum ada data")."""
+    app = create_app(make_settings(tmp_path, monkeypatch, EDUAI_SCHOOL_NAME=value), perception_factory=FakePerception)
+    with TestClient(app) as c:
+        assert c.get("/api/health").json()["school_name"] == expected
+
+
 def test_login_register_and_limits(client):
     assert client.post("/api/auth/login", json={"email": "pengawas1@gmail.com", "password": "salah"}).status_code == 401
     h = login(client, "pengawas1@gmail.com")

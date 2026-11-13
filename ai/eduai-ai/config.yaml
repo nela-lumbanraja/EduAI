@@ -80,11 +80,13 @@ indicators:
   BOOK_VISIBLE:
     # COCO class "book" from the same EfficientDet-Lite0 pass as the phone (no extra model).
     # COCO books are mostly on shelves/tables; a book or sheet held at a webcam is NOT validated.
+    # Faster since 10 Nov 2026 (request): lower score and shorter persistence so a book held up or opened is caught
+    # sooner. More false positives are possible; every indication is still reviewed by the supervisor.
     enabled: true
-    min_score: 0.5
-    min_duration_s: 3.0
-    release_s: 2.0
-    cooldown_s: 60.0
+    min_score: 0.35
+    min_duration_s: 1.5
+    release_s: 1.5
+    cooldown_s: 30.0
   CANNOT_ANALYZE:
     min_duration_s: 2.0    # bad frames for this long -> "cannot analyse" status
     release_s: 1.0
@@ -122,6 +124,13 @@ indicators:
     min_duration_s: 3.0
     release_s: 2.0
     cooldown_s: 60.0
+  BOOK_SOUND:                # KERTAS_BUKU: paper/page sound (YAMNet Rustle, Crumpling/crinkling, Tearing, Flap); needs audio consent
+    enabled: true
+    category: indication
+    paper_min: 0.25
+    min_duration_s: 1.0
+    release_s: 1.0
+    cooldown_s: 30.0
   STUDENT_SPEECH:            # BICARA_SISWA: speech while the student's mouth moves. Always info, never an indication.
     enabled: true
     speech_min: 0.30
@@ -141,7 +150,8 @@ summary_rules:
   FACE_ABSENT:        {min_count: 1}
   HEAD_TURN:          {min_count: 1}
   HEAD_TURN_REPEATED: {min_count: 4, window_s: 3600}   # 1 episode = 5 look-aways within 120 s (above)
-  BOOK_VISIBLE:       {min_count: 3, window_s: 3600}   # 3 book episodes within one hour
+  BOOK_VISIBLE:       {min_count: 1}          # since 10 Nov 2026: the first book episode notifies (was 3 per hour)
+  BOOK_SOUND:         {min_count: 1}          # paper/page sound; needs audio consent
 
 evidence:
   seconds_before: 5

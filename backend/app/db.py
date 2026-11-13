@@ -131,6 +131,16 @@ CREATE TABLE IF NOT EXISTS exam_summaries (
   created_at TEXT NOT NULL,
   payload TEXT NOT NULL
 );
+-- Notification panel state per account: 'read' (blue dot gone) and 'dismissed' (Abaikan). `mark` is the
+-- case's activity when it was marked; a new event changes the activity, so the case is unread/visible again.
+CREATE TABLE IF NOT EXISTS notification_marks (
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  case_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('read','dismissed')),
+  mark TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, case_id, kind)
+);
 CREATE TABLE IF NOT EXISTS workers (
   exam_id INTEGER PRIMARY KEY, pid INTEGER, started_at TEXT, last_heartbeat TEXT,
   models_json TEXT, students INTEGER

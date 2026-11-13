@@ -11,14 +11,15 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import FileResponse
 
 from . import cases as casing
+from . import device, exam_status
 from . import jitsi
 from . import report as reporting
 from . import report_export, seb, store, summary
 from .db import now_iso
 from .livekit_service import make_token, room_name, student_identity
 from .schemas import (ConsentIn, MeetingTokenIn, SebSettingsIn, SebVerifyIn, EventsIn, ExamIn, ExamPatch, HeartbeatIn, LoginIn, MonitoringStartIn, NoteIn,
-                      PresenceIn, RegisterIn, ReviewIn, ReviewPatch, CaseReviewIn, StatusIn, AudioScoresIn)
-from .security import (STAFF, create_token, get_current_user, hash_password, public_user, require_roles,
+                      PresenceIn, ProfileIn, RegisterIn, UserCreate, UserPatch, ReviewIn, ReviewPatch, CaseReviewIn, StatusIn, AudioScoresIn)
+from .security import (ROLE_LABELS, STAFF, create_token, get_current_user, hash_password, public_user, require_roles,
                        require_service_key, verify_password)
 
 log = logging.getLogger("eduai.api")
@@ -182,7 +183,8 @@ def _events_query(db, exam_ids, user, *, student_id=None, category=None, since=N
 def health(request: Request):
     st = _st(request)
     return {"status": "ok", "time": now_iso(), "ai": {"available": st.ai.available, "reason": st.ai.reason},
-            "livekit": {"configured": st.settings.livekit_configured}, "analysis_source": st.settings.analysis_source}
+            "livekit": {"configured": st.settings.livekit_configured}, "analysis_source": st.settings.analysis_source,
+            "school_name": st.settings.school_name or None}      # EDUAI_SCHOOL_NAME (also the PDF letterhead); not secret
 
 
 @router.get("/ai/health")
@@ -235,17 +237,92 @@ def me(user=Depends(get_current_user)):
     return public_user(user)
 
 
-@router.get("/users")
-def list_users(request: Request, role: Optional[str] = None, user=Depends(require_roles("admin", "penyelenggara"))):
+@router.patch("/auth/me")
+def update_me(body: ProfileIn, request: Request, user=Depends(get_current_user)):
+    """Pengaturan > Profil: every signed-in user may change their own full name (nothing else, nobody else)."""
     db = _st(request).db
+    if body.name != user["name"]:
+        db.run("UPDATE users SET name=? WHERE id=?", (body.name, user["id"]))
+        store.audit(db, {**user, "name": body.name}, "Mengubah nama profil", f"user:{user['id']}")
+    return public_user(db.one("SELECT * FROM users WHERE id=?", (user["id"],)))
+
+
+@router.get("/users")
+def list_users(request: Request, role: Optional[str] = None, user=Depends(require_roles("admin", "penyelenggara", "sekolah"))):
+    db = _st(request).db
+    if user["role"] == "sekolah":
+        role = "siswa"                                  # Pihak Sekolah: student accounts only (menu "Akun Siswa")
     rows = db.all("SELECT * FROM users WHERE (? IS NULL OR role = ?) ORDER BY role, name", (role, role))
     return [{**public_user(r), "active": bool(r["active"]), "created_at": r["created_at"]} for r in rows]
 
 
 # ---------------------------------------------------------------- exams
+@router.post("/users", status_code=201)
+def create_user(body: UserCreate, request: Request, user=Depends(require_roles("admin"))):
+    """Manajemen User > Tambah User. Students need NIS and class; other roles must not have them. Email unique."""
+    db = _st(request).db
+    if body.role == "siswa" and not (body.nis and body.class_name):
+        raise HTTPException(422, "Akun siswa memerlukan NIS/NISN dan kelas.")
+    if body.role != "siswa" and (body.nis or body.class_name):
+        raise HTTPException(422, "NIS/NISN dan kelas hanya untuk akun siswa.")
+    if db.one("SELECT 1 FROM users WHERE email=?", (body.email,)):
+        raise HTTPException(409, "Email sudah dipakai akun lain.")
+    uid = db.run("INSERT INTO users (email,name,role,password_hash,nis,class_name,created_at) VALUES (?,?,?,?,?,?,?)",
+                 (body.email, body.name, body.role, hash_password(body.password), body.nis, body.class_name, now_iso()))
+    store.audit(db, user, f"Menambah pengguna ({ROLE_LABELS[body.role]})", f"user:{uid}")
+    row = db.one("SELECT * FROM users WHERE id=?", (uid,))
+    return {**public_user(row), "active": bool(row["active"]), "created_at": row["created_at"]}
+
+
+FIELD_LABELS = {"name": "nama", "email": "email", "role": "peran", "active": "status", "nis": "NIS", "class_name": "kelas"}
+
+
+@router.patch("/users/{user_id}")
+def update_user(user_id: int, body: UserPatch, request: Request, user=Depends(require_roles("admin", "sekolah"))):
+    """Manajemen User: the admin changes name, email, role, status, NIS or class of an account.
+    Guards: unique email; an admin cannot change their own role or deactivate themselves; the last active admin
+    stays an active admin; the role of someone still linked to an unfinished exam (as supervisor or student) cannot
+    change, so no exam is left with a supervisor who is not a supervisor. Every change is audited."""
+    db = _st(request).db
+    target = db.one("SELECT * FROM users WHERE id=?", (user_id,))
+    if not target:
+        raise HTTPException(404, "Pengguna tidak ditemukan.")
+    if user["role"] == "sekolah" and (target["role"] != "siswa" or (body.role is not None and body.role != "siswa")):
+        raise HTTPException(403, "Pihak sekolah hanya dapat mengubah data akun siswa, tanpa mengubah perannya.")
+    new = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None or k in ("nis", "class_name")}
+    if "active" in new:
+        new["active"] = 1 if new["active"] else 0
+    for k in ("nis", "class_name"):
+        if k in new:
+            new[k] = (new[k] or "").strip() or None
+    changes = {k: v for k, v in new.items() if v != target[k]}
+    if not changes:
+        return {**public_user(target), "active": bool(target["active"]), "created_at": target["created_at"]}
+    if user_id == user["id"] and ("role" in changes or changes.get("active") == 0):
+        raise HTTPException(409, "Anda tidak dapat mengubah peran atau menonaktifkan akun Anda sendiri.")
+    if "email" in changes and db.one("SELECT 1 FROM users WHERE email=? AND id<>?", (changes["email"], user_id)):
+        raise HTTPException(409, "Email sudah dipakai akun lain.")
+    if target["role"] == "admin" and target["active"] and (changes.get("role", "admin") != "admin" or changes.get("active") == 0):
+        if db.one("SELECT COUNT(*) n FROM users WHERE role='admin' AND active=1")["n"] <= 1:
+            raise HTTPException(409, "Harus ada minimal satu admin aktif.")
+    if "role" in changes:
+        sup = db.one("SELECT COUNT(*) n FROM exams WHERE supervisor_id=? AND status!='Selesai'", (user_id,))["n"]
+        if sup and changes["role"] != "pengawas":
+            raise HTTPException(409, f"Pengguna ini masih menjadi pengawas di {sup} ujian yang belum selesai. Ganti pengawasnya dulu.")
+        enrolled = db.one("SELECT COUNT(*) n FROM exam_students s JOIN exams e ON e.id=s.exam_id WHERE s.student_id=? AND e.status!='Selesai'",
+                          (user_id,))["n"]
+        if enrolled and changes["role"] != "siswa":
+            raise HTTPException(409, f"Pengguna ini masih terdaftar sebagai peserta di {enrolled} ujian yang belum selesai.")
+    db.run(f"UPDATE users SET {', '.join(f'{k}=?' for k in changes)} WHERE id=?", (*changes.values(), user_id))
+    store.audit(db, user, f"Mengubah data pengguna ({', '.join(FIELD_LABELS[k] for k in changes)})", f"user:{user_id}")
+    row = db.one("SELECT * FROM users WHERE id=?", (user_id,))
+    return {**public_user(row), "active": bool(row["active"]), "created_at": row["created_at"]}
+
+
 @router.get("/exams")
 def list_exams(request: Request, user=Depends(get_current_user)):
     db = _st(request).db
+    exam_status.sync(db, _st(request).settings.exam_timezone)      # status follows the schedule
     if user["role"] == "siswa":
         rows = db.all("SELECT e.* FROM exams e JOIN exam_students s ON s.exam_id=e.id WHERE s.student_id=?"
                       " AND e.status != 'Draft' ORDER BY e.date DESC, e.start_time", (user["id"],))
@@ -278,6 +355,7 @@ def create_exam(body: ExamIn, request: Request, user=Depends(require_roles("admi
 @router.get("/exams/{exam_id}")
 def get_exam(exam_id: int, request: Request, user=Depends(get_current_user)):
     db = _st(request).db
+    exam_status.sync(db, _st(request).settings.exam_timezone)      # status follows the schedule
     return _exam_out(db, _view_exam(db, user, exam_id), user)
 
 
@@ -691,6 +769,8 @@ async def presence(exam_id: int, body: PresenceIn, request: Request, user=Depend
            " left_at=NULL, camera_on=excluded.camera_on, mic_on=excluded.mic_on, connection=excluded.connection,"
            " rtt_ms=excluded.rtt_ms", (exam_id, user["id"], now_iso(), now_iso(), int(body.camera_on),
                                         int(body.mic_on), body.connection, body.rtt_ms))
+    # camera/microphone switched off during monitoring = an indication (app/device.py), every analysis source
+    device.update(st, exam, user["id"], body.camera_on, body.mic_on, _audio_consent(db, exam_id, user["id"]))
     if exam["monitoring_active"] and exam["analysis_source"] == "jitsi":
         _record_jitsi_state(db, exam_id, user["id"], body.jitsi)
         if not body.camera_on:                   # track ended or muted: nothing to analyse
@@ -716,6 +796,7 @@ async def leave(exam_id: int, request: Request, user=Depends(require_roles("sisw
     st = _st(request)
     _view_exam(st.db, user, exam_id)
     st.db.run("UPDATE presence SET left_at=? WHERE exam_id=? AND student_id=?", (now_iso(), exam_id, user["id"]))
+    device.close_student(st, exam_id, user["id"], " (siswa keluar)")
     await st.ai.stop_student(exam_id, user["id"])
     store.audit(st.db, user, "Keluar ruang ujian", f"exam:{exam_id}")
     return {"ok": True}
@@ -788,7 +869,7 @@ def upload_audio_scores(exam_id: int, body: AudioScoresIn, request: Request, use
         raise HTTPException(403, "Analisis suara tidak disetujui untuk ujian ini.")
     if not exam["monitoring_active"] or not _audio_available(st, exam):
         return {"accepted": False, "reason": "audio_inactive"}
-    return st.ai.submit_audio(exam_id, user["id"], body.speech, body.whisper, body.media)
+    return st.ai.submit_audio(exam_id, user["id"], body.speech, body.whisper, body.media, body.paper)
 
 
 @router.get("/ai/models/yamnet.tflite")
@@ -812,6 +893,7 @@ def _stop_worker(st, exam_id: int):
 
 async def _stop_monitoring(st, exam_id: int):
     st.db.run("UPDATE exams SET monitoring_active=0 WHERE id=?", (exam_id,))
+    device.close_exam(st, exam_id)
     await asyncio.to_thread(_stop_worker, st, exam_id)
     await st.ai.stop_exam(exam_id)
 
@@ -1047,6 +1129,85 @@ def review_case(case_id: str, body: CaseReviewIn, request: Request, user=Depends
     return out
 
 
+def _case_id_of_event(db, event_id: str, gap_s) -> Optional[str]:
+    """The case an indication event belongs to (for audit targets). Same grouping as /cases, without
+    role filters: it only names the case, it grants nothing."""
+    ev = db.one("SELECT exam_id, student_id, indicator, category FROM events WHERE event_id=?", (event_id,))
+    if not ev or ev["category"] != "indication":
+        return None
+    rows = db.all("SELECT * FROM events WHERE category='indication' AND exam_id=? AND student_id=? AND indicator=?",
+                  (ev["exam_id"], ev["student_id"], ev["indicator"]))
+    group = casing.find_case(casing.group_events(rows, gap_s), event_id)
+    return casing.case_id_for(group[0]["event_id"]) if group else None
+
+
+# ---------------------------------------------------------------- notification panel state (per account)
+# Only the exam's own supervisor and admins (same people who may open the evidence). Read and dismissed marks
+# store the case's activity at that moment; a new event changes it, so the case is unread and visible again.
+# "Evidence seen" (grey ring) comes from this user's OWN "Melihat evidence" audit rows, never other people's.
+NOTIF_ROLES = ("pengawas", "admin")
+
+
+def _activity_mark(group: List[dict]) -> str:
+    return f"{len(group)}:{group[-1]['event_id']}"
+
+
+def _notif_case(request: Request, user: dict, case_id: str) -> List[dict]:
+    st = _st(request)
+    return _case_for(st.db, user, case_id, st.settings.case_gap_s)
+
+
+def _set_mark(db, user, case_id: str, kind: str, group: List[dict]):
+    db.run("INSERT INTO notification_marks (user_id,case_id,kind,mark,updated_at) VALUES (?,?,?,?,?)"
+           " ON CONFLICT(user_id,case_id,kind) DO UPDATE SET mark=excluded.mark, updated_at=excluded.updated_at",
+           (user["id"], casing.case_id_for(group[0]["event_id"]), kind, _activity_mark(group), now_iso()))
+
+
+@router.get("/notifications/state")
+def notification_state(request: Request, user=Depends(require_roles(*NOTIF_ROLES))):
+    """Per case of the exams this user supervises (admin: all): read, dismissed, evidence_seen."""
+    st = _st(request)
+    db, gap_s = st.db, st.settings.case_gap_s
+    ids = _accessible_exam_ids(db, user)
+    marks = {(m["case_id"], m["kind"]): m["mark"] for m in
+             db.all("SELECT case_id, kind, mark FROM notification_marks WHERE user_id=?", (user["id"],))}
+    seen = set()
+    for a in db.all("SELECT target FROM audit WHERE user_id=? AND action='Melihat evidence'", (user["id"],)):
+        parts = dict(p.split(":", 1) for p in (a["target"] or "").split() if ":" in p)
+        if "exam" in parts and "event" in parts:
+            seen.add((parts["exam"], parts["event"]))
+    out = {}
+    for group in casing.group_events(_indication_rows(db, ids, user), gap_s):
+        cid, mark = casing.case_id_for(group[0]["event_id"]), _activity_mark(group)
+        with_ev = [e for e in group if e.get("evidence_id")]
+        out[cid] = {"read": marks.get((cid, "read")) == mark, "dismissed": marks.get((cid, "dismissed")) == mark,
+                    "evidence_seen": bool(with_ev) and all((str(e["exam_id"]), e["event_id"][:8]) in seen for e in with_ev)}
+    return {"server_time": now_iso(), "cases": out}
+
+
+@router.put("/notifications/{case_id}/read")
+def notification_read(case_id: str, request: Request, user=Depends(require_roles(*NOTIF_ROLES))):
+    group = _notif_case(request, user, case_id)
+    _set_mark(_st(request).db, user, case_id, "read", group)
+    return {"case_id": case_id, "read": True}
+
+
+@router.put("/notifications/{case_id}/dismiss")
+def notification_dismiss(case_id: str, request: Request, user=Depends(require_roles(*NOTIF_ROLES))):
+    group = _notif_case(request, user, case_id)
+    _set_mark(_st(request).db, user, case_id, "dismissed", group)
+    return {"case_id": case_id, "dismissed": True}
+
+
+@router.delete("/notifications/{case_id}/dismiss")
+def notification_undismiss(case_id: str, request: Request, user=Depends(require_roles(*NOTIF_ROLES))):
+    """Tampilkan lagi."""
+    group = _notif_case(request, user, case_id)
+    _st(request).db.run("DELETE FROM notification_marks WHERE user_id=? AND case_id=? AND kind='dismissed'",
+                        (user["id"], casing.case_id_for(group[0]["event_id"])))
+    return {"case_id": case_id, "dismissed": False}
+
+
 # ---------------------------------------------------------------- consolidated exam summary (app/summary.py)
 @router.get("/summaries")
 def list_summaries(request: Request, user=Depends(require_roles(*MONITOR_ROLES))):
@@ -1113,7 +1274,9 @@ def _evidence_for(st, user, evidence_id: str) -> dict:
 def evidence_meta(evidence_id: str, request: Request, response: Response, user=Depends(require_roles(*STAFF))):
     st = _st(request)
     out = _evidence_for(st, user, evidence_id)
-    store.audit(st.db, user, "Melihat evidence", f"exam:{out['exam_id']} event:{out['event_id'][:8]}")
+    case_id = _case_id_of_event(st.db, out["event_id"], st.settings.case_gap_s)
+    store.audit(st.db, user, "Melihat evidence", f"exam:{out['exam_id']} event:{out['event_id'][:8]}"
+                + (f" case:{case_id}" if case_id else ""))
     response.headers["Cache-Control"] = "no-store"
     return out
 
@@ -1311,6 +1474,44 @@ def _recent_cases(db, user, ids, gap_s, n=5) -> List[dict]:
     lookup: dict = {}
     items = [_case_out(db, g, lookup) for g in casing.group_events(_indication_rows(db, ids, user), gap_s)]
     return sorted(items, key=lambda c: c["last_start_ts"], reverse=True)[:n]
+
+
+WIB = timezone(timedelta(hours=7), "WIB")             # Asia/Jakarta, no daylight saving
+
+
+def _utc(ts: str) -> Optional[datetime]:
+    try:
+        t = datetime.fromisoformat(ts.strip().replace(" ", "T").replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)      # stored times are UTC
+
+
+@router.get("/dashboard/detections-per-hour")
+def detections_per_hour(request: Request, date: Optional[str] = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+                        user=Depends(require_roles(*STAFF))):
+    """AI detections (indication events) per WIB hour of one WIB day, read-only. Only exams the user may see
+    (a supervisor: own exams); the school role only counts reviewed indications, as everywhere else."""
+    db = _st(request).db
+    try:
+        day = datetime.strptime(date, "%Y-%m-%d").date() if date else datetime.now(WIB).date()
+    except ValueError:
+        raise HTTPException(422, "Tanggal tidak valid (format YYYY-MM-DD).")
+    counts = [0] * 24
+    ids = _accessible_exam_ids(db, user)
+    if ids:
+        # A WIB day spans two UTC dates; narrow the scan by date prefix, then bucket exactly in WIB.
+        utc_dates = [(day - timedelta(days=1)).isoformat(), day.isoformat()]
+        sql = (f"SELECT start_ts FROM events WHERE category='indication' AND exam_id IN ({','.join('?' * len(ids))})"
+               " AND substr(start_ts, 1, 10) IN (?, ?)")
+        if user["role"] == "sekolah":
+            sql += " AND review_status IS NOT NULL"
+        for r in db.all(sql, [*ids, *utc_dates]):
+            t = _utc(r["start_ts"])
+            if t is not None and t.astimezone(WIB).date() == day:
+                counts[t.astimezone(WIB).hour] += 1
+    return {"date": day.isoformat(), "timezone": "Asia/Jakarta", "server_time": now_iso(),
+            "hours": [{"hour": h, "count": c} for h, c in enumerate(counts)], "total": sum(counts)}
 
 
 @router.get("/dashboard")

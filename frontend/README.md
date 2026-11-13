@@ -24,4 +24,15 @@ Desain dan alur halaman dari versi Figma dipertahankan di `src/App.tsx`. Data se
 
 - Jangan menaruh rahasia di variabel `VITE_*`: semuanya terlihat di browser.
 - Kamera hanya bisa dipakai di `https://` atau `http://localhost`.
-- `npm run build` menghasilkan `dist/` untuk disajikan oleh web server mana pun; arahkan `/api` ke backend (atau isi `VITE_API_BASE_URL`).
+- `npm run build` menghasilkan `dist/` untuk disajikan oleh web server mana pun; arahkan `/api` ke backend (atau isi `VITE_API_BASE_URL`). Web server perlu mengembalikan `index.html` untuk `/login` (fallback SPA; Vite sudah melakukannya).
+
+## Tes
+
+- `npm test`: tes unit (`tests/*.test.ts`) tanpa dependensi tambahan.
+- `e2e/run_e2e.py`: tes ujung-ke-ujung di browser dengan backend dan DB uji terpisah. Lihat [e2e/README.md](e2e/README.md).
+
+## Keterbatasan yang diketahui
+
+- **Alamat di bilah browser tidak berganti saat berpindah halaman.** Contohnya, setelah masuk dari `/login`, alamat tetap `/login` walaupun yang tampil dasbor. Ini disengaja: Safe Exam Browser memasukkan URL halaman ke dalam kunci yang diperiksa backend, sehingga mengganti URL setelah halaman dimuat (`history.pushState`) bisa menggagalkan verifikasi SEB siswa. Alamat hanya dibaca sekali saat halaman dibuka (`src/routes.ts`): `/login` membuka Login, atau dasbor bila sudah masuk; alamat lain membuka Beranda, atau dasbor bila sudah masuk.
+- **Ukuran bundle JavaScript sekitar 974 kB** (peringatan Vite "chunks are larger than 500 kB"). Rencana: pecah kode per halaman dengan `import()` dinamis.
+- Foto di `public/images/ai-signals/` (Beranda) tidak di-commit. Di salinan repo yang baru, kartu "Yang diperhatikan AI" tampil tanpa foto.

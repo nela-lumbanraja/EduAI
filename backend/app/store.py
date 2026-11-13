@@ -43,6 +43,8 @@ def sound_text(details) -> Optional[str]:
     if not isinstance(details, dict) or details.get("sound_type") not in SOUND_TYPES:
         return None
     num = lambda x: f"{float(x or 0):.2f}".replace(".", ",")      # noqa: E731
+    if details["sound_type"] == "KERTAS_BUKU":
+        return f"Jenis suara: {SOUND_TYPES['KERTAS_BUKU']} (kertas {num(details.get('paper'))})"
     return (f"Jenis suara: {SOUND_TYPES[details['sound_type']]} (speech {num(details.get('speech'))}, "
             f"whisper {num(details.get('whisper'))}, media {num(details.get('media'))})")
 
