@@ -1,5 +1,8 @@
 """Generate EduAI illustration SVGs (original artwork, no third-party photos).
 
+Writes the "Yang diperhatikan AI" illustrations (sinyal-ai/) and fallback-gambar.svg. The card/banner/login
+functions are kept as spare artwork; Beranda and Login use the photos in beranda/ and login/ (see CREDITS.md).
+
 Usage (from frontend/): python scripts/generate-illustrations.py public/images
 """
 import os
@@ -461,13 +464,6 @@ def main(root):
         "sinyal-ai/sering-menoleh.svg": signal_turn(),
         "sinyal-ai/wajah-tidak-terlihat.svg": signal_noface(),
         "sinyal-ai/suara-lain-terdengar.svg": signal_voice(),
-        "beranda/cek-perangkat.svg": card_cek(),
-        "beranda/panduan-siswa.svg": card_panduan(),
-        "beranda/laporan-pengawas.svg": card_laporan(),
-        "beranda/cara-kerja-ai.svg": card_cara_kerja(),
-        "beranda/privasi-persetujuan.svg": card_privasi(),
-        "beranda/banner-indikasi.svg": banner(),
-        "login/grid-indikasi.svg": login_grid(),
         "fallback-gambar.svg": fallback(),
     }
     for rel, content in files.items():

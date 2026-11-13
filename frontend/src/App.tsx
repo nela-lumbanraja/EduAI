@@ -251,14 +251,14 @@ const SIGNALS: [string, string, string][][] = [
 const IMG_FALLBACK = "/images/fallback-gambar.svg";
 const imgFallback = (e: SyntheticEvent<HTMLImageElement>) => { const img = e.currentTarget; if (!img.src.endsWith(IMG_FALLBACK)) img.src = IMG_FALLBACK; };
 const SIGNAL_ROWS = ["md:grid-rows-[340px_260px]", "md:grid-rows-[260px_340px]", "md:grid-rows-[380px_220px]"];
-// Ilustrasi kartu: gambar orisinal EduAI di public/images/beranda (berkas foto Unsplash lama tidak ada di repo).
+// Photos: local copies of the Figma design's Unsplash photos (sources in public/images/beranda/CREDITS.md).
 // The app never loads images from the internet.
 const LANDING_CARDS: { image: string; alt: string; title: string; text: string; id?: string }[] = [
-  { image: "/images/beranda/cek-perangkat.svg", alt: "Ilustrasi laptop dengan daftar cek kamera, mikrofon, peramban, dan koneksi", title: "Cek perangkat", text: "Periksa kamera, mikrofon, peramban, dan koneksi sebelum ujian dimulai." },
-  { image: "/images/beranda/panduan-siswa.svg", alt: "Ilustrasi siswa di depan laptop dengan lembar panduan lima langkah ujian", title: "Panduan siswa", text: "Panduan singkat untuk bersiap dan mengikuti ujian EduAI.", id: "siswa" },
-  { image: "/images/beranda/laporan-pengawas.svg", alt: "Ilustrasi laporan sesi ujian berisi tabel indikasi dan keputusan pengawas", title: "Laporan pengawas", text: "Tinjau kemungkinan masalah lengkap dengan waktu, konteks, dan catatan keputusan.", id: "pengawas" },
-  { image: "/images/beranda/cara-kerja-ai.svg", alt: "Ilustrasi alur kamera, AI, indikasi, lalu keputusan pengawas", title: "Cara kerja AI", text: "Apa yang dapat ditandai EduAI, dan mengapa EduAI tidak pernah membuat keputusan akhir." },
-  { image: "/images/beranda/privasi-persetujuan.svg", alt: "Ilustrasi perisai bergembok, lembar persetujuan, dan masa simpan data", title: "Privasi dan persetujuan", text: "Cara data ujian dikumpulkan, dilindungi, dan dihapus sesuai masa simpan.", id: "privasi" },
+  { image: "/images/beranda/cek-perangkat.webp", alt: "Seorang anak belajar dengan laptop di meja", title: "Cek perangkat", text: "Periksa kamera, mikrofon, peramban, dan koneksi sebelum ujian dimulai." },
+  { image: "/images/beranda/panduan-siswa.webp", alt: "Sekelompok pelajar berkumpul di sekitar sebuah laptop", title: "Panduan siswa", text: "Panduan singkat untuk bersiap dan mengikuti ujian EduAI.", id: "siswa" },
+  { image: "/images/beranda/laporan-pengawas.webp", alt: "Seorang perempuan bekerja dengan laptop di ruang kelas (foto hitam putih)", title: "Laporan pengawas", text: "Tinjau kemungkinan masalah lengkap dengan waktu, konteks, dan catatan keputusan.", id: "pengawas" },
+  { image: "/images/beranda/cara-kerja-ai.webp", alt: "Dua orang memperhatikan layar laptop bersama", title: "Cara kerja AI", text: "Apa yang dapat ditandai EduAI, dan mengapa EduAI tidak pernah membuat keputusan akhir." },
+  { image: "/images/beranda/privasi-persetujuan.webp", alt: "Seorang pengajar bekerja dengan laptop di depan papan tulis", title: "Privasi dan persetujuan", text: "Cara data ujian dikumpulkan, dilindungi, dan dihapus sesuai masa simpan.", id: "privasi" },
 ];
 
 function Landing({ start, user, toDashboard }: { start: (p: Portal) => void; user: User | null; toDashboard: () => void }) {
@@ -298,9 +298,9 @@ function Landing({ start, user, toDashboard }: { start: (p: Portal) => void; use
     </div></header>
 
     <main id="beranda">
-      {/* 3. Banner lebar penuh: kolase ilustrasi webcam (4120x760). Tidak dipotong (contain, rasio asli), tanpa filter atau lapisan warna,
+      {/* 3. Banner lebar penuh: kolase webcam tim EduAI (4120x760). Tidak dipotong (contain, rasio asli), tanpa filter atau lapisan warna,
              tanpa lazy loading karena terlihat saat halaman dibuka. */}
-      <img src="/images/beranda/banner-indikasi.svg" onError={imgFallback} alt="Kolase ilustrasi webcam peserta ujian dengan bingkai deteksi emas sebagai contoh indikasi AI."
+      <img src="/images/beranda/banner_indikasi.webp" onError={imgFallback} alt="Kolase foto webcam peserta ujian dengan bingkai deteksi emas sebagai contoh indikasi AI."
         width={4120} height={760} loading="eager" decoding="async" fetchPriority="high" className="block aspect-[4120/760] w-full object-contain" />
 
       {/* 4. Pita judul navy. */}
@@ -443,9 +443,9 @@ function Login({ go, portal = "siswa" }: { go: (s: Screen) => void; portal?: Por
           <span className="flex flex-col gap-[3px]"><strong className="text-[21px] tracking-[6px] text-navy">EDUAI</strong><small className="font-sans font-semibold text-xs font-medium tracking-[1.3px] text-[#8a6b0d]">SMART EXAM INTEGRITY</small></span>
         </button>
         <p className="relative z-[2] mt-5 max-w-[650px] text-base leading-[1.65] text-[#536173] min-[801px]:mt-[30px] min-[801px]:text-lg">EduAI memantau ujian daring secara langsung dengan computer vision, membantu sekolah menjaga integritas tanpa mengganggu siswa.</p>
-        {/* Ilustrasi tiga layar ujian (latar transparan, 1151x798): langsung di atas latar panel, tidak dipotong, tanpa lazy loading. */}
-        <img src="/images/login/grid-indikasi.svg" onError={imgFallback} width={1151} height={798} loading="eager" decoding="async"
-          alt="Ilustrasi tiga layar ujian siswa dengan bingkai deteksi emas serta label 'Ponsel terlihat' dan 'Perlu ditinjau', sebagai contoh indikasi AI."
+        {/* Foto tim EduAI (latar transparan, 1151x798): langsung di atas latar panel, tidak dipotong, tanpa lazy loading. */}
+        <img src="/images/login/grid_indikasi.webp" onError={imgFallback} width={1151} height={798} loading="eager" decoding="async"
+          alt="Tiga layar ujian siswa dengan bingkai deteksi emas serta label 'Ponsel terlihat' dan 'Perlu ditinjau', sebagai contoh indikasi AI."
           className="relative z-[2] mt-6 block h-auto w-[min(78%,430px)] self-center justify-self-center object-contain min-[801px]:mt-0 min-[801px]:w-[min(100%,720px)]" />
       </section>
 
