@@ -1,4 +1,4 @@
-import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type SyntheticEvent } from "react";
 import {
   api, ApiError, examWindow, fmtDate, fmtDateTime, fmtDuration, fmtTime, FRAME_REASON, initials, remaining, ROLE_LABEL, EVIDENCE_RESTRICTED,
   session, setUnauthorizedHandler, SOURCE_LABEL, STATE_LABEL, AUDIO_REASON,
@@ -237,24 +237,28 @@ const STAFF_TABS = ["Penyelenggara", "Pengawas", "Admin"];
 type Portal = "siswa" | "sekolah";
 
 // Beranda (desain Figma "Landing"). Isinya teks tetap tentang cara kerja EduAI; tidak ada angka, berita, atau tautan contoh.
-// Foto sinyal AI ada di public/images/ai-signals (lokal, tidak di-commit).
+// Ilustrasi sinyal AI: public/images/sinyal-ai (gambar orisinal EduAI, boleh di-commit). Foto Figma lama di
+// public/images/ai-signals tidak di-commit sehingga kartu tampil kosong di salinan repo yang baru.
 const SIGNALS: [string, string, string][][] = [
-  [["Ponsel terlihat", "Ponsel dipegang atau terlihat di depan kamera.", "/images/ai-signals/1_phone_in_view.png"],
-    ["Buku terlihat", "Buku terbuka terlihat di depan kamera.", "/images/ai-signals/2_book_in_view.png"]],
-  [["Orang lain terlihat", "Lebih dari satu wajah muncul di kamera.", "/images/ai-signals/3_another_person.png"],
-    ["Sering menoleh", "Kepala berulang kali menoleh dari layar.", "/images/ai-signals/4_looking_away.png"]],
-  [["Wajah tidak terlihat", "Wajah keluar dari kamera atau tertutup.", "/images/ai-signals/5_face_not_visible.png"],
-    ["Suara lain terdengar", "Suara bicara lain atau bisikan selama ujian.", "/images/ai-signals/6_other_voice.png"]],
+  [["Ponsel terlihat", "Ponsel dipegang atau terlihat di depan kamera.", "/images/sinyal-ai/ponsel-terlihat.svg"],
+    ["Buku terlihat", "Buku terbuka terlihat di depan kamera.", "/images/sinyal-ai/buku-terlihat.svg"]],
+  [["Orang lain terlihat", "Lebih dari satu wajah muncul di kamera.", "/images/sinyal-ai/orang-lain-terlihat.svg"],
+    ["Sering menoleh", "Kepala berulang kali menoleh dari layar.", "/images/sinyal-ai/sering-menoleh.svg"]],
+  [["Wajah tidak terlihat", "Wajah keluar dari kamera atau tertutup.", "/images/sinyal-ai/wajah-tidak-terlihat.svg"],
+    ["Suara lain terdengar", "Suara bicara lain atau bisikan selama ujian.", "/images/sinyal-ai/suara-lain-terdengar.svg"]],
 ];
+// Bila sebuah gambar gagal dimuat, ganti sekali dengan ilustrasi cadangan agar tidak muncul ikon gambar rusak.
+const IMG_FALLBACK = "/images/fallback-gambar.svg";
+const imgFallback = (e: SyntheticEvent<HTMLImageElement>) => { const img = e.currentTarget; if (!img.src.endsWith(IMG_FALLBACK)) img.src = IMG_FALLBACK; };
 const SIGNAL_ROWS = ["md:grid-rows-[340px_260px]", "md:grid-rows-[260px_340px]", "md:grid-rows-[380px_220px]"];
-// Photos: local copies of the Figma design's Unsplash photos (sources in public/images/beranda/CREDITS.md).
+// Ilustrasi kartu: gambar orisinal EduAI di public/images/beranda (berkas foto Unsplash lama tidak ada di repo).
 // The app never loads images from the internet.
 const LANDING_CARDS: { image: string; alt: string; title: string; text: string; id?: string }[] = [
-  { image: "/images/beranda/cek-perangkat.webp", alt: "Seorang anak belajar dengan laptop di meja", title: "Cek perangkat", text: "Periksa kamera, mikrofon, peramban, dan koneksi sebelum ujian dimulai." },
-  { image: "/images/beranda/panduan-siswa.webp", alt: "Sekelompok pelajar berkumpul di sekitar sebuah laptop", title: "Panduan siswa", text: "Panduan singkat untuk bersiap dan mengikuti ujian EduAI.", id: "siswa" },
-  { image: "/images/beranda/laporan-pengawas.webp", alt: "Seorang perempuan bekerja dengan laptop di ruang kelas (foto hitam putih)", title: "Laporan pengawas", text: "Tinjau kemungkinan masalah lengkap dengan waktu, konteks, dan catatan keputusan.", id: "pengawas" },
-  { image: "/images/beranda/cara-kerja-ai.webp", alt: "Dua orang memperhatikan layar laptop bersama", title: "Cara kerja AI", text: "Apa yang dapat ditandai EduAI, dan mengapa EduAI tidak pernah membuat keputusan akhir." },
-  { image: "/images/beranda/privasi-persetujuan.webp", alt: "Seorang pengajar bekerja dengan laptop di depan papan tulis", title: "Privasi dan persetujuan", text: "Cara data ujian dikumpulkan, dilindungi, dan dihapus sesuai masa simpan.", id: "privasi" },
+  { image: "/images/beranda/cek-perangkat.svg", alt: "Ilustrasi laptop dengan daftar cek kamera, mikrofon, peramban, dan koneksi", title: "Cek perangkat", text: "Periksa kamera, mikrofon, peramban, dan koneksi sebelum ujian dimulai." },
+  { image: "/images/beranda/panduan-siswa.svg", alt: "Ilustrasi siswa di depan laptop dengan lembar panduan lima langkah ujian", title: "Panduan siswa", text: "Panduan singkat untuk bersiap dan mengikuti ujian EduAI.", id: "siswa" },
+  { image: "/images/beranda/laporan-pengawas.svg", alt: "Ilustrasi laporan sesi ujian berisi tabel indikasi dan keputusan pengawas", title: "Laporan pengawas", text: "Tinjau kemungkinan masalah lengkap dengan waktu, konteks, dan catatan keputusan.", id: "pengawas" },
+  { image: "/images/beranda/cara-kerja-ai.svg", alt: "Ilustrasi alur kamera, AI, indikasi, lalu keputusan pengawas", title: "Cara kerja AI", text: "Apa yang dapat ditandai EduAI, dan mengapa EduAI tidak pernah membuat keputusan akhir." },
+  { image: "/images/beranda/privasi-persetujuan.svg", alt: "Ilustrasi perisai bergembok, lembar persetujuan, dan masa simpan data", title: "Privasi dan persetujuan", text: "Cara data ujian dikumpulkan, dilindungi, dan dihapus sesuai masa simpan.", id: "privasi" },
 ];
 
 function Landing({ start, user, toDashboard }: { start: (p: Portal) => void; user: User | null; toDashboard: () => void }) {
@@ -294,9 +298,9 @@ function Landing({ start, user, toDashboard }: { start: (p: Portal) => void; use
     </div></header>
 
     <main id="beranda">
-      {/* 3. Banner lebar penuh: kolase webcam tim EduAI (4120x760). Tidak dipotong (contain, rasio asli), tanpa filter atau lapisan warna,
+      {/* 3. Banner lebar penuh: kolase ilustrasi webcam (4120x760). Tidak dipotong (contain, rasio asli), tanpa filter atau lapisan warna,
              tanpa lazy loading karena terlihat saat halaman dibuka. */}
-      <img src="/images/beranda/banner_indikasi.webp" alt="Kolase foto webcam peserta ujian dengan bingkai deteksi emas sebagai contoh indikasi AI."
+      <img src="/images/beranda/banner-indikasi.svg" onError={imgFallback} alt="Kolase ilustrasi webcam peserta ujian dengan bingkai deteksi emas sebagai contoh indikasi AI."
         width={4120} height={760} loading="eager" decoding="async" fetchPriority="high" className="block aspect-[4120/760] w-full object-contain" />
 
       {/* 4. Pita judul navy. */}
@@ -311,7 +315,7 @@ function Landing({ start, user, toDashboard }: { start: (p: Portal) => void; use
       <section id="cara-kerja" aria-label="Panduan dan informasi" className="scroll-mt-4 bg-paper pb-[78px] pt-6"><div className="bd-band bd-narrow">
         <div className="grid items-start gap-5 md:grid-cols-3">
           {LANDING_CARDS.map(({ image, alt, title, text, id }) => <article key={title} id={id} className="bd-card-shadow min-w-0 scroll-mt-4 border-t-8 border-navy bg-white">
-            <img src={image} alt={alt} width={1200} height={675} loading="lazy" decoding="async" className="block aspect-[16/9] w-full bg-paper object-cover" />
+            <img src={image} alt={alt} onError={imgFallback} width={1200} height={675} loading="lazy" decoding="async" className="block aspect-[16/9] w-full bg-paper object-cover" />
             <h2 className="bd-card-title px-4 pt-4">{title}</h2>
             <p className="bd-card-text px-4 pb-5 pt-1.5 text-[#334052]">{text}</p>
           </article>)}
@@ -332,7 +336,7 @@ function Landing({ start, user, toDashboard }: { start: (p: Portal) => void; use
             return <article key={title} tabIndex={still ? undefined : 0} role={still ? undefined : "button"} aria-pressed={still ? undefined : on}
               onClick={() => { if (!still) setActive(title); }} onKeyDown={(e) => { if (!still && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); setActive(title); } }}
               className={`group relative h-64 overflow-hidden bg-[#c8ccd0] md:h-auto ${still ? "cursor-default" : "cursor-pointer focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-gold-500"}`}>
-              <img src={image} alt={title} className={`block size-full bg-[#c8ccd0] object-cover ${c === 0 ? "object-[center_70%]" : "object-center"}`} />
+              <img src={image} alt={title} onError={imgFallback} className={`block size-full bg-[#c8ccd0] object-cover ${c === 0 ? "object-[center_70%]" : "object-center"}`} />
               <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,rgba(20,33,61,.48),rgba(20,33,61,.8))]" />
               {!still && <div className={`pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,rgba(201,162,39,0),rgba(201,162,39,.92))] transition-opacity duration-250 ${on ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`} />}
               <div className="absolute inset-x-0 bottom-0 p-6 text-white">
@@ -439,9 +443,9 @@ function Login({ go, portal = "siswa" }: { go: (s: Screen) => void; portal?: Por
           <span className="flex flex-col gap-[3px]"><strong className="text-[21px] tracking-[6px] text-navy">EDUAI</strong><small className="font-sans font-semibold text-xs font-medium tracking-[1.3px] text-[#8a6b0d]">SMART EXAM INTEGRITY</small></span>
         </button>
         <p className="relative z-[2] mt-5 max-w-[650px] text-base leading-[1.65] text-[#536173] min-[801px]:mt-[30px] min-[801px]:text-lg">EduAI memantau ujian daring secara langsung dengan computer vision, membantu sekolah menjaga integritas tanpa mengganggu siswa.</p>
-        {/* Foto tim EduAI (latar transparan, 1151x798): langsung di atas latar panel, tidak dipotong, tanpa lazy loading. */}
-        <img src="/images/login/grid_indikasi.webp" width={1151} height={798} loading="eager" decoding="async"
-          alt="Tiga layar ujian siswa dengan bingkai deteksi emas serta label 'Ponsel terlihat' dan 'Perlu ditinjau', sebagai contoh indikasi AI."
+        {/* Ilustrasi tiga layar ujian (latar transparan, 1151x798): langsung di atas latar panel, tidak dipotong, tanpa lazy loading. */}
+        <img src="/images/login/grid-indikasi.svg" onError={imgFallback} width={1151} height={798} loading="eager" decoding="async"
+          alt="Ilustrasi tiga layar ujian siswa dengan bingkai deteksi emas serta label 'Ponsel terlihat' dan 'Perlu ditinjau', sebagai contoh indikasi AI."
           className="relative z-[2] mt-6 block h-auto w-[min(78%,430px)] self-center justify-self-center object-contain min-[801px]:mt-0 min-[801px]:w-[min(100%,720px)]" />
       </section>
 
