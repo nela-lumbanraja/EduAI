@@ -133,7 +133,7 @@ SIDEBAR = {  # mirror of src/nav.ts NAV_MENUS (Profil is the avatar at the botto
     "siswa": ["Dasbor", "Ujian Saya"],
     "pengawas": ["Dasbor", "Sesi Ujian", "Monitoring", "Indikasi", "Riwayat", "Laporan", "Rapat Video"],
     "penyelenggara": ["Dasbor", "Sesi Ujian", "Peserta", "Pengawas", "Laporan", "Rapat Video"],
-    "admin": ["Dasbor", "Daftar Ujian", "Indikasi", "Manajemen User", "Role & Izin", "Konfigurasi", "Retensi Data", "Audit Log", "Rapat Video"],
+    "admin": ["Dasbor", "Daftar Ujian", "Indikasi", "Manajemen User", "Konfigurasi", "Retensi Data", "Audit Log", "Rapat Video"],
     "sekolah": ["Dasbor", "Informasi Sesi", "Indikasi Tervalidasi", "Laporan Final", "Akun Siswa", "Rapat Video"],
 }
 SIDEBAR_JS = """() => { const a = document.querySelector('aside[aria-label=Sidebar]'); const r = a.getBoundingClientRect();

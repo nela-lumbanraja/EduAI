@@ -9,7 +9,7 @@ test("menus per role are the ones that already existed (Profil moved to the avat
   assert.deepEqual(labels("Siswa"), ["Dasbor", "Ujian Saya"]);                     // no "Rapat Video" for students
   assert.deepEqual(labels("Pengawas"), ["Dasbor", "Sesi Ujian", "Monitoring", "Indikasi", "Riwayat", "Laporan", "Rapat Video"]);
   assert.deepEqual(labels("Penyelenggara Ujian"), ["Dasbor", "Sesi Ujian", "Peserta", "Pengawas", "Laporan", "Rapat Video"]);
-  assert.deepEqual(labels("Admin"), ["Dasbor", "Daftar Ujian", "Indikasi", "Manajemen User", "Role & Izin", "Konfigurasi", "Retensi Data", "Audit Log", "Rapat Video"]);
+  assert.deepEqual(labels("Admin"), ["Dasbor", "Daftar Ujian", "Indikasi", "Manajemen User", "Konfigurasi", "Retensi Data", "Audit Log", "Rapat Video"]);
   assert.deepEqual(labels("Pihak Sekolah"), ["Dasbor", "Informasi Sesi", "Indikasi Tervalidasi", "Laporan Final", "Akun Siswa", "Rapat Video"]);
   for (const items of Object.values(NAV_MENUS)) {
     assert.ok(items.every((m) => m.id !== PROFILE_SCREEN), "Profil is the avatar, not an icon");

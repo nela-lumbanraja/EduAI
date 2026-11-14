@@ -57,7 +57,6 @@ type Screen =
   | "history"
   | "my-exams"
   | "users"
-  | "permissions"
   | "configuration"
   | "retention"
   | "audit"
@@ -1753,7 +1752,7 @@ function AdminDashboard({ go }: { go: (s: Screen) => void }) {
   const auditToday = (audit.data ?? []).filter((a) => new Date(a.ts).toDateString() === today).length;
   const ai = health.data?.[1];
   return <AppShell active="dashboard" go={go} title="Dasbor Admin"><main className="p-4 sm:p-8"><PageTitle title="Administrasi EduAI" description="Kelola ujian, akses, konfigurasi, retensi data, dan jejak aktivitas sistem." action={<Button icon="plus" onClick={() => go("create")}>Create Ujian</Button>} />
-    <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">{[[String((users.data ?? []).filter((u) => u.active).length), "User aktif", "users"], ["5", "Role sistem", "shield"], [ai ? `${ai.evidence_retention_hours} jam` : "—", "Retensi evidence", "clock"], [String(auditToday), "Audit hari ini", "file"]].map(([value, label, icon]) => <button key={label} onClick={() => go(label === "User aktif" ? "users" : label === "Role sistem" ? "permissions" : label === "Retensi evidence" ? "retention" : "audit")} className="rounded-md border border-slate-200 bg-white p-4 text-left hover:border-blue-200 sm:p-5"><div className="flex items-center justify-between gap-2"><p className="text-xl font-bold text-slate-900 sm:text-2xl">{value}</p><span className="text-slate-400"><Icon name={icon as IconName} /></span></div><p className="mt-2 text-sm text-slate-500">{label}</p></button>)}</div>
+    <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">{[[String((users.data ?? []).filter((u) => u.active).length), "User aktif", "users"], ["5", "Role sistem", "shield"], [ai ? `${ai.evidence_retention_hours} jam` : "—", "Retensi evidence", "clock"], [String(auditToday), "Audit hari ini", "file"]].map(([value, label, icon]) => <button key={label} onClick={() => go(label === "User aktif" ? "users" : label === "Role sistem" ? "users" : label === "Retensi evidence" ? "retention" : "audit")} className="rounded-md border border-slate-200 bg-white p-4 text-left hover:border-blue-200 sm:p-5"><div className="flex items-center justify-between gap-2"><p className="text-xl font-bold text-slate-900 sm:text-2xl">{value}</p><span className="text-slate-400"><Icon name={icon as IconName} /></span></div><p className="mt-2 text-sm text-slate-500">{label}</p></button>)}</div>
     <div className="mt-6 grid gap-6 lg:grid-cols-[1.2fr_.8fr]"><section className="rounded-md border border-slate-200 bg-white"><div className="border-b border-slate-100 p-5"><h2 className="font-bold text-slate-900">Aktivitas sistem terbaru</h2></div><div className="divide-y divide-slate-100">{(audit.data ?? []).slice(0, 6).map((row) => <div key={row.id} className="flex items-center gap-4 p-4"><div className="grid size-9 place-items-center rounded-full bg-slate-100 text-xs font-bold text-slate-600">{initials(row.user_name)}</div><div className="flex-1"><p className="text-sm font-semibold text-slate-800">{row.user_name}</p><p className="mt-0.5 text-xs text-slate-500">{row.action}</p></div><span className="text-xs text-slate-400">{fmtTime(row.ts).slice(0, 5)}</span></div>)}</div></section><section className="rounded-md border border-blue-100 bg-blue-50 p-5"><h2 className="font-bold text-blue-900">Status sistem</h2><div className="mt-5 space-y-4">{[["Backend", health.data ? "Normal" : health.error ? "Tidak terhubung" : "Memeriksa"], ["Layanan AI", ai ? (ai.available ? "Siap" : "Belum siap") : "—"], ["Model wajah", ai?.models.face_detector?.loaded ? "Dimuat" : "Tidak ada"], ["Head pose (Face Landmarker)", ai?.models.face_landmarker?.loaded ? "Dimuat" : "Tidak ada"], ["Deteksi ponsel (EfficientDet)", ai?.models.object_detector?.loaded ? "Dimuat" : "Tidak ada"], ["OpenVidu", health.data?.[0].livekit.configured ? "Terkonfigurasi" : "Belum dikonfigurasi"], ["Enkripsi evidence", ai?.evidence_encrypted ? "Aktif" : "Tidak aktif"]].map(([label, value]) => <div key={label} className="flex justify-between text-sm"><span className="text-blue-800">{label}</span><span className="font-semibold text-blue-900">{value}</span></div>)}</div>{ai && !ai.available && <p className="mt-4 text-xs text-blue-800">{ai.reason}</p>}</section></div>
     <DashboardChartHub go={go} withStatusDonut />
   </main></AppShell>;
@@ -2082,21 +2081,6 @@ function AddUserDialog({ onClose, onSaved }: { onClose: () => void; onSaved: (u:
   </div>;
 }
 
-function PermissionsPage({ go }: { go: (s: Screen) => void }) {
-  // Mirrors the checks enforced by the backend (app/api.py).
-  const permissions: [string, Role[]][] = [
-    ["Mengikuti ujian", ["Siswa"]],
-    ["Melihat video langsung & status AI sesi", ["Pengawas", "Penyelenggara Ujian", "Admin"]],
-    ["Memvalidasi Indikasi", ["Pengawas", "Penyelenggara Ujian", "Admin"]],
-    ["Melihat indikasi tervalidasi & laporan", ["Pengawas", "Penyelenggara Ujian", "Admin", "Pihak Sekolah"]],
-    ["Membuat ujian & melihat audit log", ["Admin"]],
-    ["Mengubah data akun siswa (nama, email, NIS, kelas, status)", ["Admin", "Pihak Sekolah"]],
-    ["Mengubah peran dan akun staf", ["Admin"]],
-  ];
-  const roles: Role[] = ["Siswa", "Pengawas", "Penyelenggara Ujian", "Admin", "Pihak Sekolah"];
-  return <AppShell active="permissions" go={go} title="Role & Permission"><main className="p-4 sm:p-8"><PageTitle title="Role & Permission" description="Matriks izin inti yang diterapkan oleh backend." /><section className="overflow-hidden rounded-md border border-slate-200 bg-white"><div className="overflow-x-auto"><table className="w-full min-w-[980px] text-center text-sm"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-4 text-left">Fitur</th>{roles.map((role) => <th key={role} className="px-5 py-4">{role}</th>)}</tr></thead><tbody>{permissions.map(([permission, allowedRoles]) => <tr key={permission} className="border-t border-slate-100"><td className="px-5 py-4 text-left font-semibold text-slate-800">{permission}</td>{roles.map((role) => { const allowed = allowedRoles.includes(role); return <td key={role} className="px-5 py-4"><span className={`mx-auto grid size-7 place-items-center rounded-full ${allowed ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-400"}`}>{allowed ? <Icon name="check" size={14} /> : "×"}</span></td>; })}</tr>)}</tbody></table></div></section><div className="mt-5 rounded-md border border-blue-100 bg-blue-50 p-4 text-sm leading-6 text-blue-800"><strong>Kontrol akses aktif.</strong> Pengawas hanya dapat membuka sesi yang ditugaskan. Siswa tidak pernah menerima akses ke data pemantauan, Indikasi, atau laporan. Pihak sekolah hanya melihat indikasi yang sudah divalidasi.</div></main></AppShell>;
-}
-
 function ConfigurationPage({ go }: { go: (s: Screen) => void }) {
   const [tab, setTab] = useState("Sistem");
   const h = usePoll<[Health, AIHealth]>(() => Promise.all([api.health(), api.aiHealth()]), []);
@@ -2350,7 +2334,6 @@ export default function App() {
   else if (screen === "my-exams") page = <MyExams go={go} />;
   else if (screen === "students") page = <StudentList go={go} />;
   else if (screen === "users") page = <UserManagement go={go} />;
-  else if (screen === "permissions") page = <PermissionsPage go={go} />;
   else if (screen === "configuration") page = <ConfigurationPage go={go} />;
   else if (screen === "retention") page = <RetentionPage go={go} />;
   else if (screen === "audit") page = <AuditPage go={go} />;

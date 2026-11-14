@@ -35,7 +35,6 @@ export const NAV_MENUS: Record<Role, NavItem[]> = {
     { id: "sessions", label: "Daftar Ujian", icon: "calendar" },
     { id: "indications", label: "Indikasi", icon: "bell" },
     { id: "users", label: "Manajemen User", icon: "users" },
-    { id: "permissions", label: "Role & Izin", icon: "shield" },
     { id: "configuration", label: "Konfigurasi", icon: "sliders" },
     { id: "retention", label: "Retensi Data", icon: "archive" },
     { id: "audit", label: "Audit Log", icon: "clipboard" },

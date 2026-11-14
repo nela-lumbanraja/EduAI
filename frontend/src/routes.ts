@@ -60,6 +60,6 @@ export const ALLOWED_SCREENS: Record<Role, string[]> = {
   Siswa: ["login", "dashboard", "my-exams", "seb-check", "consent", "device", "exam", "settings", "access-denied"],
   Pengawas: ["login", "dashboard", "sessions", "exam-detail", "waiting", "monitor", "student-detail", "detail", "timeline", "report", "indications", "history", "students", "meeting", "settings", "access-denied"],
   "Penyelenggara Ujian": ["login", "dashboard", "sessions", "exam-detail", "waiting", "monitor", "student-detail", "detail", "timeline", "report", "indications", "history", "students", "users", "meeting", "settings", "access-denied"],
-  Admin: ["login", "dashboard", "sessions", "create", "exam-detail", "waiting", "seb-check", "consent", "device", "exam", "monitor", "student-detail", "detail", "timeline", "report", "indications", "history", "students", "users", "permissions", "configuration", "retention", "audit", "meeting", "settings", "access-denied"],
+  Admin: ["login", "dashboard", "sessions", "create", "exam-detail", "waiting", "seb-check", "consent", "device", "exam", "monitor", "student-detail", "detail", "timeline", "report", "indications", "history", "students", "users", "configuration", "retention", "audit", "meeting", "settings", "access-denied"],
   "Pihak Sekolah": ["login", "dashboard", "sessions", "exam-detail", "detail", "report", "indications", "history", "users", "meeting", "settings", "access-denied"],
 };
