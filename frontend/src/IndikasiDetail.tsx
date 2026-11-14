@@ -22,7 +22,7 @@ function Avatar({ name, size = 28 }: { name: string; size?: number }) {
 }
 
 function Empty({ text = EMPTY_CHART }: { text?: string }) {
-  return <p className="rounded bg-[#F4F5F7] px-3 py-6 text-center text-xs" style={{ color: MUTED }}>{text}</p>;
+  return <p data-empty-box className="rounded bg-[#F4F5F7] px-3 py-6 text-center text-xs" style={{ color: MUTED }}>{text}</p>;
 }
 
 // ---------------------------------------------------------------- status badge (text + shape, colour is not the only cue)
@@ -43,7 +43,7 @@ export function ActivityCard({ items, now, capped, onOpenCase }: { items: Activi
   const [big, setBig] = useState(false);
   const action = <button type="button" onClick={() => setBig((b) => !b)} aria-expanded={big} aria-controls="aktivitas-list"
     aria-label={big ? "Perkecil aktivitas terbaru" : "Perbesar aktivitas terbaru"} title={big ? "Perkecil" : "Perbesar"}
-    className="grid size-7 place-items-center rounded text-[#44546F] outline-none hover:bg-[#F4F5F7] focus-visible:ring-2 focus-visible:ring-[#c9a227]">
+    className="tap relative grid size-7 place-items-center rounded text-[#44546F] outline-none hover:bg-[#F4F5F7] focus-visible:ring-2 focus-visible:ring-[#c9a227]">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       {big ? <path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" /> : <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />}</svg>
   </button>;

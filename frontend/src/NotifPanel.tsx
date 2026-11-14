@@ -106,7 +106,7 @@ export function NotifPanel({ open, onClose, cases, summaries, user, canOpenEvide
         </section>)}
         {!shown.length && <div className="grid place-items-center py-16 text-center"><span className="grid size-14 place-items-center rounded-full border-2 border-[#DFE1E6] text-[#8590A2]"><LineIcon name="check" size={22} /></span><p className="mt-3 text-[13px] text-[#626F86]">Belum ada notifikasi untuk filter ini.</p></div>}
         {markErr && <p role="alert" className="mt-4 text-xs text-[#AE2E24]">{markErr}</p>}
-        {dismissedCount > 0 && <button type="button" onClick={() => send(hiddenIds, "dismissed", false)} className="mt-4 text-xs font-medium text-[#14213d] underline-offset-2 hover:underline">{dismissedCount} notifikasi diabaikan · Tampilkan lagi</button>}
+        {dismissedCount > 0 && <button type="button" onClick={() => send(hiddenIds, "dismissed", false)} className="tap relative mt-4 text-xs font-medium text-[#14213d] underline-offset-2 hover:underline">{dismissedCount} notifikasi diabaikan · Tampilkan lagi</button>}
       </div>
     </aside>
     {story && <StoryViewer row={story} user={user} canReview={canReview} onClose={() => setStory(null)} />}

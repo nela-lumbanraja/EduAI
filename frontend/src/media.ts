@@ -22,12 +22,15 @@ export function mediaErrorMessage(e: unknown): string {
   if (name === "NotFoundError" || name === "OverconstrainedError") return "Kamera atau mikrofon tidak ditemukan pada perangkat ini.";
   if (name === "NotReadableError") return "Kamera sedang dipakai aplikasi lain. Tutup aplikasi tersebut lalu coba lagi.";
   if (!window.isSecureContext) return "Kamera hanya dapat dipakai lewat HTTPS atau http://localhost.";
+  if (name === "UnsupportedError") return "Browser ini tidak mendukung kamera/mikrofon. Buka EduAI di Chrome (Android) atau Safari (iPhone) versi terbaru, bukan dari browser di dalam aplikasi seperti WhatsApp atau Instagram.";
   return "Kamera/mikrofon tidak dapat dibuka.";
 }
 
 /** Open camera+mic once. The preview, the AI frames and the live broadcast (OpenVidu or Jitsi) all use these tracks,
  *  so what the supervisor watches and what the AI analyses come from the same capture. */
 export async function startStudentMedia(): Promise<StudentMedia> {
+  // Some in-app browsers and old phones have no camera API at all (navigator.mediaDevices is undefined).
+  if (window.isSecureContext && !navigator.mediaDevices?.getUserMedia) throw Object.assign(new Error("getUserMedia unsupported"), { name: "UnsupportedError" });
   const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO, audio: true });
   const v = () => stream.getVideoTracks()[0];
   const a = () => stream.getAudioTracks()[0];

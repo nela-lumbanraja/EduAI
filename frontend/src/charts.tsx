@@ -34,10 +34,10 @@ export function Card({ title, sub, children, className = "" }: { title: string; 
 /** Light gray stand-in in the chart's own shape, with the agreed text. */
 function Placeholder({ shape }: { shape: "donut" | "line" | "bar" | "timeline" }) {
   return <div role="img" aria-label={EMPTY_CHART} className="flex flex-1 flex-col items-center justify-center gap-3 py-2">
-    {shape === "donut" && <svg width="140" height="140" viewBox="0 0 140 140" aria-hidden="true"><circle cx="70" cy="70" r="54" fill="none" stroke={EMPTY_FILL} strokeWidth="18" /></svg>}
-    {shape === "line" && <svg width="100%" height="110" viewBox="0 0 300 110" preserveAspectRatio="none" aria-hidden="true"><path d="M0 90 L60 70 L120 80 L180 50 L240 62 L300 40" fill="none" stroke={EMPTY_FILL} strokeWidth="3" /><line x1="0" x2="300" y1="100" y2="100" stroke={EMPTY_FILL} /></svg>}
-    {shape === "bar" && <div aria-hidden="true" className="h-8 w-full rounded bg-[#eceff1]" />}
-    {shape === "timeline" && <svg width="100%" height="56" viewBox="0 0 300 56" preserveAspectRatio="none" aria-hidden="true"><line x1="0" x2="300" y1="40" y2="40" stroke={EMPTY_FILL} strokeWidth="3" />{[40, 110, 190, 260].map((x) => <circle key={x} cx={x} cy="24" r="5" fill={EMPTY_FILL} />)}</svg>}
+    {shape === "donut" && <svg data-empty-deco width="140" height="140" viewBox="0 0 140 140" aria-hidden="true"><circle cx="70" cy="70" r="54" fill="none" stroke={EMPTY_FILL} strokeWidth="18" /></svg>}
+    {shape === "line" && <svg data-empty-deco width="100%" height="110" viewBox="0 0 300 110" preserveAspectRatio="none" aria-hidden="true"><path d="M0 90 L60 70 L120 80 L180 50 L240 62 L300 40" fill="none" stroke={EMPTY_FILL} strokeWidth="3" /><line x1="0" x2="300" y1="100" y2="100" stroke={EMPTY_FILL} /></svg>}
+    {shape === "bar" && <div data-empty-deco aria-hidden="true" className="h-8 w-full rounded bg-[#eceff1]" />}
+    {shape === "timeline" && <svg data-empty-deco width="100%" height="56" viewBox="0 0 300 56" preserveAspectRatio="none" aria-hidden="true"><line x1="0" x2="300" y1="40" y2="40" stroke={EMPTY_FILL} strokeWidth="3" />{[40, 110, 190, 260].map((x) => <circle key={x} cx={x} cy="24" r="5" fill={EMPTY_FILL} />)}</svg>}
     <p className="text-center text-xs text-[#7d8794]">{EMPTY_CHART}</p>
   </div>;
 }

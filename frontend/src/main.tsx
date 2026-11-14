@@ -8,9 +8,14 @@ import '@fontsource/public-sans/600.css'
 import '@fontsource/public-sans/700.css'
 import '@fontsource/public-sans/800.css'
 import './index.css'
+import { installScrollHints } from './scrollHint'
+import { installAlarmUnlock } from './alarm'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <App />
   </React.StrictMode>,
 )
+
+installScrollHints()
+installAlarmUnlock()

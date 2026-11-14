@@ -38,15 +38,15 @@ export function LineIcon({ name, size = 16, className = "" }: { name: IconName; 
 export function SummaryCard({ title, sub, link, action, children, className = "" }: { title: string; sub?: string; link?: { label: string; onClick: () => void }; action?: ReactNode; children: ReactNode; className?: string }) {
   return <section className={`min-w-0 rounded border bg-white p-4 sm:p-5 ${className}`} style={{ borderColor: BORDER }}>
     <div className="flex items-start justify-between gap-3"><h2 className="font-sans text-sm font-bold" style={{ color: TEXT }}>{title}</h2>{action}</div>
-    {(sub || link) && <p className="mt-1 text-xs leading-5" style={{ color: MUTED }}>{sub}{sub && link ? " " : ""}{link && <button type="button" onClick={link.onClick} className="font-medium text-[#14213d] underline-offset-2 hover:underline focus-visible:underline">{link.label}</button>}</p>}
+    {(sub || link) && <p className="mt-1 text-xs leading-5" style={{ color: MUTED }}>{sub}{sub && link ? " " : ""}{link && <button type="button" onClick={link.onClick} className="tap relative font-medium text-[#14213d] underline-offset-2 hover:underline focus-visible:underline">{link.label}</button>}</p>}
     <div className="mt-4">{children}</div>
   </section>;
 }
 
 function Empty({ shape }: { shape: "donut" | "list" }) {
   return <div role="img" aria-label={EMPTY_CHART} className="flex flex-col items-center justify-center gap-3 py-6">
-    {shape === "donut" ? <svg width="120" height="120" viewBox="0 0 120 120" aria-hidden="true"><circle cx="60" cy="60" r="44" fill="none" stroke="#EBECF0" strokeWidth="22" /></svg>
-      : <div aria-hidden="true" className="w-full space-y-2">{[0, 1, 2].map((i) => <div key={i} className="h-8 rounded bg-[#F4F5F7]" />)}</div>}
+    {shape === "donut" ? <svg data-empty-deco width="120" height="120" viewBox="0 0 120 120" aria-hidden="true"><circle cx="60" cy="60" r="44" fill="none" stroke="#EBECF0" strokeWidth="22" /></svg>
+      : <div data-empty-deco aria-hidden="true" className="w-full space-y-2">{[0, 1, 2].map((i) => <div key={i} className="h-8 rounded bg-[#F4F5F7]" />)}</div>}
     <p className="text-xs" style={{ color: MUTED }}>{EMPTY_CHART}</p>
   </div>;
 }
