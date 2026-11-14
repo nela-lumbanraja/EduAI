@@ -131,7 +131,7 @@ def test_info_events_are_never_counted_as_indications(tmp_path, monkeypatch):
             casing.configure_rules({"STUDENT_SPEECH": {"min_count": 1}, "MEDIA_SOUND": {"min_count": 1},
                                     "WHISPER": {"min_count": 1}})
             sid = uid(c, "siswa1@gmail.com")
-            hp = {"Authorization": "Bearer " + c.post("/api/auth/login", json={"email": "pengawas1@gmail.com", "password": "123456"}).json()["token"]}
+            hp = {"Authorization": "Bearer " + c.post("/api/auth/login", json={"email": "pengawas1@gmail.com", "password": "123456", "role": "pengawas"}).json()["token"]}
             evs = []
             for i, (ind, st) in enumerate([("STUDENT_SPEECH", "BICARA_SISWA"), ("MEDIA_SOUND", "MUSIK_MEDIA"),
                                            ("WHISPER", "BISIKAN")] * 3):

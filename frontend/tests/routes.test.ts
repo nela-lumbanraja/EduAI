@@ -33,7 +33,9 @@ test("'Kembali ke Dasbor' opens the dashboard of the account's role", () => {
 test("login errors are Indonesian and never reveal whether the account exists", () => {
   const unknown = authErrorMessage(401, "Email atau kata sandi salah.");
   assert.equal(unknown, "Email atau kata sandi salah.");
-  for (const s of [401, 403, 404]) assert.equal(authErrorMessage(s, "User not found / akun nonaktif"), unknown);
+  for (const s of [401, 404]) assert.equal(authErrorMessage(s, "User not found / akun nonaktif"), unknown);
+  // 403 = correct password but another role than the one chosen on the portal (never sent for unknown accounts)
+  assert.equal(authErrorMessage(403, "x"), "Role akun tidak sesuai dengan pilihan login. Silakan pilih role yang benar.");
   assert.equal(authErrorMessage(422, "Data yang dikirim tidak valid: value is not a valid email address"), "Periksa kembali email dan kata sandi.");
   assert.match(authErrorMessage(429, ""), /Terlalu banyak percobaan/);
   assert.match(authErrorMessage(0, "Failed to fetch"), /tidak dapat dihubungi/);

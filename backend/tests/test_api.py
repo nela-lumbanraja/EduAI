@@ -65,8 +65,10 @@ def client(tmp_path, monkeypatch):
         yield c
 
 
-def login(c, email):
-    r = c.post("/api/auth/login", json={"email": email, "password": "123456"})
+def login(c, email, role=None):
+    # The portal always sends the chosen role; tests use the account's real role unless one is given.
+    role = role or c.app.state.db.one("SELECT role FROM users WHERE email=?", (email.strip().lower(),))["role"]
+    r = c.post("/api/auth/login", json={"email": email, "password": "123456", "role": role})
     assert r.status_code == 200, r.text
     return {"Authorization": f"Bearer {r.json()['token']}"}
 
@@ -108,7 +110,7 @@ def test_health_reports_school_name(tmp_path, monkeypatch, value, expected):
 
 
 def test_login_register_and_limits(client):
-    assert client.post("/api/auth/login", json={"email": "pengawas1@gmail.com", "password": "salah"}).status_code == 401
+    assert client.post("/api/auth/login", json={"email": "pengawas1@gmail.com", "password": "salah", "role": "pengawas"}).status_code == 401
     h = login(client, "pengawas1@gmail.com")
     me = client.get("/api/auth/me", headers=h).json()
     assert me["role"] == "pengawas" and me["role_label"] == "Pengawas" and "password_hash" not in me
@@ -119,8 +121,8 @@ def test_login_register_and_limits(client):
     r = client.post("/api/auth/register", json={"email": "siswa9@gmail.com", "password": "123456", "name": "Sari"})
     assert r.status_code == 201 and r.json()["user"]["role"] == "siswa"
     for _ in range(5):
-        client.post("/api/auth/login", json={"email": "admin1@gmail.com", "password": "nope"})
-    assert client.post("/api/auth/login", json={"email": "admin1@gmail.com", "password": "123456"}).status_code == 429
+        client.post("/api/auth/login", json={"email": "admin1@gmail.com", "password": "nope", "role": "admin"})
+    assert client.post("/api/auth/login", json={"email": "admin1@gmail.com", "password": "123456", "role": "admin"}).status_code == 429
 
 
 def test_role_based_access(client):

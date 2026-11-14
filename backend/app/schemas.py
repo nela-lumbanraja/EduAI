@@ -9,12 +9,18 @@ INDICATORS = ("FACE_ABSENT", "MULTIPLE_PERSONS", "HEAD_TURN", "HEAD_TURN_REPEATE
 STATES = ("no_data", "warming_up", "normal", "indication", "cannot_analyze", "model_unavailable")
 
 
-class LoginIn(BaseModel):
+class Credentials(BaseModel):
     email: str = Field(min_length=3, max_length=200)
     password: str = Field(min_length=1, max_length=200)
 
 
-class RegisterIn(LoginIn):
+class LoginIn(Credentials):
+    # Required: the role chosen on the login portal (Siswa portal = "siswa", staff portal = the selected tab).
+    # The backend compares it with the account's role in the database; a request without it is rejected (422).
+    role: Literal["siswa", "pengawas", "penyelenggara", "admin", "sekolah"]
+
+
+class RegisterIn(Credentials):
     name: str = Field(default="", max_length=120)
     password: str = Field(min_length=6, max_length=200)
 

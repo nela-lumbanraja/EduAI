@@ -12,7 +12,7 @@ def test_admin_edits_name_email_role_status_and_it_is_audited(client):
     r = edit(client, ha, "sekolah1@gmail.com", {"name": "  Maya  Sari Baru ", "email": " Maya.Baru@Sekolah.id "})
     assert r.status_code == 200, r.text
     assert r.json()["name"] == "Maya Sari Baru" and r.json()["email"] == "maya.baru@sekolah.id"
-    assert client.post("/api/auth/login", json={"email": "maya.baru@sekolah.id", "password": "123456"}).status_code == 200   # new login email
+    assert client.post("/api/auth/login", json={"email": "maya.baru@sekolah.id", "password": "123456", "role": "sekolah"}).status_code == 200   # new login email
     r = edit(client, ha, "penyelenggara1@gmail.com", {"role": "sekolah"})
     assert r.status_code == 200 and r.json()["role"] == "sekolah" and r.json()["role_label"] == "Pihak Sekolah"
     hs = login(client, "siswa3@gmail.com")
@@ -94,7 +94,7 @@ def test_admin_adds_each_role_and_the_account_can_log_in(client):
         u = r.json()
         assert u["email"] == email and u["role"] == role and u["active"] is True and u["name"] == f"Akun {role}"
         assert (u["nis"], u["class_name"]) == ((extra.get("nis"), extra.get("class_name")) if role == "siswa" else (None, None))
-        r = client.post("/api/auth/login", json={"email": email, "password": "rahasia-123"})
+        r = client.post("/api/auth/login", json={"email": email, "password": "rahasia-123", "role": role})
         assert r.status_code == 200 and r.json()["user"]["role"] == role                     # can log in with the initial password
     actions = [a["action"] for a in client.app.state.db.all("SELECT action FROM audit WHERE action LIKE 'Menambah pengguna%' ORDER BY id")]
     assert actions == ["Menambah pengguna (Siswa)", "Menambah pengguna (Pengawas)", "Menambah pengguna (Penyelenggara Ujian)",

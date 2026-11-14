@@ -37,6 +37,9 @@ export function dashboardKind(role: Role): DashboardKind {
 }
 
 /** Login/registration errors in Indonesian. A failed login never says whether the account exists. */
+/** Login refused by the backend because the chosen portal role is not the account's role. */
+export const ROLE_MISMATCH = "Role akun tidak sesuai dengan pilihan login. Silakan pilih role yang benar.";
+
 export function authErrorMessage(status: number, serverMessage: string, register = false): string {
   if (status === 0) return "Server EduAI tidak dapat dihubungi. Periksa koneksi Anda, lalu coba lagi.";
   if (status === 429) return "Terlalu banyak percobaan masuk. Coba lagi dalam 5 menit.";
@@ -45,7 +48,8 @@ export function authErrorMessage(status: number, serverMessage: string, register
     if (status === 422) return "Periksa kembali nama, email, dan kata sandi.";
     return serverMessage || "Pendaftaran gagal. Coba lagi beberapa saat lagi.";
   }
-  if (status === 401 || status === 403 || status === 404) return "Email atau kata sandi salah.";
+  if (status === 403) return ROLE_MISMATCH;             // correct password, but not the role chosen on the portal
+  if (status === 401 || status === 404) return "Email atau kata sandi salah.";
   if (status === 400 || status === 422) return "Periksa kembali email dan kata sandi.";
   return "Masuk gagal. Coba lagi beberapa saat lagi.";
 }

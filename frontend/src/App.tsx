@@ -231,8 +231,9 @@ const caseTone = (c: CaseSummary) => (c.unreviewed_count > 0 ? "amber" : reviewT
 const scoreText = (e: AIEvent) => (e.score == null ? "—" : `${Math.round(e.score * 100)}%`);
 const examTime = (e: Exam) => { const { end } = examWindow(e); return `${e.start_time.replace(":", ".")}–${end.toTimeString().slice(0, 5).replace(":", ".")} WIB`; };
 
-// Tab peran di portal Sekolah hanya penanda: peran sebenarnya selalu mengikuti akun dari backend.
-const STAFF_TABS = ["Penyelenggara", "Pengawas", "Admin"];
+// Tab peran di portal staf: dikirim ke backend saat login dan dicocokkan dengan peran akun di database.
+const STAFF_TABS = ["Penyelenggara", "Pengawas", "Admin", "Sekolah"];
+const STAFF_TAB_ROLE: Record<string, RoleCode> = { Penyelenggara: "penyelenggara", Pengawas: "pengawas", Admin: "admin", Sekolah: "sekolah" };
 
 type Portal = "siswa" | "sekolah";
 
@@ -406,7 +407,7 @@ function Login({ go, portal = "siswa" }: { go: (s: Screen) => void; portal?: Por
   const [show, setShow] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [staffTab, setStaffTab] = useState(STAFF_TABS[0]);
+  const [staffTab, setStaffTab] = useState(portal === "sekolah" ? "Sekolah" : STAFF_TABS[0]);   // Beranda "Sekolah" -> tab Sekolah
   const student = mode === "siswa";
   const signup = student && register;               // self-registration exists for students only
 
@@ -417,7 +418,7 @@ function Login({ go, portal = "siswa" }: { go: (s: Screen) => void; portal?: Por
     setBusy(true);
     setError("");
     try {
-      const res = signup ? await api.register(name.trim(), mail, password) : await api.login(mail, password);
+      const res = signup ? await api.register(name.trim(), mail, password) : await api.login(mail, password, student ? "siswa" : STAFF_TAB_ROLE[staffTab]);
       session.set(res.token, res.user);
       setUser(res.user);
       setRole(ROLE_LABEL[res.user.role]);             // the account decides the role, never the tab
@@ -455,8 +456,8 @@ function Login({ go, portal = "siswa" }: { go: (s: Screen) => void; portal?: Por
           <h1 className="mt-3 text-center font-sans text-[32px] font-bold leading-[1.18] tracking-[-1px] text-navy sm:text-[40px]">{title}</h1>
           <p className="mt-1.5 text-center text-base leading-[1.45] text-[#778392] sm:text-lg">{lead}</p>
 
-          {!student && <div className="mt-[18px] grid grid-cols-3 rounded-3xl bg-[#f0f2f5] p-1" role="group" aria-label="Peran staf" title="Peran mengikuti akun yang masuk">
-            {STAFF_TABS.map((t) => <button key={t} type="button" aria-pressed={staffTab === t} onClick={() => setStaffTab(t)} className={`min-h-11 rounded-[22px] px-1 text-xs min-[1200px]:px-2 min-[1200px]:text-sm ${staffTab === t ? "bg-navy font-bold text-white" : "text-navy"}`}>{t}</button>)}
+          {!student && <div className="mt-[18px] grid grid-cols-2 rounded-3xl bg-[#f0f2f5] p-1 min-[400px]:grid-cols-4" role="group" aria-label="Peran staf" title="Pilih peran sesuai akun Anda">
+            {STAFF_TABS.map((t) => <button key={t} type="button" aria-pressed={staffTab === t} onClick={() => setStaffTab(t)} className={`min-h-11 rounded-[22px] px-0.5 text-xs ${staffTab === t ? "bg-navy font-bold text-white" : "text-navy"}`}>{t}</button>)}
           </div>}
 
           {signup && <label className={label}>Nama lengkap<input value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" className={`${field} font-normal`} placeholder="Nama sesuai data sekolah" /></label>}
@@ -491,7 +492,7 @@ function Sidebar({ active, go }: { active: Screen; go: (s: Screen) => void }) {
   const unreviewed = BADGE_ROLES.includes(role) ? notify.items.filter((c) => caseStatus(c) === "belum").length : 0;
   const badge = (id: Screen) => (id === "indications" ? badgeText(unreviewed) : null);
   const labelOf = (item: NavItem) => { const b = badge(item.id as Screen); return b ? `${item.label}, ${b} belum ditinjau` : item.label; };
-  const logout = () => { setMore(false); session.clear(); go("login"); };
+  const logout = () => { setMore(false); const t = session.token(); if (t) void api.logout(t); session.clearAll(); go("login"); };
   const open = (id: Screen) => { setMore(false); go(id); };
   const profileOn = active === PROFILE_SCREEN;
   const { bar, more: rest } = mobileSplit(nav) as { bar: typeof nav; more: typeof nav };
@@ -2153,15 +2154,33 @@ function useIndicationNotifications(user: User | null): Notify {
 }
 
 export default function App() {
-  const stored = session.user();
-  const [user, setUser] = useState<User | null>(stored);
-  const [screen, setScreen] = useState<Screen>(() => {
-    const first = initialScreen(window.location.pathname, !!(stored && session.token()));
-    return first === "dashboard" && stored && opensIndications(window.location.search, ROLE_LABEL[stored.role]) ? "indications" : first;
-  });
+  // The stored session only says that a token exists. Who the user is and which role they have always comes from
+  // the server (/auth/me) before any dashboard is shown; a role edited in sessionStorage is never trusted.
+  const hasToken = !!session.token();
+  const [user, setUser] = useState<User | null>(null);
+  const [checking, setChecking] = useState(hasToken);
+  const [checkError, setCheckError] = useState("");
+  const [checkRun, setCheckRun] = useState(0);
+  const [screen, setScreen] = useState<Screen>(() => initialScreen(window.location.pathname, hasToken));
   const [portal, setPortal] = useState<Portal>("siswa");
   const toLogin = useCallback(() => setScreen("login"), []);
-  const [role, setRole] = useState<Role>(stored ? ROLE_LABEL[stored.role] : "Pengawas");
+  const [role, setRole] = useState<Role>("Pengawas");
+  useEffect(() => {
+    if (!session.token()) return;               // no session: `checking` already started as false
+    let stop = false;
+    api.me().then((me) => {
+      if (stop) return;
+      const token = session.token();
+      if (token) session.set(token, me);
+      const verified = ROLE_LABEL[me.role];
+      setUser(me); setRole(verified);
+      setScreen(opensIndications(window.location.search, verified) ? "indications" : "dashboard");
+    }).catch((e) => {
+      // 401: the request helper already cleared the session and opened Login. Other errors: ask to retry.
+      if (!stop && !(e instanceof ApiError && e.status === 401)) setCheckError((e as Error).message);
+    }).finally(() => { if (!stop) setChecking(false); });
+    return () => { stop = true; };
+  }, [checkRun]);
   const [examId, setExamId] = useState<number | null>(null);
   const [studentId, setStudentId] = useState<number | null>(null);
   const [eventId, setEventId] = useState<string | null>(null);
@@ -2176,7 +2195,13 @@ export default function App() {
   // Role comes from the server; going through setRole keeps the original context API.
   const setRoleAndGo = (r: Role) => setRole(r);
   let page: ReactNode;
-  if (screen === "beranda") page = <Landing user={user} start={(next) => { setPortal(next); setScreen("loading"); window.scrollTo(0, 0); }} toDashboard={() => go("dashboard")} />;
+  if (checking || checkError) page = <main className="grid min-h-screen place-items-center bg-paper px-6 text-center text-navy" aria-live="polite">
+    {checking ? <p className="text-sm text-[#687483]">Memeriksa sesi…</p> : <div className="max-w-sm">
+      <p className="text-sm text-[#536173]">Sesi belum dapat diperiksa: {checkError}</p>
+      <div className="mt-4 flex justify-center gap-3"><Button onClick={() => { setCheckError(""); setChecking(true); setCheckRun((n) => n + 1); }}>Coba lagi</Button><Button variant="secondary" onClick={() => { session.clearAll(); setCheckError(""); setScreen("login"); }}>Masuk ulang</Button></div>
+    </div>}
+  </main>;
+  else if (screen === "beranda") page = <Landing user={user} start={(next) => { setPortal(next); setScreen("loading"); window.scrollTo(0, 0); }} toDashboard={() => go("dashboard")} />;
   else if (screen === "loading" && !user) page = <LoginLoading onComplete={toLogin} />;
   else if (screen === "login" || !user) page = <Login key={portal} portal={portal} go={(s) => setScreen(s)} />;
   else if (screen === "dashboard") page = <Dashboard go={go} />;

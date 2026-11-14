@@ -313,8 +313,16 @@ def layout_ok(pg, name):
           f"scrollWidth {o['scroll']}/{o['client']}" + (f", {o['bad']}" if o["bad"] else ""))
 
 
-def login(pg, email, portal="Portal Siswa"):
-    pg.goto(BASE + "/"); pg.get_by_role("button", name=portal, exact=True).click(); pg.wait_for_selector("#login-password")
+STAFF_TAB = {"penyelenggara": "Penyelenggara", "pengawas": "Pengawas", "admin": "Admin", "sekolah": "Sekolah"}
+
+
+def login(pg, email, portal=None):
+    # The backend checks the portal role: students use Portal Siswa, staff use "Sekolah" plus the tab of their role.
+    role = email.split("@")[0].rstrip("0123456789")
+    staff = role in STAFF_TAB
+    pg.goto(BASE + "/"); pg.get_by_role("button", name=portal or ("Sekolah" if staff else "Portal Siswa"), exact=True).click(); pg.wait_for_selector("#login-password")
+    if staff:
+        pg.locator("[aria-label='Peran staf']").get_by_role("button", name=STAFF_TAB[role], exact=True).click()
     pg.fill("input[type=email]", email); pg.fill("#login-password", PASSWORD); pg.click("button[type=submit]")
     pg.wait_for_selector("header [data-page-title]")
 
@@ -515,7 +523,7 @@ try:
         con.execute("UPDATE exams SET monitoring_active=1 WHERE id=1"); con.commit(); con.close()
         import httpx
         api_b = f"http://127.0.0.1:{BPORT}"
-        tok = httpx.post(f"{api_b}/api/auth/login", json={"email": "siswa2@gmail.com", "password": PASSWORD}, timeout=10).json()["token"]
+        tok = httpx.post(f"{api_b}/api/auth/login", json={"email": "siswa2@gmail.com", "password": PASSWORD, "role": "siswa"}, timeout=10).json()["token"]
         hs2 = {"Authorization": f"Bearer {tok}"}
         beat2 = lambda cam: httpx.post(f"{api_b}/api/exams/1/presence", headers=hs2, json={"camera_on": cam, "mic_on": True, "connection": "baik"}, timeout=10).status_code  # noqa: E731
         codes = [beat2(True), beat2(False)]
@@ -1098,8 +1106,8 @@ try:
         pg.fill(f"{add} input[name=email]", "pengawas.uji@sekolah.id")
         pg.locator(add).get_by_role("button", name="Tambah", exact=True).click(); pg.wait_for_selector("[role=status]:has-text('ditambahkan')", timeout=8000)
         import httpx
-        logins = [httpx.post(f"http://127.0.0.1:{BPORT}/api/auth/login", json={"email": e, "password": p}, timeout=10).json().get("user", {}).get("role")
-                  for e, p in (("siswa.uji@sekolah.id", "rahasia-123"), ("pengawas.uji@sekolah.id", pwd))]
+        logins = [httpx.post(f"http://127.0.0.1:{BPORT}/api/auth/login", json={"email": e, "password": p, "role": r}, timeout=10).json().get("user", {}).get("role")
+                  for e, p, r in (("siswa.uji@sekolah.id", "rahasia-123", "siswa"), ("pengawas.uji@sekolah.id", pwd, "pengawas"))]
         check("Tambah User: akun baru bisa masuk dengan kata sandi awal (termasuk 'Buat acak', 12 karakter)", logins == ["siswa", "pengawas"] and len(pwd) == 12, str(logins))
         audit_pw = sqlite3.connect(WORK / "backend" / "eduai-e2e.sqlite3").execute("SELECT count(*) FROM audit WHERE target LIKE ? OR action LIKE ?", (f"%{pwd}%", "%rahasia%")).fetchone()[0]
         check("Tambah User: kata sandi tidak tercatat di log audit", audit_pw == 0)

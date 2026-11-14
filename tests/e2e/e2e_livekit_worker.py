@@ -74,7 +74,7 @@ def main():
 
     if a.mode == "kill" and worker_pids() is None:
         raise SystemExit("kill mode needs psutil (pip install psutil) or pgrep")
-    tp = call("POST", "/auth/login", body={"email": "pengawas1@gmail.com", "password": "123456"})["token"]
+    tp = call("POST", "/auth/login", body={"email": "pengawas1@gmail.com", "password": "123456", "role": "pengawas"})["token"]
     args = ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream",
             f"--use-file-for-fake-video-capture={os.path.abspath(a.y4m)}"]
     with sync_playwright() as pw:

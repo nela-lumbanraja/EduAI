@@ -43,8 +43,25 @@ def verify_password(password: str, stored: str) -> bool:
 def create_token(settings, user: dict) -> str:
     now = datetime.now(timezone.utc)
     payload = {"sub": str(user["id"]), "role": user["role"], "iat": now,
-               "exp": now + timedelta(minutes=settings.jwt_ttl_min)}
+               "exp": now + timedelta(minutes=settings.jwt_ttl_min),
+               "jti": secrets.token_urlsafe(18)}          # unique id, so this one session can be revoked (logout)
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
+
+
+def token_key(payload: dict) -> str:
+    """Revocation key of a session token. Tokens issued before `jti` existed are still accepted until they expire
+    (students in a running exam keep their session); they are revoked by user + issue time instead."""
+    return str(payload.get("jti") or f"legacy:{payload.get('sub')}:{payload.get('iat')}")
+
+
+def revoke_token(db, payload: dict, user_id: int):
+    """Server-side logout: the token is rejected by every protected endpoint from now on."""
+    now = datetime.now(timezone.utc)
+    exp = payload.get("exp")
+    expires = datetime.fromtimestamp(exp, timezone.utc) if isinstance(exp, (int, float)) else now + timedelta(days=1)
+    db.run("DELETE FROM revoked_tokens WHERE expires_at < ?", (now.isoformat(timespec="milliseconds"),))   # prune
+    db.run("INSERT OR IGNORE INTO revoked_tokens (jti,user_id,revoked_at,expires_at) VALUES (?,?,?,?)",
+           (token_key(payload), user_id, now.isoformat(timespec="milliseconds"), expires.isoformat(timespec="milliseconds")))
 
 
 def public_user(u: dict) -> dict:
@@ -61,9 +78,12 @@ def get_current_user(request: Request, authorization: str = Header(default="")) 
         payload = jwt.decode(token, st.settings.jwt_secret, algorithms=["HS256"])
     except jwt.PyJWTError:
         raise HTTPException(401, "Sesi tidak valid atau kedaluwarsa. Silakan masuk kembali.")
+    if st.db.one("SELECT 1 FROM revoked_tokens WHERE jti = ?", (token_key(payload),)):
+        raise HTTPException(401, "Sesi sudah berakhir (keluar). Silakan masuk kembali.")
     user = st.db.one("SELECT * FROM users WHERE id = ? AND active = 1", (int(payload["sub"]),))
     if not user:
         raise HTTPException(401, "Akun tidak aktif.")
+    request.state.token_payload = payload       # for /auth/logout
     return user
 
 

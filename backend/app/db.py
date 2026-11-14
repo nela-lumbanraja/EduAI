@@ -145,6 +145,15 @@ CREATE TABLE IF NOT EXISTS workers (
   exam_id INTEGER PRIMARY KEY, pid INTEGER, started_at TEXT, last_heartbeat TEXT,
   models_json TEXT, students INTEGER
 );
+-- Server-side logout: sessions (JWT) revoked before they expire. jti = token id, or "legacy:<user>:<iat>" for
+-- tokens issued before jti existed. Rows are only needed until expires_at and are pruned on the next logout.
+-- Added with CREATE TABLE IF NOT EXISTS: existing databases get the empty table, no other table or row changes.
+CREATE TABLE IF NOT EXISTS revoked_tokens (
+  jti TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  revoked_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
 """
 
 

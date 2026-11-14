@@ -20,10 +20,13 @@ from .livekit_service import make_token, room_name, student_identity
 from .schemas import (ConsentIn, MeetingTokenIn, SebSettingsIn, SebVerifyIn, EventsIn, ExamIn, ExamPatch, HeartbeatIn, LoginIn, MonitoringStartIn, NoteIn,
                       PresenceIn, ProfileIn, RegisterIn, UserCreate, UserPatch, ReviewIn, ReviewPatch, CaseReviewIn, StatusIn, AudioScoresIn)
 from .security import (ROLE_LABELS, STAFF, create_token, get_current_user, hash_password, public_user, require_roles,
-                       require_service_key, verify_password)
+                       require_service_key, revoke_token, verify_password)
 
 log = logging.getLogger("eduai.api")
 router = APIRouter(prefix="/api")
+
+# Login: the role chosen on the portal does not match the account (shown to the user as is).
+ROLE_MISMATCH = "Role akun tidak sesuai dengan pilihan login. Silakan pilih role yang benar."
 ONLINE_S = 20.0
 REVIEWERS = ("pengawas", "penyelenggara", "admin")
 MONITOR_ROLES = ("pengawas", "penyelenggara", "admin")
@@ -209,9 +212,23 @@ def login(body: LoginIn, request: Request):
     if not user or not verify_password(body.password, user["password_hash"]):
         st.limiter.fail(email)
         raise HTTPException(401, "Email atau kata sandi salah.")
+    # Role check after the password: a wrong password never reveals the account's role. No token is issued.
+    if user["role"] != body.role:
+        store.audit(st.db, user, f"Login ditolak: role tidak sesuai (dipilih {ROLE_LABELS[body.role]})", "Portal EduAI",
+                    status="Ditolak")
+        raise HTTPException(403, ROLE_MISMATCH)
     st.limiter.reset(email)
     store.audit(st.db, user, "Login", "Portal EduAI")
     return {"token": create_token(st.settings, user), "user": public_user(user)}
+
+
+@router.post("/auth/logout")
+def logout(request: Request, user=Depends(get_current_user)):
+    """Server-side logout: this session token is revoked and rejected by every protected endpoint."""
+    st = _st(request)
+    revoke_token(st.db, request.state.token_payload, user["id"])
+    store.audit(st.db, user, "Logout", "Portal EduAI")
+    return {"ok": True}
 
 
 @router.post("/auth/register", status_code=201)

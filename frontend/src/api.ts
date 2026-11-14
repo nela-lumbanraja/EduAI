@@ -134,6 +134,8 @@ export const session = {
   user(): User | null { try { const raw = sessionStorage.getItem(USER_KEY); return raw ? JSON.parse(raw) as User : null; } catch { return null; } },
   set(token: string, user: User) { try { sessionStorage.setItem(TOKEN_KEY, token); sessionStorage.setItem(USER_KEY, JSON.stringify(user)); } catch { /* private mode */ } },
   clear() { try { sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(USER_KEY); } catch { /* ignore */ } },
+  /** Logout: every session value of this tab (token, user, notification state), not only the token. */
+  clearAll() { try { sessionStorage.clear(); } catch { /* ignore */ } },
 };
 
 let onUnauthorized: () => void = () => undefined;
@@ -175,7 +177,12 @@ const qs = (o: Record<string, string | number | undefined | null>) => {
 export const api = {
   health: () => request<Health>("GET", "/api/health"),
   aiHealth: () => request<AIHealth>("GET", "/api/ai/health"),
-  login: (email: string, password: string) => request<{ token: string; user: User }>("POST", "/api/auth/login", { email, password }),
+  // The portal role is required: the backend refuses the login (403) when it is not the account's role.
+  login: (email: string, password: string, role: RoleCode) => request<{ token: string; user: User }>("POST", "/api/auth/login", { email, password, role }),
+  /** The signed-in account as the server sees it: the only source of the user's role. */
+  me: () => request<User>("GET", "/api/auth/me"),
+  /** Server-side logout: revokes this token. Sent with the token explicitly because the local session is cleared at once. */
+  logout: (token: string) => fetch(`${BASE}/api/auth/logout`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, keepalive: true }).then(() => undefined, () => undefined),
   updateMe: (name: string) => request<User>("PATCH", "/api/auth/me", { name }),
   register: (name: string, email: string, password: string) => request<{ token: string; user: User }>("POST", "/api/auth/register", { name, email, password }),
   users: (role?: RoleCode) => request<UserRow[]>("GET", `/api/users${qs({ role })}`),
