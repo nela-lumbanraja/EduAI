@@ -9,6 +9,8 @@ $assets = @{
   "face_landmarker.task"          = "$base/face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
   "efficientdet_lite0.tflite"     = "$base/object_detector/efficientdet_lite0/int8/latest/efficientdet_lite0.tflite"
   "yamnet.tflite"                 = "$base/audio_classifier/yamnet/float32/latest/yamnet.tflite"
+  # BOOK_VISIBLE: CLIP ViT-B/32 image encoder (ONNX int8, ~89 MB, MIT licence). Needs: pip install onnxruntime
+  "clip_vit_b32_vision_quantized.onnx" = "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/vision_model_quantized.onnx"
 }
 foreach ($name in $assets.Keys) {
   $dest = Join-Path "models" $name

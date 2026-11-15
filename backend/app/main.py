@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import cases as casing
-from . import api, device, exam_status, report, store, summary
+from . import api, device, exam_status, lockdown, report, store, summary
 from .ai_service import AIManager
 from .api import router
 from .db import Database
@@ -45,6 +45,7 @@ async def _maintenance(app: FastAPI):
             await app.state.ai.reap_idle()
             await app.state.ai.sweep_silent()
             device.sweep_offline(app.state, api.ONLINE_S)       # camera/mic indications of students who went offline
+            lockdown.sweep(app.state.db, api.ONLINE_S)          # SEB verification gone stale / lost, exams that ended
             await asyncio.to_thread(_check_summaries, app)
             if tick % PURGE_EVERY_S == 0:
                 await asyncio.to_thread(report.run_retention, app.state)
@@ -78,10 +79,14 @@ def create_app(settings=None, perception_factory=None) -> FastAPI:
                                                 settings.evidence_key or None)
         app.state.workers = WorkerManager(settings)
         app.state.ai = AIManager(settings, db, app.state.evidence_store)
+        # Config + model inventory now (fast); loading, warm-up and output checks in a thread, so login and the
+        # information pages work at once while monitoring waits for state READY (GET /api/ai/status).
+        # Each server process (uvicorn --workers N) loads its own models.
         await asyncio.to_thread(app.state.ai.init, perception_factory)
+        loader = asyncio.create_task(asyncio.to_thread(app.state.ai.load_models)) if app.state.ai.needs_loading else None
         for n in settings.notes:
             log.warning(n)
-        log.info("AI available=%s %s", app.state.ai.available, app.state.ai.reason)
+        log.info("AI state=%s %s", app.state.ai.state, app.state.ai.reason)
         db.run("UPDATE exams SET monitoring_active=0")      # worker processes do not survive a restart
         for r in db.all("SELECT DISTINCT exam_id FROM events WHERE source='livekit' AND status='open'"):
             store.close_open_events(db, r["exam_id"], "livekit", " (backend dimulai ulang)")
@@ -98,6 +103,8 @@ def create_app(settings=None, perception_factory=None) -> FastAPI:
             yield
         finally:
             task.cancel()
+            if loader is not None:
+                await loader                              # a model load in progress cannot be interrupted safely
             await asyncio.to_thread(app.state.workers.stop_all)
             await app.state.ai.shutdown()
             db.close()

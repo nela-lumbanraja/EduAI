@@ -28,6 +28,15 @@ models:
     path: models/efficientdet_lite0.tflite
     enabled: true          # optional: needed for phone / extra-person signals
     min_score: 0.4
+  book_classifier:
+    # BOOK_VISIBLE helper: CLIP ViT-B/32 zero-shot (book_clip.py). The COCO detector above does not see a book held
+    # up or opened at a webcam (a spiral notebook scored < 0.05 on 15 Nov 2026). Needs `onnxruntime`; download the
+    # image encoder with scripts/download_models.py --only book. Missing model or package = off (COCO only).
+    path: models/clip_vit_b32_vision_quantized.onnx
+    prompts_path: models/clip_book_prompts.npz   # precomputed text side (scripts/build_book_prompts.py)
+    enabled: true
+    every_s: 0.5           # ~90 ms per run on a 4-core laptop CPU
+    threads: 2
   audio_classifier:
     # YAMNet (MediaPipe Audio Classifier). It runs in the STUDENT'S BROWSER; the backend only serves
     # the file and receives scores. Download: scripts/download_models.py or the URL in the README.
@@ -83,7 +92,10 @@ indicators:
     # Faster since 10 Nov 2026 (request): lower score and shorter persistence so a book held up or opened is caught
     # sooner. More false positives are possible; every indication is still reviewed by the supervisor.
     enabled: true
-    min_score: 0.35
+    min_score: 0.35        # COCO "book" score (object detector)
+    # CLIP P(book) (models.book_classifier). Development check on 15 Nov 2026, not a validation: book frames 0.83-0.93,
+    # frames without a book 0.02-0.34 (highest: bookshelf behind the student). Calibrate on pilot recordings.
+    clip_min_score: 0.6
     min_duration_s: 1.5
     release_s: 1.5
     cooldown_s: 30.0

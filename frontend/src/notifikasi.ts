@@ -21,11 +21,11 @@ export type NotifFilter = "semua" | "belum" | "hp-buku" | "orang" | "wajah-menol
 export const NOTIF_FILTERS: { key: NotifFilter; label: string }[] = [
   { key: "semua", label: "Semua" }, { key: "belum", label: "Belum ditinjau" }, { key: "hp-buku", label: "HP/buku" },
   { key: "orang", label: "Orang lain" }, { key: "wajah-menoleh", label: "Wajah/menoleh" }, { key: "suara", label: "Suara" },
-  { key: "perangkat", label: "Kamera/mikrofon mati" },
+  { key: "perangkat", label: "Perangkat & lockdown" },
   { key: "tidak-terbaca", label: "Tidak dapat dianalisis" },
 ];
 const FILTER_KINDS: Partial<Record<NotifFilter, JenisKey[]>> = {
-  "hp-buku": ["hp", "buku"], orang: ["orang"], "wajah-menoleh": ["wajah", "menoleh"], suara: ["suara", "media"], perangkat: ["kamera", "mikrofon"],
+  "hp-buku": ["hp", "buku"], orang: ["orang"], "wajah-menoleh": ["wajah", "menoleh"], suara: ["suara", "media"], perangkat: ["kamera", "mikrofon", "lockdown"],
 };
 
 // ---------------------------------------------------------------- rows: one per student and exam

@@ -3,7 +3,7 @@
 // prompts and the video to the supervisor must still be tried on real phones (see frontend/README.md).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { broadcastText, CAMERA, cameraWorking, captureAttempts, detectPlatform, frameAdvanced, isInAppBrowser, mediaErrorText, retryWithSimplerRequest } from "../src/mediaSupport.ts";
+import { broadcastText, CAMERA, cameraWorking, captureAttempts, detectPlatform, frameAdvanced, isInAppBrowser, mediaErrorText, retryWithSimplerRequest, insecurePageHint, mediaServerProblem } from "../src/mediaSupport.ts";
 
 const UA = {
   androidChrome: "Mozilla/5.0 (Linux; Android 14; SM-A546E) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.135 Mobile Safari/537.36",
@@ -88,4 +88,32 @@ test("broadcast status: 'received' only after somebody subscribed to the camera"
   assert.match(broadcastText("reconnecting"), /Menyambung ulang/);
   assert.match(broadcastText("sending"), /menunggu pengawas/);
   assert.match(broadcastText("received"), /sudah diterima/);
+});
+
+test("front or back camera: the chosen side is asked for in every attempt, front by default", () => {
+  assert.deepEqual(captureAttempts().map((c) => JSON.stringify(c.video)).every((v) => v.includes('"user"')), true);
+  const back = captureAttempts("environment");
+  assert.ok(back.every((c) => JSON.stringify(c.video).includes('"environment"') && !JSON.stringify(c.video).includes('"user"')));
+  assert.equal(back[2].audio, false);                                     // still a camera when the microphone fails
+});
+
+test("camera needs a secure page: https or localhost; a phone on http://<ip> is told why", () => {
+  assert.equal(insecurePageHint(true, "https:", "ujian.sekolah.sch.id"), null);
+  assert.equal(insecurePageHint(true, "http:", "localhost"), null);
+  const hint = insecurePageHint(false, "http:", "192.168.1.10");
+  assert.ok(hint && hint.includes("http://192.168.1.10") && hint.includes("https://"));
+});
+
+test("video server address seen from the student's device", () => {
+  // localhost / 127.0.0.1 from a phone = the phone itself
+  assert.match(mediaServerProblem("ws://localhost:7880", "ujian.sekolah.sch.id", "https:") ?? "", /perangkat ini sendiri/);
+  assert.match(mediaServerProblem("ws://127.0.0.1:7880", "192.168.1.10", "http:") ?? "", /perangkat ini sendiri/);
+  assert.equal(mediaServerProblem("ws://localhost:7880", "localhost", "http:"), null);          // computer that runs it
+  // ws:// is blocked on an https page
+  assert.match(mediaServerProblem("ws://192.168.1.10:7880", "ujian.sekolah.sch.id", "https:") ?? "", /wss:\/\//);
+  assert.equal(mediaServerProblem("ws://192.168.1.10:7880", "192.168.1.10", "http:"), null);
+  assert.equal(mediaServerProblem("wss://video.sekolah.sch.id", "ujian.sekolah.sch.id", "https:"), null);
+  // Jitsi gives a bare domain
+  assert.equal(mediaServerProblem("meet.sekolah.sch.id", "ujian.sekolah.sch.id", "https:"), null);
+  assert.match(mediaServerProblem("localhost:8443", "ujian.sekolah.sch.id", "https:") ?? "", /localhost/);
 });

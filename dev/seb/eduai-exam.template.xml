@@ -45,6 +45,11 @@
 
   <!-- leaving: only with the quit password set in the Config Tool -->
   <key>allowQuit</key><true/>
+  <!-- leaving after the exam: SEB quits when it loads this address. EduAI gives it to a student only once the server
+       sees the exam as finished. Use a long, unguessable path on the EduAI address and enter the SAME value under
+       "Quit URL" in EduAI (Detail Ujian > Keamanan ujian). Verify both key names in the SEB Config Tool of your version. -->
+  <key>quitURL</key><string>http://localhost:5173/seb-keluar-GANTI-DENGAN-KODE-ACAK</string>
+  <key>quitURLConfirm</key><true/>
 
   <!-- only the EduAI frontend (and the school's Jitsi server, if used) may be loaded -->
   <key>URLFilterEnable</key><true/>

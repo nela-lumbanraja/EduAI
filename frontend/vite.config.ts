@@ -15,9 +15,14 @@ export default defineConfig(({ mode }) => {
   const https = env.VITE_DEV_HTTPS_CERT && env.VITE_DEV_HTTPS_KEY
     ? { cert: readFileSync(env.VITE_DEV_HTTPS_CERT), key: readFileSync(env.VITE_DEV_HTTPS_KEY) }
     : undefined
+  // Camera and microphone for this site only (the same header a production web server should send, see
+  // docs/DEPLOY_HTTPS.md). Pages from other sites embedded here, if any, get neither.
+  const headers = { 'Permissions-Policy': 'camera=(self), microphone=(self), display-capture=()' }
   return {
     plugins: [react(), tailwindcss()],
+    preview: { headers },
     server: {
+      headers,
       https,
       proxy: {
         '/api': { target: env.VITE_API_PROXY || 'http://localhost:8000', changeOrigin: true },

@@ -4,8 +4,8 @@ import type { AIEvent, CaseSummary, Decision, Exam } from "./api.ts";
 import { caseStatus } from "./chartData.ts";
 
 // ---------------------------------------------------------------- kinds the backend detects (backend/app/schemas.py INDICATORS)
-export type JenisKey = "hp" | "orang" | "buku" | "wajah" | "menoleh" | "suara" | "media" | "kamera" | "mikrofon" | "tidak-terbaca";
-export type JenisIcon = "phone" | "users" | "book" | "face-off" | "rotate" | "speaker" | "music" | "video-off" | "mic-off" | "camera-off";
+export type JenisKey = "hp" | "orang" | "buku" | "wajah" | "menoleh" | "suara" | "media" | "kamera" | "mikrofon" | "lockdown" | "tidak-terbaca";
+export type JenisIcon = "phone" | "users" | "book" | "face-off" | "rotate" | "speaker" | "music" | "video-off" | "mic-off" | "shield-off" | "camera-off";
 export type Jenis = { key: JenisKey; label: string; short: string; icon: JenisIcon; codes: string[]; quality?: true };
 
 /** Only kinds the backend can produce. "Keluar dari layar ujian" is not detected by the backend, so it has no button.
@@ -21,6 +21,8 @@ export const JENIS: Jenis[] = [
   // the student switched the camera / microphone off during monitoring (backend app/device.py): an indication
   { key: "kamera", label: "Kamera dimatikan", short: "Kamera", icon: "video-off", codes: ["CAMERA_OFF"] },
   { key: "mikrofon", label: "Mikrofon dimatikan", short: "Mikrofon", icon: "mic-off", codes: ["MIC_OFF"] },
+  // Safe Exam Browser lost during the exam (backend app/lockdown.py): a reason to look, not proof (crash or network too)
+  { key: "lockdown", label: "Lockdown terputus", short: "Lockdown", icon: "shield-off", codes: ["LOCKDOWN_LOST"] },
   { key: "tidak-terbaca", label: "Tidak dapat dianalisis", short: "Tidak terbaca", icon: "camera-off", codes: ["CANNOT_ANALYZE"], quality: true },
 ];
 
@@ -228,7 +230,8 @@ const SLICES: Omit<KindSlice, "value">[] = [
   { key: "menoleh", label: "Kepala menoleh", kinds: ["menoleh"], color: PALETTE[4], icon: "rotate" },
   { key: "suara", label: "Suara orang lain", kinds: ["suara"], color: PALETTE[5], icon: "speaker" },
   { key: "media", label: "Suara media", kinds: ["media"], color: PALETTE[6], icon: "music" },
-  { key: "perangkat", label: "Kamera/mikrofon dimatikan", kinds: ["kamera", "mikrofon"], color: PALETTE[7], icon: "video-off" },
+  // 8 hues at most: lockdown lost joins the device part of the donut; filters and bars keep it separate
+  { key: "perangkat", label: "Kamera/mikrofon mati, lockdown terputus", kinds: ["kamera", "mikrofon", "lockdown"], color: PALETTE[7], icon: "video-off" },
 ];
 /** Cases per kind for the donut (fixed order and colour per kind; status filter already applied to `cases`). */
 export function kindSlices(cases: CaseSummary[]): KindSlice[] {

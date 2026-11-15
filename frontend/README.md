@@ -30,7 +30,7 @@ Desain dan alur halaman dari versi Figma dipertahankan di `src/App.tsx`. Data se
 
 Status: alur siswa sudah diuji dengan **emulasi** Android dan iPhone di Chrome headless, belum di HP sungguhan. Engine-nya tetap Chromium, jadi perilaku khas Safari iOS (WebKit) belum terbukti. Uji di HP nyata dengan langkah di bawah sebelum dipakai untuk ujian.
 
-**Syarat:**
+**Syarat:** (untuk domain sekolah sungguhan lihat [docs/DEPLOY_HTTPS.md](../docs/DEPLOY_HTTPS.md))
 - Kamera di browser HP hanya bisa dibuka lewat **HTTPS**. `http://<ip-pc>:5173` tidak mendapat kamera.
 - Untuk uji lewat Wi-Fi:
   1. Buat sertifikat dengan [mkcert](https://github.com/FiloSottile/mkcert): `mkcert -install`, lalu `mkcert 192.168.x.x localhost`.
@@ -42,8 +42,8 @@ Status: alur siswa sudah diuji dengan **emulasi** Android dan iPhone di Chrome h
 
 **Langkah uji manual (lakukan di Android Chrome dan iPhone Safari):**
 1. Login sebagai siswa, buka **Ujian Saya**, lalu ketuk **Mulai Ujian** pada ujian yang sedang berlangsung.
-2. Saat browser meminta izin, tolak dulu. Pastikan muncul pesan langkah mengizinkan kamera untuk HP itu dan tombol **Coba lagi**. Izinkan lewat pengaturan situs, lalu ketuk **Coba lagi**.
-3. Pastikan yang terbuka **kamera depan** dan lencana "Kamera aktif" muncul. Di iPhone, ketuk layar sekali bila indikator mikrofon diam.
+2. Di Cek Perangkat, ketuk **Aktifkan kamera & mikrofon** (izin baru diminta setelah ketukan ini). Saat browser meminta izin, tolak dulu. Pastikan muncul pesan langkah mengizinkan kamera untuk HP itu dan tombol **Coba lagi**. Izinkan lewat pengaturan situs, lalu ketuk **Coba lagi**.
+3. Pastikan yang terbuka **kamera depan** dan lencana "Kamera aktif" muncul. Di iPhone, ketuk layar sekali bila indikator mikrofon diam. Coba juga **Matikan/Nyalakan kamera**, **Matikan/Nyalakan mikrofon**, dan (bila HP punya dua kamera) **Pakai kamera belakang** lalu kembali ke depan.
 4. Buka aplikasi Kamera atau panggilan video, lalu kembali dan ketuk **Coba lagi**. Pesan "dipakai aplikasi lain" harus hilang.
 5. Lanjut ke persetujuan, lalu ruang ujian. Cek tidak ada yang terpotong, tombol **Keluar**, mikrofon, dan kamera bisa disentuh, dan layar tidak mati sendiri.
 6. Di HP lain atau komputer, login sebagai pengawas lalu buka **Monitoring**. Kamera siswa harus tercatat aktif, status AI harus berjalan, dan bila OpenVidu aktif video langsungnya harus tampil.

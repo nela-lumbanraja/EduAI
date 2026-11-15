@@ -162,7 +162,9 @@ class Baseline:
 
 # BOOK_VISIBLE defaults. Off unless config.yaml has a BOOK_VISIBLE section with enabled: true,
 # because COCO "book" is trained on shelves/tables, not on a book held at a webcam (unvalidated).
-BOOK_DEFAULTS = {"enabled": False, "min_score": 0.5, "min_duration_s": 3.0, "release_s": 2.0, "cooldown_s": 60.0}
+# clip_min_score: CLIP zero-shot P(book) (book_clip.py), which catches a book held up or opened at the webcam.
+BOOK_DEFAULTS = {"enabled": False, "min_score": 0.5, "clip_min_score": 0.6, "min_duration_s": 3.0, "release_s": 2.0,
+                 "cooldown_s": 60.0}
 
 
 # OTHER_VOICE defaults, used when a config file has no OTHER_VOICE section (older configs keep working).
@@ -233,6 +235,7 @@ class EventEngine:
         self.phone_min_score = ind["PHONE_VISIBLE"]["min_score"]
         # BOOK_VISIBLE: optional section; a config without it keeps the indicator off.
         self.book = {**BOOK_DEFAULTS, **(ind.get("BOOK_VISIBLE") or {})}
+        self._book_last: dict = {}                     # last COCO / CLIP book score (see _book_state)
         self.trackers["BOOK_VISIBLE"] = SustainedIndicator(
             self.book["min_duration_s"], self.book["release_s"], self.book["cooldown_s"])
         self.voice = {**VOICE_DEFAULTS, **(ind.get("OTHER_VOICE") or {})}
@@ -286,6 +289,24 @@ class EventEngine:
         """Latest sound scores (0-1). Replaced as one tuple, so a frame update never sees half a sample.
         paper: paper/page sound (book opened or leafed through); 0 from older browsers that do not send it."""
         self._audio = (float(ts), float(speech), float(whisper), float(media), float(paper))
+
+    def _book_state(self, s, analyzed):
+        """(active, score) for BOOK_VISIBLE. Active when either signal passes its own threshold; unknown when the
+        frame was not analysed or neither signal was measured. Each signal keeps its last measurement until it runs
+        again (the two models may run on different frames); a frame that cannot be analysed forgets both.
+        Score: the strongest signal that passed, else the highest measured one (both are 0-1)."""
+        if not analyzed:
+            self._book_last = {}
+            return None, None
+        for key, v in (("coco", s.book_score), ("clip", s.book_clip_score)):
+            if v is not None:
+                self._book_last[key] = v
+        measured = [(self._book_last[k], m) for k, m in (("coco", self.book["min_score"]), ("clip", self.book["clip_min_score"]))
+                    if k in self._book_last]
+        if not measured:
+            return None, None
+        passed = [v for v, m in measured if v >= m]
+        return bool(passed), max(passed or [v for v, _ in measured])
 
     def _sound_signals(self, s: FrameSignals, analyzed: bool) -> dict:
         """(active, peak) per sound label from the latest YAMNet scores and the mouth movement. At most one label is
@@ -403,11 +424,11 @@ class EventEngine:
                 INDICATION, lambda p, d: "Objek menyerupai ponsel terlihat" + self._dur(d),
                 score_fn=lambda p: round(p, 2) if p is not None else None)
 
-        # 4b. book-like object visible (same detector pass as the phone; skipped on frames it did not run)
-        if self.book["enabled"] and (s.book_score is not None or not analyzed):
-            book_active = (s.book_score >= self.book["min_score"]) if analyzed and s.book_score is not None else None
+        # 4b. book-like object visible: COCO "book" (detector pass) OR CLIP P(book); frames with neither are skipped
+        if self.book["enabled"] and (s.book_score is not None or s.book_clip_score is not None or not analyzed):
+            book_active, book_peak = self._book_state(s, analyzed)
             events += self._emit(
-                "BOOK_VISIBLE", self.trackers["BOOK_VISIBLE"].update(s.ts, book_active, s.book_score),
+                "BOOK_VISIBLE", self.trackers["BOOK_VISIBLE"].update(s.ts, book_active, book_peak),
                 INDICATION, lambda p, d: "Objek menyerupai buku terlihat" + self._dur(d),
                 score_fn=lambda p: round(p, 2) if p is not None else None)
 

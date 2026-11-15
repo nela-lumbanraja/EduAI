@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 dependencies = ["opencv-python-headless>=4.8", "numpy>=1.24", "pyyaml>=6.0", "httpx>=0.27"]
 
 [project.optional-dependencies]
-models = ["mediapipe>=0.10.14,<0.11"]
+models = ["mediapipe>=0.10.14,<0.11", "onnxruntime>=1.17"]
 livekit = ["livekit==1.1.20"]
 crypto = ["cryptography>=42"]
 

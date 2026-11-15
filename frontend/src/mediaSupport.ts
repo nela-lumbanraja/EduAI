@@ -19,14 +19,40 @@ export function isInAppBrowser(ua: string): boolean {
 /** Front camera first (phones), a size every phone camera can give, and a frame rate that keeps uploads light. */
 export const CAMERA = { facingMode: { ideal: "user" }, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 15, max: 24 } } as const;
 
+/** Which camera of a phone: "user" = front (default; the AI needs the face), "environment" = back. */
+export type Facing = "user" | "environment";
+
 /** What to ask getUserMedia for, from the most to the least specific. An older phone camera that cannot meet a
  *  constraint (OverconstrainedError) or a phone without a working microphone still gets the camera. */
-export function captureAttempts(): MediaStreamConstraints[] {
+export function captureAttempts(facing: Facing = "user"): MediaStreamConstraints[] {
   return [
-    { video: { ...CAMERA }, audio: true },
-    { video: { facingMode: "user" }, audio: true },
-    { video: { facingMode: "user" }, audio: false },
+    { video: { ...CAMERA, facingMode: { ideal: facing } }, audio: true },
+    { video: { facingMode: facing }, audio: true },
+    { video: { facingMode: facing }, audio: false },
   ];
+}
+
+/** Camera/microphone work only in a secure context: https://, or http://localhost on the computer itself.
+ *  A phone that opens http://192.168.x.x never gets a camera. Null when the page is fine. */
+export function insecurePageHint(secure: boolean, protocol: string, hostname: string): string | null {
+  if (secure) return null;
+  return `Halaman ini dibuka lewat ${protocol}//${hostname}, bukan HTTPS, sehingga browser tidak mengizinkan kamera dan mikrofon. `
+    + "Buka EduAI melalui alamat https:// dari sekolah. (http://localhost hanya berlaku di komputer server itu sendiri, bukan di HP.)";
+}
+
+const LOOPBACK = /^(localhost|127(?:\.\d+){3}|\[?::1\]?|0\.0\.0\.0)$/i;
+
+/** Problem with a video server address the backend gave (OpenVidu/LiveKit wss URL or Jitsi domain), seen from
+ *  this page: "localhost" means the phone itself, not the server; ws:// is blocked on an https:// page.
+ *  Null when the address can work. */
+export function mediaServerProblem(url: string, pageHostname: string, pageProtocol: string): string | null {
+  let u: URL;
+  try { u = new URL(/^[a-z]+:\/\//i.test(url) ? url : `https://${url}`); } catch { return "Alamat server video tidak valid."; }
+  if (LOOPBACK.test(u.hostname) && !LOOPBACK.test(pageHostname))
+    return `Server video diatur ke ${u.hostname}, yang dari perangkat ini berarti perangkat ini sendiri. Admin perlu mengisi alamat publik (wss://domain-sekolah) di konfigurasi backend.`;
+  if (pageProtocol === "https:" && (u.protocol === "ws:" || u.protocol === "http:"))
+    return "Server video memakai sambungan tidak aman (ws:// atau http://) sementara halaman memakai HTTPS, sehingga browser memblokirnya. Admin perlu memakai wss://.";
+  return null;
 }
 
 /** Errors after which a simpler request may still succeed. A refusal is final: asking again would only repeat it. */

@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Room, RoomEvent, Track, type RemoteTrack, type RemoteParticipant } from "livekit-client";
 import { api, type MonitoringInfo } from "./api";
-import { cameraWorking, captureAttempts, detectPlatform, frameAdvanced, isInAppBrowser, mediaErrorText, retryWithSimplerRequest, type BroadcastState } from "./mediaSupport";
+import { cameraWorking, captureAttempts, detectPlatform, frameAdvanced, isInAppBrowser, mediaErrorText, retryWithSimplerRequest, type BroadcastState, type Facing } from "./mediaSupport";
 
 export type StudentMedia = {
   stream: MediaStream;               // the one capture: preview, frame uploader and live broadcast
@@ -24,11 +24,25 @@ export function mediaErrorMessage(e: unknown): string {
 
 /** getUserMedia with the front camera first, then simpler requests (older phone cameras, phones without a working
  *  microphone). A refusal is not retried: the browser would only refuse again. */
-export async function openCamera(): Promise<MediaStream> {
+const FACING_KEY = "eduai_camera_facing";
+/** Camera chosen on the device check (front by default), kept for this tab so the exam room opens the same one. */
+export function preferredFacing(): Facing {
+  try { return sessionStorage.getItem(FACING_KEY) === "environment" ? "environment" : "user"; } catch { return "user"; }
+}
+export function setPreferredFacing(f: Facing) {
+  try { if (f === "user") sessionStorage.removeItem(FACING_KEY); else sessionStorage.setItem(FACING_KEY, f); } catch { /* private mode: stays front */ }
+}
+
+/** Number of cameras, once permission is given (before that, browsers hide the devices). 0 when unknown. */
+export async function cameraCount(): Promise<number> {
+  try { return (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput").length; } catch { return 0; }
+}
+
+export async function openCamera(facing: Facing = preferredFacing()): Promise<MediaStream> {
   // Some in-app browsers and old phones have no camera API at all (navigator.mediaDevices is undefined).
   if (!navigator.mediaDevices?.getUserMedia) throw Object.assign(new Error("getUserMedia unsupported"), { name: "UnsupportedError" });
   let last: unknown = null;
-  for (const c of captureAttempts()) {
+  for (const c of captureAttempts(facing)) {
     try { return await navigator.mediaDevices.getUserMedia(c); } catch (e) {
       last = e;
       if (!retryWithSimplerRequest((e as { name?: string })?.name)) throw e;

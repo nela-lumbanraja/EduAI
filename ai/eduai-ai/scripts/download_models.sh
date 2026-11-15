@@ -13,4 +13,6 @@ get blaze_face_short_range.tflite "$BASE/face_detector/blaze_face_short_range/fl
 get face_landmarker.task          "$BASE/face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
 get efficientdet_lite0.tflite     "$BASE/object_detector/efficientdet_lite0/int8/latest/efficientdet_lite0.tflite"
 get yamnet.tflite                 "$BASE/audio_classifier/yamnet/float32/latest/yamnet.tflite"
+# BOOK_VISIBLE: CLIP ViT-B/32 image encoder (ONNX int8, ~89 MB, MIT licence). Needs: pip install onnxruntime
+get clip_vit_b32_vision_quantized.onnx "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/vision_model_quantized.onnx"
 ls -lh models

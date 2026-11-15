@@ -16,12 +16,18 @@ export type Exam = {
 };
 /** Safe Exam Browser requirement as every user of the exam sees it: never the keys. */
 export type SebPublic = { required: boolean; ready: boolean; config_url: string | null };
-export type SebSettings = { required: boolean; config_keys: string[]; browser_exam_keys: string[]; config_url: string; ready: boolean; allowed_origins: string[]; updated_at: string | null };
+export type SebSettings = { required: boolean; config_keys: string[]; browser_exam_keys: string[]; config_url: string; quit_url: string; ready: boolean; allowed_origins: string[]; updated_at: string | null };
 export type SebResult = { required: boolean; state: SebState | null; method?: "header" | "js" | null; verified: boolean; message: string | null };
 /** Per case: read (blue dot gone), dismissed (Abaikan; both reset by a new event), evidence_seen (from the user's own audit). */
 export type CaseMark = { read: boolean; dismissed: boolean; evidence_seen: boolean };
 export type NotifState = Record<string, CaseMark>;
-export type SebRow = { required: boolean; state: SebState | null; method: "header" | "js" | null; version: string | null; checked_at: string | null; fresh: boolean };
+/** One change of a student's lockdown state (backend seb_history): SEB states plus "lost" (LOCKDOWN_LOST opened) and "quit". */
+export type SebHistoryItem = { state: SebState | "lost" | "quit"; method: string | null; version: string | null; platform: string | null; note: string | null; at: string };
+export type SebRow = {
+  required: boolean; state: SebState | null; method: "header" | "js" | null; version: string | null; checked_at: string | null; fresh: boolean;
+  // lockdown details for the supervisor; platform comes from the user agent and is only a hint
+  lockdown_app?: string | null; platform?: string | null; started_at?: string | null; lost_since?: string | null; history?: SebHistoryItem[];
+};
 // not_started / no_data / ai_offline are dashboard states set by the backend (see GET /exams/{id}/students):
 // AI monitoring off, on but no analysis result yet, on but the analysis itself is down.
 export type AnalysisState = "not_started" | "no_data" | "ai_offline" | "warming_up" | "normal" | "indication" | "cannot_analyze" | "model_unavailable";
@@ -112,8 +118,20 @@ export type ExamSummary = {
 export type CaseList = { server_time: string; gap_s: number; total_events: number; cases: CaseSummary[] };
 export type CaseDetail = { server_time: string; gap_s: number; case: CaseSummary; events: AIEvent[]; reviewed_event_ids?: string[] };
 export type Health = { status: string; time: string; ai: { available: boolean; reason: string }; livekit: { configured: boolean }; analysis_source: string; school_name: string | null };
+export type AIModelState = "PENDING" | "LOADING" | "READY" | "FAILED" | "MISSING_DEPENDENCY" | "MISSING_MODEL_FILE" | "DISABLED";
+export type AIModelStatus = {
+  key: string; name: string; function: string; library: string; runs_in: "backend" | "browser"; file: string | null; exists: boolean;
+  required: boolean; status: AIModelState; load_ms: number | null; warmup: string; warmup_ms: number | null; output: string | null; error: string;
+};
+/** GET /api/ai/status: READY only after every required model passed a warm-up inference on the backend. */
+export type AIStatus = {
+  backend: string; state: "NOT_STARTED" | "LOADING" | "READY" | "FAILED" | "DISABLED"; ready: boolean; reason: string; config_version: string | null;
+  loading_started_at: string | null; loading_finished_at: string | null; loading_ms: number | null; required_ready: number; required_total: number;
+  models: AIModelStatus[];
+};
 export type AIHealth = {
-  available: boolean; reason: string; config_version: string | null; models: Record<string, { loaded: boolean; exists: boolean; reason: string; file: string }>;
+  available: boolean; reason: string; state?: AIStatus["state"]; config_version: string | null;
+  models: Record<string, { loaded: boolean; exists: boolean; reason: string; file: string; status?: AIModelState; name?: string; required?: boolean }>;
   active_analyzers: number; max_concurrent: number; evidence_retention_hours: number; evidence_encrypted: boolean;
   evidence_hold_days: number; report_frame_retention_hours: number;
 };
@@ -178,6 +196,7 @@ const qs = (o: Record<string, string | number | undefined | null>) => {
 export const api = {
   health: () => request<Health>("GET", "/api/health"),
   aiHealth: () => request<AIHealth>("GET", "/api/ai/health"),
+  aiStatus: () => request<AIStatus>("GET", "/api/ai/status"),
   // The portal role is required: the backend refuses the login (403) when it is not the account's role.
   login: (email: string, password: string, role: RoleCode) => request<{ token: string; user: User }>("POST", "/api/auth/login", { email, password, role }),
   /** The signed-in account as the server sees it: the only source of the user's role. */
@@ -206,7 +225,9 @@ export const api = {
   sessionState: (examId: number) => request<{ status: ExamStatus; monitoring: MonitoringInfo }>("GET", `/api/exams/${examId}/session-state`),
   presence: (examId: number, p: { camera_on: boolean; mic_on: boolean; connection: "baik" | "lemah" | "terputus"; rtt_ms?: number | null; jitsi?: "connected" | "disconnected" | null }) => request<{ ok: boolean }>("POST", `/api/exams/${examId}/presence`, p),
   sebSettings: (examId: number) => request<SebSettings>("GET", `/api/exams/${examId}/seb`),
-  saveSebSettings: (examId: number, body: { required: boolean; config_keys: string[]; browser_exam_keys: string[]; config_url: string }) => request<SebSettings>("PUT", `/api/exams/${examId}/seb`, body),
+  saveSebSettings: (examId: number, body: { required: boolean; config_keys: string[]; browser_exam_keys: string[]; config_url: string; quit_url: string }) => request<SebSettings>("PUT", `/api/exams/${examId}/seb`, body),
+  /** SEB quit URL; the backend gives it only after the exam is finished ("Selesai"). */
+  sebQuit: (examId: number) => request<{ quit_url: string }>("GET", `/api/exams/${examId}/seb/quit`),
   // One-time nonce in the URL: SEB's header hashes cover this exact URL, so they cannot be replayed.
   verifySeb: async (examId: number, reading: SebReading) => {
     const { nonce } = await request<{ nonce: string }>("POST", `/api/exams/${examId}/seb/challenge`);

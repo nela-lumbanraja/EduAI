@@ -18,6 +18,8 @@ python -m pytest -q
 ```
 `--show` (jendela debug) membutuhkan `opencv-python` (bukan `-headless`).
 
+**Deteksi buku (BOOK_VISIBLE).** Detektor objek COCO hampir tidak mengenali buku yang dipegang atau dibuka di depan webcam (buku spiral: skor "book" < 0,05). Karena itu ada model kedua, CLIP ViT-B/32 zero-shot (`src/eduai_ai/book_clip.py`), yang membandingkan frame dengan deskripsi teks dan memberi P(buku). Indikasi terbuka bila COCO ≥ `min_score` **atau** CLIP ≥ `clip_min_score` selama `min_duration_s`. Pasang dengan `pip install onnxruntime` lalu `python scripts\download_models.py --only book`. Tanpa keduanya modul tetap jalan dengan COCO saja. Biaya: sekitar 90 ms CPU per frame CLIP (2 kali per detik per siswa). Ambang 0,6 baru dicek pada beberapa gambar contoh, belum dikalibrasi pada rekaman ujian.
+
 ## Struktur
 
 ```

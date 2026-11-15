@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from eduai_ai.config import load_config  # noqa: E402
 from eduai_ai.evidence import EvidenceStore  # noqa: E402
+from eduai_ai.overlay import DetectionView  # noqa: E402
 from eduai_ai.pipeline import StudentAnalyzer  # noqa: E402
 
 
@@ -49,6 +50,7 @@ def main():
         print("WARNING: face detector not loaded -> every frame will be 'model_unavailable'. "
               "Run scripts/download_models.py first.", file=sys.stderr)
     store = EvidenceStore(args.evidence_dir, retention_hours=24) if args.evidence_dir else None
+    view = DetectionView(cfg, analyzer.perception) if args.show else None
     fps = cfg["sampling"]["analysis_fps"]
     next_ts, timings, out_path = 0.0, [], Path(args.events_out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -80,8 +82,9 @@ def main():
                     s = result.signals
                     txt = (f"{result.state} | {s.status} {s.reason} faces={s.face_count} "
                            f"yaw={None if s.yaw is None else round(s.yaw)} pitch={None if s.pitch is None else round(s.pitch)} "
-                           f"phone={s.phone_score}")
+                           f"phone={s.phone_score} book={s.book_score} clip={s.book_clip_score}")
                     disp = cv2.flip(frame, 1) if args.mirror else frame.copy()
+                    view.draw(disp, frame, s, mirror=args.mirror)     # boxes: buku / ponsel / orang + score
                     cv2.putText(disp, txt, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
                     cv2.imshow("EduAI prototype (q = quit)", disp)
                     if cv2.waitKey(1) & 0xFF == ord("q"):

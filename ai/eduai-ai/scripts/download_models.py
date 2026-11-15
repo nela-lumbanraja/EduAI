@@ -31,6 +31,10 @@ ASSETS = {
                    f"{BASE}/face_landmarker/face_landmarker/float16/latest/face_landmarker.task"),
     "object": ("efficientdet_lite0.tflite",
                f"{BASE}/object_detector/efficientdet_lite0/int8/latest/efficientdet_lite0.tflite"),
+    # BOOK_VISIBLE: CLIP ViT-B/32 image encoder (ONNX, int8; MIT licence, ONNX export by Xenova). Needs `onnxruntime`.
+    # The text side is precomputed in models/clip_book_prompts.npz (scripts/build_book_prompts.py).
+    "book": ("clip_vit_b32_vision_quantized.onnx",
+             "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/vision_model_quantized.onnx"),
     "audio": ("yamnet.tflite",        # runs in the student's browser (served by the backend)
               f"{BASE}/audio_classifier/yamnet/float32/latest/yamnet.tflite"),
 }

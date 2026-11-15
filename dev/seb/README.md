@@ -50,8 +50,32 @@ Setiap kali konfigurasi `.seb` diubah dan disimpan ulang, Config Key ikut beruba
   Pengawas tidak dapat melihat atau mengubah kunci.
 - **Audit log** mencatat perubahan pengaturan, verifikasi pertama yang berhasil, setiap perubahan hasil, dan penolakan masuk.
 
+## Lockdown terputus, keluar setelah ujian, dan Android (15 Nov 2026)
+
+**Indikasi "Lockdown terputus" (`LOCKDOWN_LOST`).** Hanya berlaku untuk ujian yang mewajibkan SEB, selama ujian berlangsung, dan untuk siswa yang sudah masuk ruang ujian. Indikasi ini tidak bergantung pada pemantauan AI.
+
+- **Dibuka bila:**
+  - pemeriksaan SEB gagal setelah siswa itu terverifikasi (dibuka di luar SEB, konfigurasi lain, alamat lain);
+  - tidak ada verifikasi baru selama lebih dari 3 menit (SEB ditutup atau halaman ditinggalkan);
+  - sinyal kehadiran siswa juga berhenti (koneksi terputus).
+- **Ditutup bila:** SEB terverifikasi lagi, siswa keluar dari ujian, atau ujian selesai.
+- **Isi setiap kejadian:** waktu, siswa, ujian, jenis perangkat (dari user-agent, hanya keterangan), aplikasi lockdown, status verifikasi, dan waktu mulai lockdown. Tidak ada gambar bukti.
+- Indikasi ini masuk ke kasus pengawas dan **perlu ditinjau**. Ini **bukan bukti kecurangan**: aplikasi yang tertutup sendiri atau jaringan yang putus terlihat sama.
+- **Pengawas** melihat, di halaman detail siswa, panel *Lockdown ujian*: aplikasi, perangkat, waktu mulai lockdown, pemeriksaan terakhir, dan riwayat status. Kartu siswa di Monitoring menampilkan "Lockdown terputus sejak ...".
+
+**Keluar dari SEB setelah ujian (Quit URL).**
+1. Di berkas `.seb`, isi `quitURL` dengan alamat yang panjang dan sulit ditebak di alamat EduAI, misalnya `https://ujian.sekolah.sch.id/seb-keluar-7f3a9c`.
+2. Isi alamat yang **sama persis** di EduAI: Detail Ujian, lalu *Keamanan ujian*, lalu **Quit URL**.
+3. Setelah server menyatakan ujian **Selesai**, siswa melihat tombol **Keluar dari Safe Exam Browser** di ruang ujian. Backend (`GET /api/exams/{id}/seb/quit`) menolak memberikan alamat itu selama ujian masih berlangsung. Alamat ini juga tidak ada di data ujian yang dibaca siswa, dan setiap pemakaian dicatat di audit log.
+4. Kata sandi keluar SEB tetap dipegang pengawas untuk keadaan darurat.
+
+**Android.** Safe Exam Browser tidak tersedia untuk Android, jadi siswa Android **tidak dapat** mengikuti ujian yang mewajibkan SEB. Mereka mendapat pemberitahuan yang jelas di layar pemeriksaan SEB, dan backend menolak masuk ruang ujian. EduAI tidak memakai *screen pinning* sebagai pengganti. Ujian yang tidak mewajibkan SEB tetap bisa diikuti dari Android seperti biasa. Aplikasi kiosk Android untuk perangkat milik sekolah (Lock Task Mode lewat *device owner* atau Android Management API) direncanakan setelah infrastruktur dan perangkat uji tersedia.
+
+**Database.** Saat backend dimulai, migrasi otomatis hanya menambah kolom `seb_status.first_verified_at`, `seb_status.platform`, dan `exam_seb.quit_url`, serta tabel `seb_history`. Bila database lama perlu diubah, backend lebih dulu menyalinnya ke `backend/data/backup/eduai-sebelum-migrasi-<waktu>.sqlite3`. Migrasi ini aman dijalankan berulang: bila semua sudah ada, tidak ada salinan baru dan tidak ada yang diubah.
+
 ## Batasan (apa adanya)
 
+- **Lockdown terputus, Quit URL, dan panel lockdown juga belum diuji dengan SEB sungguhan** (Windows, macOS, iPhone/iPad). Nama kunci `quitURL`/`quitURLConfirm` di templat perlu dicocokkan di SEB Config Tool versi yang dipakai.
 - **Belum diuji dengan SEB sungguhan.** Uji integrasi memakai Chrome yang meniru SEB: JavaScript API, header, dan user agent dihitung persis menurut spesifikasi. Templat konfigurasi, nama kunci pengaturannya, kamera di dalam SEB, dan Jitsi di dalam SEB belum dicoba di SEB nyata.
 - **Config Key bukan rahasia** bagi siapa pun yang memegang berkas `.seb`. Orang yang memegang berkas itu dan mampu menghitung hash-nya bisa meniru jalur JavaScript API. Lindungi berkas `.seb` (enkripsi dengan kata sandi), dan isi Browser Exam Key bila ingin mengikat ke versi SEB tertentu.
 - **Hash JavaScript API dapat diputar ulang** karena terikat ke URL halaman yang tetap. Jalur header (bernonce) tidak bisa diputar ulang, tetapi belum dipastikan bahwa SEB mengirim header pada request `fetch` di setiap platform.

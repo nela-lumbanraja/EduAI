@@ -34,6 +34,8 @@ PROFILES = {
                     w=360, h=780, platform="Android"),
     "iphone": dict(ua="Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
                    w=390, h=844, platform="iPhone"),
+    "iphone-besar": dict(ua="Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+                         w=430, h=932, platform="iPhone"),
     "desktop": dict(ua="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
                     w=1366, h=800, platform="Win32"),
 }
@@ -67,6 +69,7 @@ def setup():
 
 # Records each request; window.__busy = n makes the next n requests fail as when another app holds the camera.
 GUM_SPY = """(() => { const md = navigator.mediaDevices; if (!md) return; const orig = md.getUserMedia.bind(md);
+  md.enumerateDevices = () => Promise.resolve([{ kind: 'videoinput', deviceId: 'front', label: 'Front' }, { kind: 'videoinput', deviceId: 'back', label: 'Back' }, { kind: 'audioinput', deviceId: 'mic', label: 'Mic' }]);
   window.__gum = []; window.__busy = 0; window.__deny = 0; md.getUserMedia = (c) => { window.__gum.push(JSON.stringify(c));
   if (window.__deny > 0) { window.__deny--; return Promise.reject(new DOMException('Permission denied', 'NotAllowedError')); }
   if (window.__busy > 0) { window.__busy--; return Promise.reject(new DOMException('Could not start video source', 'NotReadableError')); }
@@ -160,15 +163,20 @@ async def run_profile(key, prof, exam_id, stu_id, ptok, port):
             check("Jadwal ujian tampil di Ujian Saya", await wait_text("Uji HP (salinan terisolasi)"))
             await no_hscroll("Ujian Saya")
             await shot("1-ujian-saya")
-            await ev("window.__deny = 2")   # React StrictMode (dev) runs the mount effect twice
+            await ev("window.__deny = 1")   # the camera is asked for only after the tap (not in the mount effect)
             await ev(f"""(() => {{ const row = [...document.querySelectorAll('tr, article, li, div')].reverse().find(r => r.innerText && r.innerText.includes('Uji HP (salinan terisolasi)') && [...r.querySelectorAll('button')].some(b => b.innerText.includes('Mulai Ujian') && !b.disabled));
               const b = row && [...row.querySelectorAll('button')].find(b => b.innerText.includes('Mulai Ujian') && !b.disabled); if (b) {{ b.scrollIntoView({{block:'center'}}); b.click(); }} }})()""")
             check("Cek perangkat terbuka", await wait_text("Cek Perangkat"))
+            await asyncio.sleep(1.5)
+            check("Izin kamera belum diminta sebelum siswa mengetuk tombol", (await ev("window.__gum.length")) == 0 and await in_view("Aktifkan kamera") == "ok")
+            check("Lanjut terkunci sebelum kamera diaktifkan", await ev("[...document.querySelectorAll('button')].find(b => b.innerText.includes('Lanjut ke Persetujuan'))?.disabled") is True)
+            await shot("1b-sebelum-izin")
+            await click("Aktifkan kamera")
 
             # 3. permission refused
             await asyncio.sleep(2.5)
             t = await text()
-            check("Izin ditolak: pesan jelas untuk platform ini", "ditolak" in t and (("Chrome Android" in t) if key == "android" else ("Pengaturan Situs Web" in t) if key == "iphone" else ("Klik ikon kamera" in t)), t[t.find("Izin"):][:160].replace("\n", " ") if "Izin" in t else "")
+            check("Izin ditolak: pesan jelas untuk platform ini", "ditolak" in t and (("Chrome Android" in t) if key == "android" else ("Pengaturan Situs Web" in t) if key.startswith("iphone") else ("Klik ikon kamera" in t)), t[t.find("Izin"):][:160].replace("\n", " ") if "Izin" in t else "")
             check("Izin ditolak: tombol Coba lagi ada dan terlihat", await in_view("Coba lagi") == "ok")
             check("Izin ditolak: Lanjut tetap terkunci", await ev("[...document.querySelectorAll('button')].find(b => b.innerText.includes('Lanjut ke Persetujuan'))?.disabled") is True)
             await shot("2-izin-ditolak")
@@ -186,6 +194,24 @@ async def run_profile(key, prof, exam_id, stu_id, ptok, port):
             check("Tombol Lanjut ke Persetujuan aktif dan tidak terpotong", await in_view("Lanjut ke Persetujuan") == "ok")
             await no_hscroll("Cek Perangkat")
             await shot("3-cek-perangkat")
+            lanjut = "[...document.querySelectorAll('button')].find(b => b.innerText.includes('Lanjut ke Persetujuan'))?.disabled"
+            # camera / microphone on-off
+            await click("Matikan kamera"); await asyncio.sleep(.6)
+            check("Kamera dimatikan: Lanjut terkunci + keterangan wajib", await ev(lanjut) is True and "Kamera wajib menyala" in await text())
+            await click("Nyalakan kamera"); await asyncio.sleep(2.5)
+            check("Kamera dinyalakan lagi: Lanjut aktif", await ev(lanjut) is False)
+            await click("Matikan mikrofon"); await asyncio.sleep(.4)
+            check("Mikrofon bisa dimatikan; kamera tetap cukup untuk lanjut", "Nyalakan mikrofon" in await text() and await ev(lanjut) is False)
+            await click("Nyalakan mikrofon"); await asyncio.sleep(.4)
+            # front / back camera
+            n0 = await ev("window.__gum.length")
+            check("Pilihan kamera belakang tampil (perangkat dengan 2 kamera)", await in_view("Pakai kamera belakang") == "ok")
+            await click("Pakai kamera belakang")
+            check("Kamera belakang diminta (facingMode environment) + peringatan wajah", await wait_text("Kamera aktif", 12)
+                  and any('environment' in g for g in (await ev("window.__gum"))[n0:]) and "Kamera belakang dipilih" in await text())
+            await shot("3b-kamera-belakang")
+            await click("Pakai kamera depan")
+            check("Kembali ke kamera depan", await wait_text("Kamera aktif", 12) and '"user"' in (await ev("window.__gum"))[-1])
 
             # 5. consent -> exam room
             await click("Lanjut ke Persetujuan")

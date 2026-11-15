@@ -5,5 +5,6 @@ numpy>=1.24
 pyyaml>=6.0
 httpx>=0.27                   # OpenVidu worker -> backend
 livekit==1.1.20               # OpenVidu/LiveKit worker (rtc.Room, rtc.VideoStream)
+onnxruntime>=1.17             # optional: BOOK_VISIBLE CLIP classifier (book held up / opened at the webcam)
 cryptography>=42              # optional: evidence encryption at rest
 pytest>=8

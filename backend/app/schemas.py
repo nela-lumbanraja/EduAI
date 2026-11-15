@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 INDICATORS = ("FACE_ABSENT", "MULTIPLE_PERSONS", "HEAD_TURN", "HEAD_TURN_REPEATED", "PHONE_VISIBLE", "BOOK_VISIBLE", "CANNOT_ANALYZE",
               "WHISPER", "MEDIA_SOUND", "STUDENT_SPEECH",
-              "OTHER_VOICE", "CAMERA_OFF", "MIC_OFF", "BOOK_SOUND")
+              "OTHER_VOICE", "CAMERA_OFF", "MIC_OFF", "BOOK_SOUND", "LOCKDOWN_LOST")
 STATES = ("no_data", "warming_up", "normal", "indication", "cannot_analyze", "model_unavailable")
 
 
@@ -114,6 +114,8 @@ class SebSettingsIn(BaseModel):
     config_keys: List[str] = Field(default_factory=list, max_length=20)
     browser_exam_keys: List[str] = Field(default_factory=list, max_length=20)
     config_url: str = Field(default="", max_length=500, pattern=r"^(|https?://\S+)$")
+    # SEB quitURL (the same address as in the .seb file); handed to a student only after the exam ended
+    quit_url: str = Field(default="", max_length=500, pattern=r"^(|https?://\S+)$")
 
 
 class SebVerifyIn(BaseModel):

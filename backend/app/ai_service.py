@@ -7,7 +7,9 @@ A global semaphore limits how many analyses run at the same time.
 """
 import asyncio
 import logging
+import threading
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 from . import store
@@ -16,6 +18,10 @@ log = logging.getLogger("eduai.ai")
 IDLE_STOP_S = 120.0          # stop an analyser (closing its events) after this long without frames
 STALE_STATUS_S = 10.0        # dashboard shows "no data" when the last status is older than this
 NO_FRAME_S = 8.0             # Jitsi source: no frame for this long = the video cannot be analysed
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 class _Entry:
@@ -33,10 +39,17 @@ class AIManager:
     def __init__(self, settings, db, evidence_store):
         self.settings, self.db, self.evidence_store = settings, db, evidence_store
         self.cfg = None
-        self.available = False
+        self.available = False                # True only when every required model is READY (passed warm-up)
         self.reason = "not initialised"
+        self.state = "NOT_STARTED"            # NOT_STARTED, LOADING, READY, FAILED, DISABLED
+        self.loading_started_at = self.loading_finished_at = self.loading_ms = None
         self.models: dict = {}
         self.entries: dict = {}
+        self._clip = None                     # shared CLIP book classifier (one copy for every student)
+        self._spare = None                    # a loaded + warmed perception waiting for the next student
+        self._spare_lock = threading.Lock()
+        self._refilling = self._closing = False
+        self.perceptions_created = 0          # model sets loaded since start (startup one + one per student)
         self.sem = asyncio.Semaphore(settings.ai_max_concurrent)
         self._create_lock = asyncio.Lock()
         self.frames_in = self.frames_dropped = 0
@@ -46,43 +59,158 @@ class AIManager:
         self.frame_seen: dict = {}           # (exam, student) -> clock time of the last frame (or of the first check)
 
     # ---------- readiness ----------
+    # Startup: init() (fast, before the API serves) reads config.yaml and lists every model; load_models() (in a
+    # thread, while login and the other pages already work) loads each model, runs a warm-up inference on a dummy
+    # input and validates the output. Monitoring can start only after that (state READY).
     def init(self, perception_factory=None):
         self._perception_factory = perception_factory
         if not self.settings.ai_enabled:
-            self.reason = "AI dinonaktifkan (EDUAI_AI_ENABLED=false)"
+            self.state, self.reason = "DISABLED", "AI dinonaktifkan (EDUAI_AI_ENABLED=false)"
             return
         try:
+            from eduai_ai import model_check as mc
             from eduai_ai.config import load_config
-            from eduai_ai.perception import find_model_files
             self.cfg = load_config(self.settings.ai_config)
-            self.models = {k: {**v, "loaded": False} for k, v in find_model_files(self.cfg).items()}
+            self.models = mc.inventory(self.cfg, audio_enabled=getattr(self.settings, "audio_analysis", True))
         except Exception as e:                         # package or config missing
-            self.reason = f"modul AI tidak dapat dimuat: {type(e).__name__}: {e}"
+            self.state, self.reason = "FAILED", f"modul AI tidak dapat dimuat: {type(e).__name__}: {e}"
             log.warning(self.reason)
             return
-        if perception_factory is not None:
-            self.available, self.reason = True, ""
+        if perception_factory is not None:             # tests: scripted perception, no model files involved
+            for m in self.models.values():
+                if m["required"]:
+                    m.update(status=mc.READY, warmup="skipped: test perception", error="")
+            self.state, self.available, self.reason = "READY", True, ""
             return
-        try:                                           # load the models once to prove they work
+        self.state, self.reason = "LOADING", "Model AI sedang dimuat dan diuji"
+        for m in self.models.values():
+            if m["status"] == mc.PENDING:
+                m["status"] = mc.LOADING
+
+    @property
+    def needs_loading(self) -> bool:
+        return self.state == "LOADING"
+
+    def load_models(self):
+        """Blocking (run in a thread): load, warm up and validate every model. Never raises."""
+        from eduai_ai import model_check as mc
+        self.loading_started_at = _now()
+        t0 = time.perf_counter()
+        p = None
+        try:
+            if any(m["status"] == mc.LOADING and m["runs_in"] == "backend" for m in self.models.values()):
+                try:
+                    from eduai_ai.perception import MediaPipePerception
+                    p = MediaPipePerception(self.cfg)
+                    self.perceptions_created += 1
+                except ModuleNotFoundError as e:           # mediapipe itself missing
+                    for m in self.models.values():
+                        if m["status"] == mc.LOADING and m["package"] == e.name:
+                            m.update(status=mc.MISSING_DEPENDENCY, error=f"paket Python '{e.name}' belum terpasang")
+                if p is not None:
+                    for key, info in p.status.items():
+                        m = self.models.get(key)
+                        if m is None or m["status"] != mc.LOADING:
+                            continue
+                        status, err = mc.status_from_load(info)
+                        m.update(status=status, error=err, load_ms=info.get("load_ms"))
+                    for key, r in mc.warm_up(p).items():
+                        m = self.models[key]
+                        if m["status"] != mc.LOADING:
+                            continue
+                        m.update(status=mc.READY if r["ok"] else mc.FAILED, warmup_ms=r["warmup_ms"], output=r["output"],
+                                 warmup="ok" if r["ok"] else "failed", error=r["error"])
+            a = self.models.get("audio_classifier")
+            if a and a["status"] == mc.LOADING:
+                r = mc.check_audio(a["path"])
+                a.update(status=r["status"], load_ms=r["load_ms"], warmup_ms=r["warmup_ms"], output=r["output"],
+                         warmup="ok" if r["ok"] else ("failed" if r["warmup_ms"] is not None else "not run"), error=r["error"])
+            for m in self.models.values():                 # anything still LOADING was never reached
+                if m["status"] == mc.LOADING:
+                    m.update(status=mc.FAILED, error=m["error"] or "tidak dimuat oleh runtime")
+        except Exception as e:                             # noqa: BLE001 - report, never crash the backend
+            log.exception("AI model loading failed")
+            for m in self.models.values():
+                if m["status"] == mc.LOADING:
+                    m.update(status=mc.FAILED, error=f"{type(e).__name__}: {e}")
+        bad = [m for m in self.models.values() if m["required"] and m["status"] != mc.READY]
+        self.loading_finished_at = _now()
+        self.loading_ms = round((time.perf_counter() - t0) * 1000, 1)
+        if bad:
+            self.state, self.available = "FAILED", False
+            self.reason = "Model wajib belum siap: " + "; ".join(f"{m['name']} ({m['status']}: {m['error']})" for m in bad)
+            log.error(self.reason)
+            if p is not None:
+                p.close()
+            return
+        if p is not None:                                  # keep the warmed models: CLIP shared, the rest as spare
+            self._clip = p.book_classifier if self.models.get("book_classifier", {}).get("status") == mc.READY else None
+            p._shared_book = True                          # the manager owns CLIP from now on
+            with self._spare_lock:
+                if self._closing:
+                    p.close()
+                else:
+                    self._spare = p
+        self.state, self.available, self.reason = "READY", True, ""
+        log.info("AI READY in %.1f s: %s", self.loading_ms / 1000,
+                 ", ".join(f"{m['name']} {m['status']}" for m in self.models.values()))
+
+    def _perception(self, cfg):
+        """Model set for a new student. MediaPipe VIDEO-mode tasks keep per-stream state, so each student has its own
+        set (used for all of that student's frames); CLIP is shared. A warmed spare is handed out and refilled."""
+        with self._spare_lock:
+            p, self._spare = self._spare, None
+        if p is None:
             from eduai_ai.perception import MediaPipePerception
-            p = MediaPipePerception(self.cfg)
-            self.models = {k: {**self.models.get(k, {}), **v} for k, v in p.status.items()}
-            ready = p.ready
-            p.close()
-        except Exception as e:
-            self.reason = f"MediaPipe tidak dapat dijalankan: {type(e).__name__}: {e}"
-            log.warning(self.reason)
-            return
-        if not ready:
-            self.reason = "model face detector belum tersedia (jalankan scripts/download_models)"
-            return
-        self.available, self.reason = True, ""
+            p = MediaPipePerception(cfg, book_classifier=self._clip)
+            self.perceptions_created += 1
+        self._refill_spare()
+        return p
+
+    def _refill_spare(self):
+        with self._spare_lock:
+            if self._spare is not None or self._refilling or self._closing:
+                return
+            self._refilling = True
+        threading.Thread(target=self._make_spare, name="eduai-ai-spare", daemon=True).start()
+
+    def _make_spare(self):
+        try:
+            from eduai_ai import model_check as mc
+            from eduai_ai.perception import MediaPipePerception
+            p = MediaPipePerception(self.cfg, book_classifier=self._clip)
+            self.perceptions_created += 1
+            mc.warm_up(p, include_book=False)
+            with self._spare_lock:
+                if self._closing or self._spare is not None:
+                    p.close()
+                else:
+                    self._spare = p
+        except Exception:                                  # noqa: BLE001 - the next student loads its own set
+            log.exception("could not prepare a spare model set")
+        finally:
+            self._refilling = False
+
+    def status(self) -> dict:
+        """GET /api/ai/status: real load and warm-up results; file names only, never paths."""
+        req = [m for m in self.models.values() if m["required"]]
+        return {"state": self.state, "ready": self.state == "READY", "reason": self.reason,
+                "config_version": (self.cfg or {}).get("version"),
+                "loading_started_at": self.loading_started_at, "loading_finished_at": self.loading_finished_at,
+                "loading_ms": self.loading_ms,
+                "required_ready": sum(1 for m in req if m["status"] == "READY"), "required_total": len(req),
+                "models": [{k: m.get(k) for k in ("key", "name", "function", "library", "runs_in", "file", "exists",
+                                                  "required", "status", "load_ms", "warmup", "warmup_ms", "output", "error")}
+                           for m in self.models.values()],
+                "process": {"perceptions_created": self.perceptions_created, "active_analyzers": len(self.entries),
+                            "spare_ready": self._spare is not None, "clip_shared": self._clip is not None}}
 
     def health(self) -> dict:
-        return {"available": self.available, "reason": self.reason,
+        return {"available": self.available, "reason": self.reason, "state": self.state,
                 "config_version": (self.cfg or {}).get("version"),
-                "models": {k: {"loaded": bool(v.get("loaded")), "exists": bool(v.get("exists")),
-                               "reason": v.get("reason", ""), "file": (v.get("path") or "").replace("\\", "/").split("/")[-1]}
+                "models": {k: {"loaded": v.get("status") == "READY", "exists": bool(v.get("exists")), "status": v.get("status"),
+                               "name": v.get("name"), "required": bool(v.get("required")),
+                               "reason": v.get("error", ""), "file": v.get("file") or ""}
                            for k, v in self.models.items()},
                 "active_analyzers": len(self.entries), "max_concurrent": self.settings.ai_max_concurrent,
                 "frames_received": self.frames_in, "frames_dropped_busy": self.frames_dropped}
@@ -93,7 +221,7 @@ class AIManager:
         e = self.entries.get(key)
         if e is None:
             from eduai_ai.pipeline import StudentAnalyzer
-            e = _Entry(StudentAnalyzer(self.cfg, str(exam_id), str(student_id), self._perception_factory))
+            e = _Entry(StudentAnalyzer(self.cfg, str(exam_id), str(student_id), self._perception_factory or self._perception))
             self.entries[key] = e
         return e
 
@@ -233,3 +361,11 @@ class AIManager:
     async def shutdown(self):
         for key in list(self.entries):
             await self.stop_student(*key)
+        with self._spare_lock:
+            self._closing = True
+            spare, self._spare = self._spare, None
+        if spare is not None:
+            spare.close()
+        if self._clip is not None:
+            self._clip.close()
+            self._clip = None

@@ -51,6 +51,7 @@ DEFAULT_RULES = {
     "WHISPER": {"min_count": 1, "window_s": None},
     # camera / microphone switched off by the student during monitoring (app/device.py)
     "CAMERA_OFF": {"min_count": 1, "window_s": None},
+    "LOCKDOWN_LOST": {"min_count": 1, "window_s": None},     # SEB lost during the exam (app/lockdown.py): review, not proof
     "MIC_OFF": {"min_count": 1, "window_s": None},
 }
 RULES = dict(DEFAULT_RULES)

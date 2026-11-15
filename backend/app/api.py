@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import FileResponse
 
 from . import cases as casing
-from . import device, exam_status
+from . import device, exam_status, lockdown
 from . import jitsi
 from . import report as reporting
 from . import report_export, seb, store, summary
@@ -183,9 +183,17 @@ def _events_query(db, exam_ids, user, *, student_id=None, category=None, since=N
 @router.get("/health")
 def health(request: Request):
     st = _st(request)
-    return {"status": "ok", "time": now_iso(), "ai": {"available": st.ai.available, "reason": st.ai.reason},
+    return {"status": "ok", "time": now_iso(), "ai": {"available": st.ai.available, "reason": st.ai.reason, "state": st.ai.state},
             "livekit": {"configured": st.settings.livekit_configured}, "analysis_source": st.settings.analysis_source,
             "school_name": st.settings.school_name or None}      # EDUAI_SCHOOL_NAME (also the PDF letterhead); not secret
+
+
+@router.get("/ai/status")
+def ai_status(request: Request):
+    """Readiness of every AI model: LOADING, READY (loaded AND passed a warm-up inference with a valid output),
+    FAILED, MISSING_DEPENDENCY, MISSING_MODEL_FILE or DISABLED, with load/warm-up times and the error.
+    No secrets and no file paths (file names only). POST /ai/status (below) is the worker's status ingest."""
+    return {"backend": "ok", "time": now_iso(), **_st(request).ai.status()}
 
 
 @router.get("/ai/health")
@@ -562,9 +570,17 @@ def _seb_row(db, exam_id: int, student_id: int) -> dict:
     cfg = seb.config(db, exam_id)
     st = seb.status(db, exam_id, student_id) if cfg["required"] else None
     age = _age_s(st["checked_at"]) if st else None
+    lost = db.one("SELECT start_ts FROM events WHERE exam_id=? AND student_id=? AND indicator=? AND status='open' AND source=?",
+                  (exam_id, student_id, lockdown.INDICATOR, lockdown.SOURCE)) if cfg["required"] else None
     return {"required": cfg["required"], "state": st["state"] if st else None, "method": st["method"] if st else None,
             "version": st["version"] if st else None, "checked_at": st["checked_at"] if st else None,
-            "fresh": bool(st and st["state"] == "verified" and age is not None and age <= seb.FRESH_S)}
+            "fresh": bool(st and st["state"] == "verified" and age is not None and age <= seb.FRESH_S),
+            # lockdown details for the supervisor (15 Nov 2026); platform comes from the user agent and is only a hint
+            "lockdown_app": seb.LOCKDOWN_APP if cfg["required"] else None,
+            "platform": st["platform"] if st else None,
+            "started_at": st["first_verified_at"] if st else None,
+            "lost_since": lost["start_ts"] if lost else None,
+            "history": seb.history(db, exam_id, student_id, 10) if st else []}
 
 
 def _seb_verified(db, exam_id: int, student_id: int) -> bool:
@@ -590,10 +606,28 @@ def put_seb_settings(exam_id: int, body: SebSettingsIn, request: Request, user=D
         raise HTTPException(422, str(e))
     if body.required and not (ck or bek):
         raise HTTPException(422, "Isi minimal satu Config Key atau Browser Exam Key sebelum mewajibkan Safe Exam Browser.")
-    seb.save(db, exam_id, user["id"], body.required, ck, bek, body.config_url.strip())
+    seb.save(db, exam_id, user["id"], body.required, ck, bek, body.config_url.strip(), body.quit_url.strip())
     store.audit(db, user, f"Mengubah pengaturan Safe Exam Browser (wajib: {'ya' if body.required else 'tidak'},"
                 f" {len(ck)} Config Key, {len(bek)} Browser Exam Key)", f"exam:{exam_id}")
     return get_seb_settings(exam_id, request, user)
+
+
+@router.get("/exams/{exam_id}/seb/quit")
+def seb_quit(exam_id: int, request: Request, user=Depends(require_roles("siswa"))):
+    """The SEB quit URL (SEB closes itself when it opens this address). Given only after the SERVER sees the exam as
+    finished, so the student cannot leave the lockdown early through EduAI. The URL is never in the public exam data."""
+    db = _st(request).db
+    exam = _view_exam(db, user, exam_id)
+    cfg = seb.config(db, exam_id)
+    if not cfg["required"]:
+        raise HTTPException(404, "Ujian ini tidak memakai Safe Exam Browser.")
+    if exam["status"] != "Selesai":
+        raise HTTPException(409, "Ujian belum selesai. Safe Exam Browser hanya dapat ditutup setelah ujian berakhir.")
+    if not cfg["quit_url"]:
+        raise HTTPException(404, "Alamat keluar Safe Exam Browser belum diatur. Hubungi pengawas.")
+    store.audit(db, user, "Keluar dari Safe Exam Browser setelah ujian selesai", f"exam:{exam_id}")
+    seb.add_history(db, exam_id, user["id"], "quit", note="Keluar setelah ujian selesai")
+    return {"quit_url": cfg["quit_url"]}
 
 
 @router.post("/exams/{exam_id}/seb/challenge")
@@ -618,7 +652,7 @@ def seb_verify(exam_id: int, body: SebVerifyIn, request: Request, user=Depends(r
     nonce in its URL makes the header hashes single use. Expected keys never leave the server."""
     st = _st(request)
     db = st.db
-    _view_exam(db, user, exam_id)
+    exam = _view_exam(db, user, exam_id)
     cfg = seb.config(db, exam_id)
     if not cfg["required"]:
         return {"required": False, "state": None, "verified": True, "message": None}
@@ -634,7 +668,8 @@ def seb_verify(exam_id: int, body: SebVerifyIn, request: Request, user=Depends(r
         cfg, page_url=body.page_url, js_config=body.config_key, js_exam=body.browser_exam_key,
         request_url=req_url, hdr_config=request.headers.get("x-safeexambrowser-configkeyhash"),
         hdr_exam=request.headers.get("x-safeexambrowser-requesthash"), allowed_origins=st.settings.seb_allowed_origins)
-    prev = seb.record(db, exam_id, user["id"], state, method, body.version)
+    prev = seb.record(db, exam_id, user["id"], state, method, body.version, seb.platform_from_ua(request.headers.get("user-agent")))
+    lockdown.on_check(db, exam, user["id"], state, prev)        # LOCKDOWN_LOST opens / closes during the exam
     if state != prev:
         store.audit(db, user, "Safe Exam Browser terverifikasi" if state == "verified"
                     else f"Verifikasi Safe Exam Browser gagal ({state})", f"exam:{exam_id}",
@@ -923,6 +958,11 @@ def start_monitoring(exam_id: int, body: MonitoringStartIn, request: Request, us
     note = None
     if source == "jitsi" and not st.settings.jitsi_domain:
         raise HTTPException(409, "Server Jitsi belum dikonfigurasi (EDUAI_JITSI_DOMAIN di backend/.env).")
+    if not st.ai.available:
+        # Every source ends in the same models (the OpenVidu worker falls back to browser frames), so monitoring
+        # starts only when all required models passed their warm-up. Never a silent "AI aktif" without models.
+        raise HTTPException(409, "Model AI sedang dimuat. Coba lagi beberapa detik lagi." if st.ai.state == "LOADING"
+                            else f"Pemantauan AI belum dapat dimulai. {st.ai.reason}")
     if source == "livekit":
         # mark monitoring active first: the worker's first heartbeat must not be told to stop
         st.db.run("UPDATE exams SET monitoring_active=1, analysis_source='livekit' WHERE id=?", (exam_id,))
@@ -932,8 +972,6 @@ def start_monitoring(exam_id: int, body: MonitoringStartIn, request: Request, us
             source = "browser"
     if source in ("browser", "jitsi"):
         _stop_worker(st, exam_id)                    # switching from the OpenVidu worker to uploaded frames
-    if source in ("browser", "jitsi") and not st.ai.available:
-        note = (note or "") + f" Layanan AI belum siap: {st.ai.reason}."
     st.db.run("UPDATE exams SET monitoring_active=1, analysis_source=?, monitoring_started_at=? WHERE id=?",
               (source, now_iso(), exam_id))
     store.audit(st.db, user, "Memulai pemantauan", f"exam:{exam_id} ({source})")

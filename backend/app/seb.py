@@ -30,6 +30,7 @@ KEY_RE = re.compile(r"^[0-9a-f]{64}$")
 CHALLENGE_TTL_S = 120          # a nonce must be used within 2 minutes, once
 FRESH_S = 180                  # a check older than this no longer counts (the exam page re-checks every 60 s)
 STATES = ("verified", "not_seb", "key_mismatch", "url_mismatch", "not_configured")
+LOCKDOWN_APP = "Safe Exam Browser"     # the only lockdown app EduAI accepts today (Android: not supported, see dev/seb/README.md)
 
 
 def url_hash(url: str, key: str) -> str:
@@ -72,10 +73,11 @@ def origin(url: str) -> str:
 def config(db, exam_id: int) -> dict:
     r = db.one("SELECT * FROM exam_seb WHERE exam_id=?", (exam_id,))
     if not r:
-        return {"required": False, "config_keys": [], "browser_exam_keys": [], "config_url": "",
+        return {"required": False, "config_keys": [], "browser_exam_keys": [], "config_url": "", "quit_url": "",
                 "updated_at": None, "updated_by": None}
     return {"required": bool(r["required"]), "config_keys": json.loads(r["config_keys"] or "[]"),
             "browser_exam_keys": json.loads(r["exam_keys"] or "[]"), "config_url": r["config_url"] or "",
+            "quit_url": (r["quit_url"] if "quit_url" in r.keys() else "") or "",
             "updated_at": r["updated_at"], "updated_by": r["updated_by"]}
 
 
@@ -85,16 +87,17 @@ def ready(cfg: dict) -> bool:
 
 
 def public(cfg: dict) -> dict:
-    """What every user of the exam may see: no keys."""
+    """What every user of the exam may see: no keys and no quit URL (given only after the exam ended)."""
     return {"required": cfg["required"], "ready": ready(cfg), "config_url": cfg["config_url"] or None}
 
 
-def save(db, exam_id: int, user_id: int, required: bool, config_keys: list, exam_keys: list, config_url: str):
-    db.run("INSERT INTO exam_seb (exam_id,required,config_keys,exam_keys,config_url,updated_by,updated_at)"
-           " VALUES (?,?,?,?,?,?,?) ON CONFLICT(exam_id) DO UPDATE SET required=excluded.required,"
+def save(db, exam_id: int, user_id: int, required: bool, config_keys: list, exam_keys: list, config_url: str,
+         quit_url: str = ""):
+    db.run("INSERT INTO exam_seb (exam_id,required,config_keys,exam_keys,config_url,quit_url,updated_by,updated_at)"
+           " VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(exam_id) DO UPDATE SET required=excluded.required,"
            " config_keys=excluded.config_keys, exam_keys=excluded.exam_keys, config_url=excluded.config_url,"
-           " updated_by=excluded.updated_by, updated_at=excluded.updated_at",
-           (exam_id, int(required), json.dumps(config_keys), json.dumps(exam_keys), config_url, user_id, now_iso()))
+           " quit_url=excluded.quit_url, updated_by=excluded.updated_by, updated_at=excluded.updated_at",
+           (exam_id, int(required), json.dumps(config_keys), json.dumps(exam_keys), config_url, quit_url, user_id, now_iso()))
 
 
 def new_challenge(db, exam_id: int, student_id: int, now_s: float) -> str:
@@ -114,19 +117,65 @@ def take_challenge(db, nonce: str, exam_id: int, student_id: int, now_s: float) 
     return r["exam_id"] == exam_id and r["student_id"] == student_id and r["expires_at"] >= now_s
 
 
-def record(db, exam_id: int, student_id: int, state: str, method: Optional[str], version: Optional[str]) -> Optional[str]:
-    """Store the latest result; returns the previous state (to audit changes only)."""
+def platform_from_ua(user_agent: Optional[str]) -> Optional[str]:
+    """Operating system named by the user agent. Only a HINT for the supervisor (anyone can change a user agent);
+    the lockdown itself is proven by the SEB key check, never by this."""
+    ua = user_agent or ""
+    if not ua:
+        return None
+    if "Android" in ua:
+        return "Android"
+    if "iPhone" in ua:
+        return "iPhone (iOS)"
+    if "iPad" in ua:
+        return "iPad (iPadOS)"
+    if "Windows" in ua:
+        return "Windows"
+    if "Macintosh" in ua or "Mac OS X" in ua:
+        return "macOS"          # iPadOS 13+ also reports Macintosh unless SEB adds its own token
+    if "Linux" in ua:
+        return "Linux"
+    return "Lainnya"
+
+
+def add_history(db, exam_id: int, student_id: int, state: str, method: Optional[str] = None, version: Optional[str] = None,
+                platform: Optional[str] = None, note: Optional[str] = None):
+    db.run("INSERT INTO seb_history (exam_id,student_id,state,method,version,platform,note,at) VALUES (?,?,?,?,?,?,?,?)",
+           (exam_id, student_id, state, method, (version or "")[:120] or None, platform, note, now_iso()))
+
+
+def record(db, exam_id: int, student_id: int, state: str, method: Optional[str], version: Optional[str],
+           platform: Optional[str] = None) -> Optional[str]:
+    """Store the latest result; returns the previous state (to audit changes only). A change of state is also
+    added to seb_history; the first verified check is kept as the lockdown start (first_verified_at)."""
     prev = db.one("SELECT state FROM seb_status WHERE exam_id=? AND student_id=?", (exam_id, student_id))
-    db.run("INSERT INTO seb_status (exam_id,student_id,state,method,version,checked_at) VALUES (?,?,?,?,?,?)"
+    now = now_iso()
+    db.run("INSERT INTO seb_status (exam_id,student_id,state,method,version,checked_at,platform,first_verified_at)"
+           " VALUES (?,?,?,?,?,?,?,?)"
            " ON CONFLICT(exam_id,student_id) DO UPDATE SET state=excluded.state, method=excluded.method,"
-           " version=excluded.version, checked_at=excluded.checked_at",
-           (exam_id, student_id, state, method, (version or "")[:120] or None, now_iso()))
-    return prev["state"] if prev else None
+           " version=excluded.version, checked_at=excluded.checked_at, platform=COALESCE(excluded.platform, seb_status.platform),"
+           " first_verified_at=COALESCE(seb_status.first_verified_at, excluded.first_verified_at)",
+           (exam_id, student_id, state, method, (version or "")[:120] or None, now, platform,
+            now if state == "verified" else None))
+    prev_state = prev["state"] if prev else None
+    if state != prev_state:
+        # two checks at the same moment (e.g. a double effect in the browser) must not write the same step twice
+        last = db.one("SELECT state FROM seb_history WHERE exam_id=? AND student_id=? ORDER BY id DESC LIMIT 1",
+                      (exam_id, student_id))
+        if not last or last["state"] != state:
+            add_history(db, exam_id, student_id, state, method, version, platform)
+    return prev_state
 
 
 def status(db, exam_id: int, student_id: int) -> Optional[dict]:
-    return db.one("SELECT state, method, version, checked_at FROM seb_status WHERE exam_id=? AND student_id=?",
-                  (exam_id, student_id))
+    return db.one("SELECT state, method, version, checked_at, platform, first_verified_at FROM seb_status"
+                  " WHERE exam_id=? AND student_id=?", (exam_id, student_id))
+
+
+def history(db, exam_id: int, student_id: int, limit: int = 20) -> list:
+    """Newest first: every change of the lockdown state of one student in one exam."""
+    return db.all("SELECT state, method, version, platform, note, at FROM seb_history WHERE exam_id=? AND student_id=?"
+                  " ORDER BY id DESC LIMIT ?", (exam_id, student_id, limit))
 
 
 def evaluate(cfg: dict, *, page_url: str, js_config: Optional[str], js_exam: Optional[str],

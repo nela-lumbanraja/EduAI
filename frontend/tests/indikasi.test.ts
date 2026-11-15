@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AIEvent, CaseSummary } from "../src/api.ts";
 import {
-  activityFeed, axisTicks, drawerCases, drawerTitle, examProgress, filterCases, filterQuery, JENIS, jenisCounts, jenisOf, kindBars, kpi7, parseFilter, sinceIso,
+  activityFeed, axisTicks, drawerCases, drawerTitle, examProgress, filterCases, filterQuery, JENIS, jenisCounts, jenisOf, kindBars, kindSlices, kpi7, parseFilter, sinceIso,
   statusOf, statusSummary, supervisorLoad, unreadableByExam,
 } from "../src/indikasi.ts";
 import { opensIndications } from "../src/routes.ts";
@@ -178,4 +178,12 @@ test("drawer for a joined donut part lists both kinds", () => {
 test("'tidak dapat dianalisis' is no longer a filter on the Indikasi page (old links show all cases)", () => {
   assert.equal(parseFilter("?jenis=tidak-terbaca").jenis, null);
   assert.equal(parseFilter("?jenis=kamera").jenis, "kamera");
+});
+
+test("lockdown lost (Safe Exam Browser) is its own kind and joins the device part of the donut", () => {
+  assert.equal(jenisOf("LOCKDOWN_LOST"), "lockdown");
+  assert.equal(JENIS.find((j) => j.key === "lockdown")?.label, "Lockdown terputus");
+  const slices = kindSlices([kase("LOCKDOWN_LOST"), kase("CAMERA_OFF")]);
+  assert.equal(slices.find((s) => s.key === "perangkat")?.value, 2);
+  assert.ok(slices.length <= 8);                                   // still at most 8 hues
 });

@@ -25,7 +25,11 @@ class FrameSignals:
     pitch: Optional[float] = None            # degrees, main face
     phone_score: Optional[float] = None      # None when the detector did not run
     book_score: Optional[float] = None       # max COCO "book" score; None when the detector did not run
+    book_clip_score: Optional[float] = None  # CLIP zero-shot P(book in view) 0-1; None when it did not run
     person_count: Optional[int] = None       # None when the detector did not run
+    # Detector boxes on this frame: [{"label": "cell phone"|"book"|"person", "score": 0-1, "box": [x, y, w, h]}],
+    # box as fractions of the frame (0-1), so it fits any resolution. Empty when the detector did not run.
+    boxes: list = field(default_factory=list)
     jaw_open: Optional[float] = None         # 0-1 "jawOpen" blendshape of the main face (mouth movement)
     metrics: dict = field(default_factory=dict)  # brightness, sharpness, ... (no image data)
 

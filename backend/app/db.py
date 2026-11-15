@@ -5,6 +5,7 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -60,6 +61,12 @@ CREATE TABLE IF NOT EXISTS seb_status (
   state TEXT NOT NULL, method TEXT, version TEXT, checked_at TEXT NOT NULL,
   PRIMARY KEY (exam_id, student_id)
 );
+CREATE TABLE IF NOT EXISTS seb_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  exam_id INTEGER NOT NULL, student_id INTEGER NOT NULL,
+  state TEXT NOT NULL, method TEXT, version TEXT, platform TEXT, note TEXT, at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_seb_history ON seb_history(exam_id, student_id, id);
 CREATE TABLE IF NOT EXISTS presence (
   exam_id INTEGER NOT NULL, student_id INTEGER NOT NULL,
   joined_at TEXT, last_seen TEXT, left_at TEXT,
@@ -161,6 +168,16 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
+# Additive columns, checked one by one at start-up (safe to run any number of times).
+LOCKDOWN_COLUMNS = [
+    ("seb_status", "first_verified_at", "TEXT"),       # when this student's lockdown was first verified (lockdown start)
+    ("seb_status", "platform", "TEXT"),                # Windows / macOS / iOS / Android / ... from the user agent (a hint)
+    ("exam_seb", "quit_url", "TEXT NOT NULL DEFAULT ''"),   # SEB quitURL, given to students only after the exam ended
+]
+OLDER_COLUMNS = [("consents", "audio_accepted", ""), ("exams", "finished_at", ""), ("presence", "jitsi_state", ""),
+                 ("events", "evidence_deleted_at", ""), ("events", "details", "")]
+
+
 class Database:
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -169,10 +186,15 @@ class Database:
         self._conn = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
+        self.backup_path: Optional[Path] = None
         with self._lock:
             self._conn.execute("PRAGMA foreign_keys = ON")
             if str(path) != ":memory:":
                 self._conn.execute("PRAGMA journal_mode = WAL")
+                # An existing database that needs a structural change is copied first (data/backup/), so the old
+                # state can always be restored. Nothing is copied when the structure is already current.
+                if self._pending_migrations():
+                    self.backup_path = self._backup("sebelum-migrasi")
             self._conn.executescript(SCHEMA)
             # Databases created before the audio option: add the column (existing consents = no audio).
             cols = [r[1] for r in self._conn.execute("PRAGMA table_info(consents)")]
@@ -188,7 +210,41 @@ class Database:
             # Databases created before the sound labels: audio scores per event, and the "info" category.
             if "details" not in [r[1] for r in self._conn.execute("PRAGMA table_info(events)")]:
                 self._conn.execute("ALTER TABLE events ADD COLUMN details TEXT")
+            # Databases created before the lockdown status (15 Nov 2026): additive only, existing rows keep their values.
+            for table, col, ddl in LOCKDOWN_COLUMNS:
+                if col not in [r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")]:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
             self._allow_info_category()
+
+    def _tables(self) -> set:
+        return {r[0] for r in self._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+    def _pending_migrations(self) -> list:
+        """Structural changes this start-up would make to an EXISTING database (empty list for a new or current one)."""
+        tables = self._tables()
+        if "users" not in tables:
+            return []                                     # brand-new database: nothing to protect
+        out = [f"table {t}" for t in ("seb_history",) if t not in tables]
+        cols = lambda t: [r[1] for r in self._conn.execute(f"PRAGMA table_info({t})")]   # noqa: E731
+        for table, col, _ in LOCKDOWN_COLUMNS + OLDER_COLUMNS:
+            if table in tables and col not in cols(table):
+                out.append(f"{table}.{col}")
+        return out
+
+    def _backup(self, label: str) -> Path:
+        """Consistent copy (SQLite backup API, includes the WAL) to <db folder>/backup/eduai-<label>-<time>.sqlite3."""
+        folder = self.path.parent / "backup"
+        folder.mkdir(parents=True, exist_ok=True)
+        dest = folder / f"{self.path.stem}-{label}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.sqlite3"
+        n = 1
+        while dest.exists():
+            dest = folder / f"{self.path.stem}-{label}-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{n}.sqlite3"; n += 1
+        target = sqlite3.connect(str(dest))
+        try:
+            self._conn.backup(target)
+        finally:
+            target.close()
+        return dest
 
     def _allow_info_category(self):
         """SQLite cannot change a CHECK constraint: rebuild `events` with the same columns and rows, in one transaction."""

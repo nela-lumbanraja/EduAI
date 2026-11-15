@@ -63,3 +63,6 @@ mosaik_beranda*
 **/shots*/
 **/screenshots/
 frontend/e2e/__pycache__/
+
+# npm run by mistake in the repo root creates an empty lockfile; the frontend has its own (frontend/package-lock.json)
+/package-lock.json
