@@ -3,7 +3,7 @@
 // headings and text, navy #14213D and gold #C9A227. Every number comes from props (API data).
 // Colour is never the only cue: every part has a text label and a number (legend, tooltip),
 // every chart has alternative text and a hidden table.
-import { useWidth } from "./hooks";
+import { useIsPhone, useWidth } from "./hooks";
 import { LineIcon } from "./IndikasiRingkasan";
 import { useState, type ReactNode } from "react";
 import {
@@ -141,13 +141,16 @@ function KindBadge({ kind, size = 26 }: { kind: KindKey; size?: number }) {
 function SessionColumns({ data, title, stepMin: fixed, note }: { data: TimelineData; title: string; stepMin?: number; note?: string }) {
   const [ref, width] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
-  const { stepMin, bins } = sessionBins(data, 24, fixed);
+  const phone = useIsPhone();
+  // HP: at most 12 time slots instead of 24 (each slot twice as long), so the bars are wide enough to read and tap.
+  // Same points, same totals per kind; only the slot length changes. "Deteksi hari ini" keeps its fixed hour slots.
+  const { stepMin, bins } = sessionBins(data, phone && !fixed ? 12 : 24, fixed);
   const kinds = KINDS.map((k) => ({ ...k, n: data.points.filter((p) => p.kind === k.key).length })).filter((k) => k.n);
   const peak = bins.reduce((best, b, i) => (b.total > (bins[best]?.total ?? -1) ? i : best), 0);
   const alt = `${title} dari ${data.startLabel} sampai ${data.endLabel}: ${data.points.length} indikasi. Per ${stepMin} menit, ${kinds.map((k) => `${k.label} ${k.n}`).join(", ")}.`
     + (data.points.length ? ` Terbanyak ${bins[peak].range} (${bins[peak].total}).` : "");
   if (!data.points.length) return <><Placeholder shape="line" />{data.outside > 0 && <p className="mt-2 text-xs text-[#7d8794]">{data.outside} indikasi di luar jadwal sesi tidak digambar.</p>}</>;
-  const w = Math.max(width, 260), H = 200, top = 12, bottom = 26, left = 30, right = 4;
+  const w = Math.max(width, 260), H = phone ? 180 : 200, top = 12, bottom = 26, left = 30, right = 4;
   const plotW = w - left - right, plotH = H - top - bottom;
   const max = Math.max(1, ...bins.map((b) => b.total));
   const step = [1, 2, 5, 10, 20, 50].find((s2) => max / s2 <= 4) ?? Math.ceil(max / 4);
@@ -202,8 +205,10 @@ function SessionColumns({ data, title, stepMin: fixed, note }: { data: TimelineD
         <span className="mt-1 block border-t border-[#e5e7e9] pt-1 text-[#687382]">Siswa: {hb.students.slice(0, 3).join(", ")}{hb.students.length > 3 ? ` +${hb.students.length - 3}` : ""}</span>
       </> : <span className="block text-[#687382]">Tidak ada indikasi</span>}
     </div>}
-    <ul aria-label="Keterangan jenis indikasi" className="mt-3 flex flex-wrap gap-x-3 gap-y-2 text-xs text-[#334054]">{kinds.map((k) => <li key={k.key} data-kind-legend={k.key} title={`${k.label}: ${k.n} indikasi`}
-      className="flex items-center gap-1.5 rounded-full border border-[#e5e7e9] py-0.5 pl-0.5 pr-2.5"><KindBadge kind={k.key} /><span data-legend-label>{k.label}</span><b className="tabular-nums text-navy">{k.n}</b></li>)}</ul>
+    {phone ? <ul aria-label="Keterangan jenis indikasi" className="mt-4 grid grid-cols-2 gap-x-3 gap-y-2.5 border-t border-[#eef0f2] pt-3 text-xs text-[#334054]">{kinds.map((k) => <li key={k.key} data-kind-legend={k.key} title={`${k.label}: ${k.n} indikasi`}
+      className="flex min-w-0 items-center gap-1.5"><KindBadge kind={k.key} size={20} /><span data-legend-label className="min-w-0 flex-1 leading-tight">{k.label}</span><b className="tabular-nums text-navy">{k.n}</b></li>)}</ul>
+    : <ul aria-label="Keterangan jenis indikasi" className="mt-3 flex flex-wrap gap-x-3 gap-y-2 text-xs text-[#334054]">{kinds.map((k) => <li key={k.key} data-kind-legend={k.key} title={`${k.label}: ${k.n} indikasi`}
+      className="flex items-center gap-1.5 rounded-full border border-[#e5e7e9] py-0.5 pl-0.5 pr-2.5"><KindBadge kind={k.key} /><span data-legend-label>{k.label}</span><b className="tabular-nums text-navy">{k.n}</b></li>)}</ul>}
     {data.outside > 0 && !fixed && <p className="mt-2 text-xs text-[#7d8794]">{data.outside} indikasi di luar jadwal sesi tidak digambar.</p>}
     {note && <p className="mt-2 text-xs text-[#7d8794]">{note}</p>}
     <SrTable caption={title} head={["Waktu (WIB)", "Jumlah", "Jenis", "Siswa"]}
@@ -296,9 +301,9 @@ export function HistoryChart({ data }: { data: ReturnType<typeof historyRows> | 
     <Card title="Ringkasan riwayat" sub="Sesi yang pernah ditugaskan kepada Anda dan sudah selesai.">
       {data ? <div className="flex flex-1 flex-col justify-center gap-5" data-history-summary>
         <dl className="grid grid-cols-3 gap-3 text-xs text-[#687382]">
-          <div><dt>Sesi selesai</dt><dd className="mt-1 text-[26px] font-bold tabular-nums leading-none text-navy">{data.sessions}</dd></div>
-          <div><dt>Sesi dengan indikasi</dt><dd className="mt-1 text-[26px] font-bold tabular-nums leading-none text-navy">{data.rows.filter((r) => r.total > 0).length}</dd></div>
-          <div><dt>Total indikasi</dt><dd className="mt-1 text-[26px] font-bold tabular-nums leading-none text-navy">{data.total}</dd></div>
+          <div className="max-md:flex max-md:flex-col-reverse max-md:justify-end"><dt className="max-md:mt-1.5 max-md:leading-snug">Sesi selesai</dt><dd className="mt-1 text-[26px] font-bold tabular-nums leading-none text-navy">{data.sessions}</dd></div>
+          <div className="max-md:flex max-md:flex-col-reverse max-md:justify-end"><dt className="max-md:mt-1.5 max-md:leading-snug">Sesi dengan indikasi</dt><dd className="mt-1 text-[26px] font-bold tabular-nums leading-none text-navy">{data.rows.filter((r) => r.total > 0).length}</dd></div>
+          <div className="max-md:flex max-md:flex-col-reverse max-md:justify-end"><dt className="max-md:mt-1.5 max-md:leading-snug">Total indikasi</dt><dd className="mt-1 text-[26px] font-bold tabular-nums leading-none text-navy">{data.total}</dd></div>
         </dl>
         <Progress label={<>Sudah ditinjau <b className="text-navy">{reviewed}</b> dari {data.total} indikasi</>} done={reviewed} total={data.total} />
         {data.open > 0 && <p className="text-xs text-[#8c621a]">{data.open} indikasi masih menunggu tinjauan. Buka sesinya lewat "Lihat Detail" di tabel.</p>}

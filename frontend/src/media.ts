@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Room, RoomEvent, Track, type RemoteTrack, type RemoteParticipant } from "livekit-client";
 import { api, type MonitoringInfo } from "./api";
+import { cameraWorking, captureAttempts, detectPlatform, frameAdvanced, isInAppBrowser, mediaErrorText, retryWithSimplerRequest, type BroadcastState } from "./mediaSupport";
 
 export type StudentMedia = {
   stream: MediaStream;               // the one capture: preview, frame uploader and live broadcast
@@ -14,24 +15,32 @@ export type StudentMedia = {
   stop: () => Promise<void>;
 };
 
-const VIDEO = { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 15, max: 24 } };
+export const platform = () => detectPlatform(navigator.userAgent, navigator.maxTouchPoints || 0);
 
 export function mediaErrorMessage(e: unknown): string {
   const name = (e as { name?: string })?.name;
-  if (name === "NotAllowedError" || name === "SecurityError") return "Izin kamera/mikrofon ditolak. Izinkan akses di pengaturan browser, lalu muat ulang halaman.";
-  if (name === "NotFoundError" || name === "OverconstrainedError") return "Kamera atau mikrofon tidak ditemukan pada perangkat ini.";
-  if (name === "NotReadableError") return "Kamera sedang dipakai aplikasi lain. Tutup aplikasi tersebut lalu coba lagi.";
-  if (!window.isSecureContext) return "Kamera hanya dapat dipakai lewat HTTPS atau http://localhost.";
-  if (name === "UnsupportedError") return "Browser ini tidak mendukung kamera/mikrofon. Buka EduAI di Chrome (Android) atau Safari (iPhone) versi terbaru, bukan dari browser di dalam aplikasi seperti WhatsApp atau Instagram.";
-  return "Kamera/mikrofon tidak dapat dibuka.";
+  return mediaErrorText(name, window.isSecureContext, platform(), isInAppBrowser(navigator.userAgent));
+}
+
+/** getUserMedia with the front camera first, then simpler requests (older phone cameras, phones without a working
+ *  microphone). A refusal is not retried: the browser would only refuse again. */
+export async function openCamera(): Promise<MediaStream> {
+  // Some in-app browsers and old phones have no camera API at all (navigator.mediaDevices is undefined).
+  if (!navigator.mediaDevices?.getUserMedia) throw Object.assign(new Error("getUserMedia unsupported"), { name: "UnsupportedError" });
+  let last: unknown = null;
+  for (const c of captureAttempts()) {
+    try { return await navigator.mediaDevices.getUserMedia(c); } catch (e) {
+      last = e;
+      if (!retryWithSimplerRequest((e as { name?: string })?.name)) throw e;
+    }
+  }
+  throw last;
 }
 
 /** Open camera+mic once. The preview, the AI frames and the live broadcast (OpenVidu or Jitsi) all use these tracks,
  *  so what the supervisor watches and what the AI analyses come from the same capture. */
 export async function startStudentMedia(): Promise<StudentMedia> {
-  // Some in-app browsers and old phones have no camera API at all (navigator.mediaDevices is undefined).
-  if (window.isSecureContext && !navigator.mediaDevices?.getUserMedia) throw Object.assign(new Error("getUserMedia unsupported"), { name: "UnsupportedError" });
-  const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO, audio: true });
+  const stream = await openCamera();
   const v = () => stream.getVideoTracks()[0];
   const a = () => stream.getAudioTracks()[0];
   return {
@@ -58,12 +67,12 @@ export function useOpenViduBroadcast(ticket: LiveKitTicket | null, stream: Media
   const ticketRef = useRef(ticket);
   useEffect(() => { ticketRef.current = ticket; });
   const key = ticket && stream ? `${ticket.url}|${ticket.room}` : null;
-  const [state, setState] = useState<{ connected: boolean; error: string | null }>({ connected: false, error: null });
+  const [state, setState] = useState<{ connected: boolean; error: string | null; phase: BroadcastState }>({ connected: false, error: null, phase: "off" });
   const [started, setStarted] = useState<string | null>(null);
   // Reconnect: the video server may start after the student (e.g. Docker still booting) or drop the connection.
   // Without this the student stayed unconnected and the supervisor saw "Video langsung tidak tersedia" until a reload.
   const [attempt, setAttempt] = useState(0);
-  if (key !== started) { setStarted(key); setState({ connected: false, error: null }); setAttempt(0); }
+  if (key !== started) { setStarted(key); setState({ connected: false, error: null, phase: key ? "connecting" : "off" }); setAttempt(0); }
   const roomRef = useRef<Room | null>(null);
 
   useEffect(() => {
@@ -74,11 +83,16 @@ export function useOpenViduBroadcast(ticket: LiveKitTicket | null, stream: Media
     const again = (why: string) => {
       if (cancelled || retry !== undefined) return;
       const wait = reconnectDelay(attempt);
-      setState({ connected: false, error: `${why} Mencoba menyambung lagi dalam ${Math.round(wait / 1000)} detik…` });
+      setState({ connected: false, error: `${why} Mencoba menyambung lagi dalam ${Math.round(wait / 1000)} detik…`, phase: "reconnecting" });
       retry = window.setTimeout(() => { if (!cancelled) setAttempt((n) => n + 1); }, wait);
     };
     const room = new Room({ adaptiveStream: false, dynacast: true, stopLocalTrackOnUnpublish: false });
-    room.on(RoomEvent.Disconnected, () => again("Terputus dari OpenVidu."));
+    room.on(RoomEvent.Disconnected, () => again("Terputus dari OpenVidu."))
+      // Built-in reconnect after a network change (Wi-Fi to mobile data, a short drop): say so instead of "connected".
+      .on(RoomEvent.Reconnecting, () => { if (!cancelled) setState((s) => ({ ...s, connected: false, phase: "reconnecting" })); })
+      .on(RoomEvent.Reconnected, () => { if (!cancelled) setState((s) => ({ ...s, connected: true, error: null, phase: s.phase === "received" ? "received" : "sending" })); })
+      // Somebody in the room (the supervisor's monitor or the AI worker) actually subscribed to this student's camera.
+      .on(RoomEvent.LocalTrackSubscribed, (pub) => { if (!cancelled && pub.source === Track.Source.Camera) setState((s) => ({ ...s, phase: "received" })); });
     (async () => {
       try {
         await room.connect(t.url, t.token);
@@ -87,7 +101,7 @@ export function useOpenViduBroadcast(ticket: LiveKitTicket | null, stream: Media
         if (!cancelled && a) await room.localParticipant.publishTrack(a, { source: Track.Source.Microphone });
         if (cancelled) return;
         roomRef.current = room;
-        setState({ connected: true, error: null });
+        setState((s) => ({ connected: true, error: null, phase: s.phase === "received" ? "received" : "sending" }));
       } catch (e) {
         again(`Tidak dapat terhubung ke OpenVidu (${(e as Error).message || "koneksi gagal"}).`);
       }
@@ -172,6 +186,10 @@ export function useMicLevel(stream: MediaStream | null) {
     if (!stream || !stream.getAudioTracks().length) return;
     const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     const ctx = new Ctx();
+    // iOS Safari starts an AudioContext "suspended" unless it is created inside a tap: resume on the next touch.
+    const resume = () => { if (ctx.state === "suspended") void ctx.resume().catch(() => undefined); };
+    resume();
+    window.addEventListener("pointerdown", resume);
     const src = ctx.createMediaStreamSource(stream);
     const an = ctx.createAnalyser();
     an.fftSize = 512;
@@ -186,7 +204,7 @@ export function useMicLevel(stream: MediaStream | null) {
       raf = requestAnimationFrame(loop);
     };
     loop();
-    return () => { cancelAnimationFrame(raf); src.disconnect(); void ctx.close(); };
+    return () => { cancelAnimationFrame(raf); window.removeEventListener("pointerdown", resume); src.disconnect(); void ctx.close(); };
   }, [stream]);
   return level;
 }
@@ -259,4 +277,78 @@ export function useExamVideoRoom(examId: number | null, enabled: boolean) {
     return () => { cancelled = true; void room?.disconnect(); setTracks({}); };
   }, [examId, enabled]);
   return { tracks, ...status };
+}
+
+/**
+ * Whether the camera picture really moves in `video` (checked every 1.5 s): null while unknown, then true/false.
+ * Phones stop or freeze the camera without an error (iOS while Safari is in the background, an incoming call,
+ * another app taking the camera), so a granted permission or a "live" track is never taken as a working camera.
+ */
+export function useVideoFlowing(video: { current: HTMLVideoElement | null }, stream: MediaStream | null) {
+  const [flowing, setFlowing] = useState<boolean | null>(null);
+  const [seen, setSeen] = useState(stream);
+  if (seen !== stream) { setSeen(stream); setFlowing(null); }
+  useEffect(() => {
+    if (!stream) return;
+    // Count frames actually painted (requestVideoFrameCallback: Chrome 83+, Safari 15.4+). The playback time of a
+    // camera <video> keeps running after the camera stopped, so it is only the fallback for older browsers.
+    const el = video.current as (HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number; cancelVideoFrameCallback?: (h: number) => void }) | null;
+    const rvfc = !!el?.requestVideoFrameCallback;
+    let frames = 0, handle = 0;
+    const onFrame = () => { frames++; if (el?.requestVideoFrameCallback) handle = el.requestVideoFrameCallback(onFrame); };
+    if (el && rvfc) handle = el.requestVideoFrameCallback!(onFrame);
+    let prev = -1, misses = 0;
+    const t = window.setInterval(() => {
+      const v = video.current;
+      if (!v) return;
+      const fresh = rvfc ? frames > 0 : frameAdvanced(prev, v.currentTime, v.readyState, v.videoWidth);
+      frames = 0; prev = v.currentTime;
+      const track = stream.getVideoTracks()[0];
+      if (cameraWorking(track, fresh)) { misses = 0; setFlowing(true); }
+      else if (!cameraWorking(track, true) || ++misses >= 2) setFlowing(false);   // track gone/muted: at once; no frames: after 3 s
+      if (v.paused && v.srcObject) void v.play().catch(() => undefined);   // iOS pauses the preview after an interruption
+    }, 1500);
+    return () => { window.clearInterval(t); if (el && rvfc) el.cancelVideoFrameCallback?.(handle); };
+  }, [video, stream]);
+  return flowing;
+}
+
+/** Kinds ("video", "audio") of the tracks of `stream` that ended by themselves (camera taken by another app, stopped
+ *  by the system, unplugged). The page then offers "Aktifkan ulang" and reports the camera as off. */
+export function useTrackEnded(stream: MediaStream | null) {
+  const [ended, setEnded] = useState<{ stream: MediaStream | null; kinds: string[] }>({ stream: null, kinds: [] });
+  useEffect(() => {
+    if (!stream) return;
+    const handlers = stream.getTracks().map((t) => [t, () => setEnded((e) => ({ stream, kinds: [...new Set([...(e.stream === stream ? e.kinds : []), t.kind])] }))] as const);
+    handlers.forEach(([t, h]) => t.addEventListener("ended", h));
+    return () => handlers.forEach(([t, h]) => t.removeEventListener("ended", h));
+  }, [stream]);
+  return ended.stream === stream ? ended.kinds : [];
+}
+
+type WakeLockSentinelLike = { release: () => Promise<void>; addEventListener: (e: "release", f: () => void) => void };
+
+/** Keep a phone screen on while `active` (Screen Wake Lock: Chrome Android 84+, Safari iOS 16.4+). A sleeping screen
+ *  stops the camera. The browser drops the lock whenever the page is hidden, so it is taken again on return.
+ *  Returns false where the API is missing (the exam still works; the student is told to keep the screen on). */
+export function useWakeLock(active: boolean) {
+  const [held, setHeld] = useState(false);
+  useEffect(() => {
+    const wl = (navigator as Navigator & { wakeLock?: { request: (t: "screen") => Promise<WakeLockSentinelLike> } }).wakeLock;
+    if (!active || !wl) return;
+    let lock: WakeLockSentinelLike | null = null;
+    let stop = false;
+    const take = () => {
+      if (stop || document.visibilityState !== "visible") return;
+      wl.request("screen").then((l) => {
+        if (stop) { void l.release(); return; }
+        lock = l; setHeld(true);
+        l.addEventListener("release", () => { if (!stop) setHeld(false); });
+      }).catch(() => setHeld(false));
+    };
+    take();
+    document.addEventListener("visibilitychange", take);
+    return () => { stop = true; document.removeEventListener("visibilitychange", take); void lock?.release().catch(() => undefined); };
+  }, [active]);
+  return active && held;
 }

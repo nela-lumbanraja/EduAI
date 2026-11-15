@@ -27,7 +27,6 @@ test("'Kembali ke Dasbor' opens the dashboard of the account's role", () => {
   assert.equal(dashboardKind("Pengawas"), "pengawas");
   assert.equal(dashboardKind("Admin"), "admin");
   assert.equal(dashboardKind("Penyelenggara Ujian"), "institusi");
-  assert.equal(dashboardKind("Pihak Sekolah"), "institusi");
 });
 
 test("login errors are Indonesian and never reveal whether the account exists", () => {

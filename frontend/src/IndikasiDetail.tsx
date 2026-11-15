@@ -7,7 +7,7 @@ import { api, type CaseSummary, type Decision } from "./api";
 import { EMPTY_CHART } from "./chartData";
 import { DonutCard, LineIcon, SummaryCard } from "./IndikasiRingkasan";
 import { JENIS, axisTicks, drawerTitle, jenisOf, statusOf, type Activity, type DrawerSource, type JenisKey, type KindBar, type KindSlice, type LoadSlice, type StatusKey } from "./indikasi";
-import { useFocusTrap, useWidth } from "./hooks";
+import { useFocusTrap, useIsPhone, useWidth } from "./hooks";
 import { formatWib, parseUtc, timeAgo } from "./time";
 
 const BORDER = "#DFE1E6";
@@ -71,10 +71,24 @@ export function ActivityCard({ items, now, capped, onOpenCase }: { items: Activi
 export function KindBarChart({ bars, selected, onSelect }: { bars: KindBar[] | null; selected: JenisKey | null; onSelect: (k: JenisKey) => void }) {
   const [ref, width] = useWidth<HTMLDivElement>();
   const [focus, setFocus] = useState<JenisKey | null>(null);
+  const phone = useIsPhone();
   const card = (body: ReactNode) => <SummaryCard title="Indikasi per jenis" sub="Jumlah kasus per jenis indikasi. Pilih batang untuk melihat siswanya.">{body}</SummaryCard>;
   if (!bars) return card(<p className="py-6 text-center text-xs" style={{ color: MUTED }}>Memuat…</p>);
   const max = Math.max(0, ...bars.map((b) => b.value));
   if (!max) return card(<Empty />);
+  // Phone: 9 kinds side by side leave ~35 px per column, so the names overlapped. One row per kind instead
+  // (full name, bar, number); same data, same selection. Desktop keeps the vertical bars below.
+  if (phone) return card(<ul aria-label={`Indikasi per jenis: ${bars.map((b) => `${b.label} ${b.value} kasus`).join(", ")}.`} className="-mx-1 space-y-0.5">
+    {bars.map((b) => { const on = selected === b.key; return <li key={b.key}>
+      <button type="button" data-bar={b.key} data-value={b.value} aria-pressed={on} onClick={() => onSelect(b.key)}
+        aria-label={`${b.label}: ${b.value} kasus (${b.pct}%)${on ? ", dipilih" : ""}`}
+        className={`grid min-h-11 w-full grid-cols-[1.25rem_minmax(0,1fr)_34%_2.25rem] items-center gap-2.5 py-1 rounded-md px-1 text-left text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-[#C9A227] ${on ? "bg-[#FFF8E1]" : ""}`}>
+        <span style={{ color: on ? "#5C4600" : "#44546F" }}><LineIcon name={b.icon} /></span>
+        <span className={`leading-tight ${on ? "font-bold" : ""}`} style={{ color: on ? TEXT : MUTED }}>{b.label}</span>
+        <span className="h-2.5 overflow-hidden rounded-full bg-[#EBECF0]"><span className="block h-full rounded-full" style={{ width: `${(b.value / max) * 100}%`, background: on ? GOLD : NAVY }} /></span>
+        <span className="text-right font-semibold tabular-nums" style={{ color: TEXT }}>{b.value}</span>
+      </button></li>; })}
+  </ul>);
   const ticks = axisTicks(max), top = ticks[ticks.length - 1];
   const H = 200, PAD_T = 18, AXIS = 28, BOTTOM = 46, plotW = Math.max(0, width - AXIS), slot = bars.length ? plotW / bars.length : 0;
   const barW = Math.max(8, Math.min(36, slot * 0.5));

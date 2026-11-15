@@ -27,6 +27,7 @@ export const NAV_MENUS: Record<Role, NavItem[]> = {
     { id: "sessions", label: "Sesi Ujian", icon: "calendar" },
     { id: "students", label: "Peserta", icon: "users" },
     { id: "users", label: "Pengawas", icon: "user-check" },
+    { id: "student-accounts", label: "Akun Siswa", icon: "users" },     // from the former role Pihak Sekolah
     { id: "report", label: "Laporan", icon: "report" },
     { id: "meeting", label: "Rapat Video", icon: "video" },
   ],
@@ -38,14 +39,6 @@ export const NAV_MENUS: Record<Role, NavItem[]> = {
     { id: "configuration", label: "Konfigurasi", icon: "sliders" },
     { id: "retention", label: "Retensi Data", icon: "archive" },
     { id: "audit", label: "Audit Log", icon: "clipboard" },
-    { id: "meeting", label: "Rapat Video", icon: "video" },
-  ],
-  "Pihak Sekolah": [
-    { id: "dashboard", label: "Dasbor", icon: "dashboard" },
-    { id: "sessions", label: "Informasi Sesi", icon: "calendar" },
-    { id: "indications", label: "Indikasi Tervalidasi", icon: "bell" },
-    { id: "report", label: "Laporan Final", icon: "report" },
-    { id: "users", label: "Akun Siswa", icon: "users" },
     { id: "meeting", label: "Rapat Video", icon: "video" },
   ],
 };
@@ -61,10 +54,16 @@ export function isActive(active: string, id: string): boolean {
   return false;
 }
 
-/** Phone: the bottom bar has 5 places: the first 4 menus and "Lainnya" (the other menus, Profil and Keluar).
- *  With 4 menus or fewer every menu fits. */
-export function mobileSplit(items: NavItem[]): { bar: NavItem[]; more: NavItem[] } {
-  return { bar: items.slice(0, 4), more: items.slice(4) };
+/** Phone (< 768 px): a drawer from the left, opened with the ☰ button in the header (replaces the bottom bar and
+ *  its "Lainnya" sheet). It lists every menu of the role (NAV_MENUS, nothing added or removed), then the group
+ *  "Akun" with what "Lainnya" held: the profile/settings page and Keluar. */
+export type DrawerChild = { id: string; label: string };
+export const DRAWER_ACCOUNT = {
+  id: "akun", label: "Akun",
+  children: [{ id: PROFILE_SCREEN, label: "Profil & Pengaturan" }, { id: "logout", label: "Keluar" }] as DrawerChild[],
+};
+export function drawerMenu(role: Role): { items: NavItem[]; account: typeof DRAWER_ACCOUNT } {
+  return { items: NAV_MENUS[role], account: DRAWER_ACCOUNT };
 }
 
 /** Text of a red count badge, or null when there is nothing to show (0 hides the badge). */
@@ -73,5 +72,5 @@ export function badgeText(n: number | null | undefined): string | null {
   return n > 99 ? "99+" : String(n);
 }
 
-/** Roles whose "Indikasi" menu shows the number of unreviewed cases. Pihak Sekolah only sees reviewed cases. */
+/** Roles whose "Indikasi" menu shows the number of unreviewed cases. */
 export const BADGE_ROLES: Role[] = ["Pengawas", "Penyelenggara Ujian", "Admin"];

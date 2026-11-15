@@ -3,7 +3,8 @@
 // The page URL is read once, when the page loads, and is never changed afterwards: Safe Exam Browser hashes the
 // page URL into its keys, so a history.pushState() after load could make the SEB check of a student fail.
 
-export type Role = "Siswa" | "Pengawas" | "Penyelenggara Ujian" | "Admin" | "Pihak Sekolah";
+/** "Penyelenggara Ujian" is also the school (Pihak Sekolah): one role. */
+export type Role = "Siswa" | "Pengawas" | "Penyelenggara Ujian" | "Admin";
 export type Entry = "beranda" | "login" | "dashboard";
 
 /** First screen for the URL the page was opened with. Signed in: always the dashboard (also for /login). */
@@ -32,7 +33,7 @@ export type DashboardKind = "siswa" | "admin" | "institusi" | "pengawas";
 export function dashboardKind(role: Role): DashboardKind {
   if (role === "Siswa") return "siswa";
   if (role === "Admin") return "admin";
-  if (role === "Penyelenggara Ujian" || role === "Pihak Sekolah") return "institusi";
+  if (role === "Penyelenggara Ujian") return "institusi";
   return "pengawas";
 }
 
@@ -59,7 +60,6 @@ export function authErrorMessage(status: number, serverMessage: string, register
 export const ALLOWED_SCREENS: Record<Role, string[]> = {
   Siswa: ["login", "dashboard", "my-exams", "seb-check", "consent", "device", "exam", "settings", "access-denied"],
   Pengawas: ["login", "dashboard", "sessions", "exam-detail", "waiting", "monitor", "student-detail", "detail", "timeline", "report", "indications", "history", "students", "meeting", "settings", "access-denied"],
-  "Penyelenggara Ujian": ["login", "dashboard", "sessions", "exam-detail", "waiting", "monitor", "student-detail", "detail", "timeline", "report", "indications", "history", "students", "users", "meeting", "settings", "access-denied"],
+  "Penyelenggara Ujian": ["login", "dashboard", "sessions", "exam-detail", "waiting", "monitor", "student-detail", "detail", "timeline", "report", "indications", "history", "students", "users", "student-accounts", "meeting", "settings", "access-denied"],
   Admin: ["login", "dashboard", "sessions", "create", "exam-detail", "waiting", "seb-check", "consent", "device", "exam", "monitor", "student-detail", "detail", "timeline", "report", "indications", "history", "students", "users", "configuration", "retention", "audit", "meeting", "settings", "access-denied"],
-  "Pihak Sekolah": ["login", "dashboard", "sessions", "exam-detail", "detail", "report", "indications", "history", "users", "meeting", "settings", "access-denied"],
 };

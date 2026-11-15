@@ -9,6 +9,7 @@ import '@fontsource/public-sans/700.css'
 import '@fontsource/public-sans/800.css'
 import './index.css'
 import { installScrollHints } from './scrollHint'
+import { installStackLabels } from './stackTables'
 import { installAlarmUnlock } from './alarm'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
@@ -18,4 +19,5 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 )
 
 installScrollHints()
+installStackLabels()
 installAlarmUnlock()

@@ -103,7 +103,7 @@ def add_test_data(db_path):
     c.executemany("INSERT INTO presence (exam_id, student_id, joined_at, last_seen, camera_on, mic_on, connection) VALUES (1,?,?,?,1,1,'baik')",
                   [(uid[f"siswa{i}@gmail.com"], iso(now - timedelta(minutes=8)), iso(now)) for i in (1, 2, 3)])
     c.commit(); c.close()
-    return {"finished_wib": wib(finished_at), "sekolah": roles.get("sekolah"), "admin": roles.get("admin"), "penyelenggara": roles.get("penyelenggara")}
+    return {"finished_wib": wib(finished_at), "sekolah": next((r[0] for r in sqlite3.connect(db_path).execute("SELECT email FROM users WHERE email LIKE 'sekolah%' ORDER BY email LIMIT 1")), None), "admin": roles.get("admin"), "penyelenggara": roles.get("penyelenggara")}
 
 
 KIND_CODES = {"hp": ("PHONE",), "orang": ("MULTIPLE_PERSONS",), "buku": ("BOOK",), "wajah": ("FACE_ABSENT",), "menoleh": ("HEAD_TURN",),
@@ -132,9 +132,9 @@ def parse_ts(v):
 SIDEBAR = {  # mirror of src/nav.ts NAV_MENUS (Profil is the avatar at the bottom)
     "siswa": ["Dasbor", "Ujian Saya"],
     "pengawas": ["Dasbor", "Sesi Ujian", "Monitoring", "Indikasi", "Riwayat", "Laporan", "Rapat Video"],
-    "penyelenggara": ["Dasbor", "Sesi Ujian", "Peserta", "Pengawas", "Laporan", "Rapat Video"],
+    "penyelenggara": ["Dasbor", "Sesi Ujian", "Peserta", "Pengawas", "Akun Siswa", "Laporan", "Rapat Video"],
     "admin": ["Dasbor", "Daftar Ujian", "Indikasi", "Manajemen User", "Konfigurasi", "Retensi Data", "Audit Log", "Rapat Video"],
-    "sekolah": ["Dasbor", "Informasi Sesi", "Indikasi Tervalidasi", "Laporan Final", "Akun Siswa", "Rapat Video"],
+    "sekolah": ["Dasbor", "Sesi Ujian", "Peserta", "Pengawas", "Akun Siswa", "Laporan", "Rapat Video"],   # Pihak Sekolah = Penyelenggara
 }
 SIDEBAR_JS = """() => { const a = document.querySelector('aside[aria-label=Sidebar]'); const r = a.getBoundingClientRect();
   const items = [...a.querySelectorAll('nav[aria-label="Menu utama"] > button')].map(b => ({ label: b.getAttribute('aria-label'), current: b.getAttribute('aria-current'),
@@ -313,7 +313,7 @@ def layout_ok(pg, name):
           f"scrollWidth {o['scroll']}/{o['client']}" + (f", {o['bad']}" if o["bad"] else ""))
 
 
-STAFF_TAB = {"penyelenggara": "Penyelenggara", "pengawas": "Pengawas", "admin": "Admin", "sekolah": "Sekolah"}
+STAFF_TAB = {"penyelenggara": "Penyelenggara", "pengawas": "Pengawas", "admin": "Admin", "sekolah": "Penyelenggara"}   # school accounts: tab Penyelenggara
 
 
 def login(pg, email, portal=None):
@@ -784,7 +784,7 @@ try:
         ctx.close()
 
         # --- Indikasi per peran
-        for who in ("admin", "sekolah"):
+        for who in ("admin",):                                   # Pihak Sekolah = Penyelenggara: no Indikasi menu
             mail = facts.get(who)
             if not mail:
                 check(f"Indikasi {who}: akun ada di DB uji", False, "tidak ada"); continue
@@ -1024,19 +1024,20 @@ try:
                 pg.hover("aside[aria-label=Sidebar] nav button >> nth=1"); pg.wait_for_timeout(450)
                 check("sidebar 1024px: tetap 72 px saat kursor di atasnya, tooltip nama menu", pg.evaluate(SIDEBAR_JS)["width"] == 72
                       and pg.locator("aside nav button >> nth=1 >> [role=tooltip]").is_visible(), pg.locator("aside nav button >> nth=1 >> [role=tooltip]").inner_text())
-            # 390 px: bottom bar
+            # 390 px: no bottom bar; the menu button opens the left drawer with every menu + Akun (Profil & Pengaturan, Keluar)
             pg.set_viewport_size({"width": 390, "height": 844}); pg.wait_for_timeout(400)
             bar = pg.evaluate("""() => ({ aside: getComputedStyle(document.querySelector('aside[aria-label=Sidebar]')).display,
-                buttons: [...document.querySelectorAll('nav[aria-label="Navigasi bawah"] > button, nav[aria-label="Navigasi bawah"] > div > button')].map(b => b.getAttribute('aria-label').split(',')[0]),
-                scrollW: document.documentElement.scrollWidth })""")
-            want_bar = SIDEBAR[key][:4] + ["Lainnya"]
-            check(f"sidebar {key} 390px: bilah bawah {len(want_bar)} ikon, sidebar disembunyikan, tanpa scroll samping",
-                  bar["aside"] == "none" and bar["buttons"] == want_bar and bar["scrollW"] == 390, str(bar))
+                bottom: !!document.querySelector('nav[aria-label="Navigasi bawah"]'), scrollW: document.documentElement.scrollWidth })""")
+            check(f"sidebar {key} 390px: tanpa bilah bawah, sidebar disembunyikan, tanpa scroll samping",
+                  bar["aside"] == "none" and not bar["bottom"] and bar["scrollW"] == 390, str(bar))
             pg.screenshot(path=str(SHOTS / f"sidebar-{key}-390.png"))
-            pg.locator("nav[aria-label='Navigasi bawah'] button[aria-label=Lainnya]").click(); pg.wait_for_timeout(250)
-            items = [t.strip().split("\n")[-1] for t in pg.locator("#menu-lainnya-hp [role=menuitem]").all_inner_texts()]
-            check(f"sidebar {key} 390px: Lainnya berisi menu sisanya, Profil, Pengaturan, Keluar", items == [x for x in SIDEBAR[key][4:]] + ["Profil", "Pengaturan", "Keluar"], str(items))
-            pg.screenshot(path=str(SHOTS / f"sidebar-{key}-390-lainnya.png"))
+            pg.locator("#tombol-menu-hp").click(); pg.wait_for_timeout(350)
+            pg.locator("[data-drawer-group=akun]").click(); pg.wait_for_timeout(300)
+            items = pg.evaluate("[...document.querySelectorAll('#menu-hp [data-drawer-item]')].map(b => (b.getAttribute('aria-label') || b.textContent).split(',')[0].trim())")
+            check(f"sidebar {key} 390px: laci kiri berisi semua menu peran, lalu Profil & Pengaturan dan Keluar",
+                  items == SIDEBAR[key] + ["Profil & Pengaturan", "Keluar"], str(items))
+            pg.screenshot(path=str(SHOTS / f"sidebar-{key}-390-laci.png"))
+            pg.keyboard.press("Escape"); pg.wait_for_timeout(300)
             ctx.close()
 
         # --- Manajemen User (admin): aksi Ubah
@@ -1079,9 +1080,9 @@ try:
         f_siswa = fields()
         pg.screenshot(path=str(SHOTS / "tambah-user-siswa-1440.png"))
         got = {}
-        for role in ("pengawas", "penyelenggara", "sekolah", "admin"):
+        for role in ("pengawas", "penyelenggara", "admin"):
             pg.select_option(f"{add} select[name=role]", role); pg.wait_for_timeout(120); got[role] = fields()
-        check("Tambah User: siswa punya NIS/NISN dan Kelas; pengawas, penyelenggara, sekolah tidak; admin wajib centang konfirmasi",
+        check("Tambah User: siswa punya NIS/NISN dan Kelas; pengawas dan penyelenggara tidak; admin wajib centang konfirmasi",
               {"nis", "class_name"} <= set(f_siswa) and all("nis" not in v and "class_name" not in v for v in got.values()) and "admin-ok" in got["admin"]
               and "admin-ok" not in got["pengawas"], f"siswa {f_siswa}, lain {got}")
         pg.fill(f"{add} input[name=name]", "Admin Uji Tambah"); pg.fill(f"{add} input[name=email]", "admin.uji@sekolah.id"); pg.fill(f"{add} input[name=password]", "rahasia-123")
@@ -1118,7 +1119,7 @@ try:
         ctx = b.new_context(viewport={"width": 1440, "height": 900}); pg = ctx.new_page()
         login(pg, facts["sekolah"], "Sekolah"); pg.mouse.move(900, 600)
         pg.locator("aside nav button", has_text="Akun Siswa").click(); pg.wait_for_selector("tr[data-user]"); pg.mouse.move(900, 600)
-        api_users = fetch_json(pg, "/api/users")
+        api_users = fetch_json(pg, "/api/users?role=siswa")
         shown = pg.evaluate("() => [...document.querySelectorAll('tr[data-user]')].map(r => r.dataset.user)")
         heads = [t.strip() for t in pg.locator("thead th").all_inner_texts()]
         check("Akun Siswa (sekolah): hanya akun siswa dari API, kolom NIS/NISN dan Kelas, aksi Ubah, tanpa tombol Tambah",
@@ -1132,7 +1133,7 @@ try:
               and pg.locator("#form-user input[readonly][value=Siswa]").count() == 1)
         pg.fill("#form-user input[name=class_name]", "XII IPA 7"); pg.locator(dlg).get_by_role("button", name="Simpan").click()
         pg.wait_for_selector("[role=status]:has-text('tersimpan')", timeout=8000)
-        after = next(u for u in fetch_json(pg, "/api/users") if u["email"] == "siswa4@gmail.com")
+        after = next(u for u in fetch_json(pg, "/api/users?role=siswa") if u["email"] == "siswa4@gmail.com")
         check("Akun Siswa (sekolah): perubahan kelas tersimpan dan tampil di tabel", after["class_name"] == "XII IPA 7"
               and "XII IPA 7" in pg.locator("tr[data-user='siswa4@gmail.com']").inner_text(), str(after))
         pg.screenshot(path=str(SHOTS / "akun-siswa-sekolah-1440.png"))
@@ -1164,7 +1165,7 @@ try:
         pg.locator("[data-exam-filter='selesai']").click(); pg.wait_for_timeout(200)
         pg.screenshot(path=str(SHOTS / "ujian-saya-filter-1440.png"))
         pg.set_viewport_size({"width": 390, "height": 844}); pg.wait_for_timeout(300)
-        check("Siswa 390px: bilah bawah tanpa 'Rapat Video'", pg.locator("nav[aria-label='Navigasi bawah'] button[aria-label^='Rapat Video']").count() == 0
+        check("Siswa 390px: menu HP tanpa 'Rapat Video'", pg.locator("#menu-hp [data-drawer-item=meeting]").count() == 0
               and pg.evaluate("document.documentElement.scrollWidth") == 390)
         ctx.close()
 

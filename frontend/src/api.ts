@@ -3,7 +3,8 @@
 
 import type { JitsiServer, WatchRoom } from "./jitsi";
 import { pageUrl, type SebReading, type SebState } from "./seb";
-export type RoleCode = "siswa" | "pengawas" | "penyelenggara" | "admin" | "sekolah";
+// "Pihak Sekolah" is the same role as "Penyelenggara Ujian" (code "penyelenggara"); the backend merged old "sekolah" accounts.
+export type RoleCode = "siswa" | "pengawas" | "penyelenggara" | "admin";
 export type User = { id: number; email: string; name: string; role: RoleCode; role_label: string; nis?: string | null; class_name?: string | null };
 export type ExamStatus = "Draft" | "Terjadwal" | "Sedang Berlangsung" | "Selesai";
 export type Exam = {
@@ -260,8 +261,8 @@ export const api = {
 
 // ---- display helpers ----
 export const EVIDENCE_RESTRICTED = "Gambar bukti hanya untuk pengawas dan admin";
-export const ROLE_LABEL: Record<RoleCode, "Siswa" | "Pengawas" | "Penyelenggara Ujian" | "Admin" | "Pihak Sekolah"> = {
-  siswa: "Siswa", pengawas: "Pengawas", penyelenggara: "Penyelenggara Ujian", admin: "Admin", sekolah: "Pihak Sekolah",
+export const ROLE_LABEL: Record<RoleCode, "Siswa" | "Pengawas" | "Penyelenggara Ujian" | "Admin"> = {
+  siswa: "Siswa", pengawas: "Pengawas", penyelenggara: "Penyelenggara Ujian", admin: "Admin",
 };
 export const STATE_LABEL: Record<AnalysisState, string> = {
   not_started: "AI belum dimulai", no_data: "Menunggu hasil analisis", ai_offline: "Analisis AI terputus", warming_up: "Menyiapkan acuan", normal: "Normal", indication: "Indikasi aktif",

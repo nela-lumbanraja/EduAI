@@ -14,6 +14,19 @@ export function useWidth<T extends HTMLElement>() {
   return [setEl, width] as const;
 }
 
+/** True below 768 px (the phone layout, same breakpoint as Tailwind "md"). Desktop code paths stay as they were. */
+export function useIsPhone() {
+  const query = "(max-width: 767px)";
+  const [phone, setPhone] = useState(() => typeof window !== "undefined" && window.matchMedia(query).matches);
+  useEffect(() => {
+    const m = window.matchMedia(query);
+    const on = () => setPhone(m.matches);
+    on(); m.addEventListener("change", on);
+    return () => m.removeEventListener("change", on);
+  }, []);
+  return phone;
+}
+
 const FOCUSABLE = "button:not([disabled]), [href], input:not([disabled]), textarea, select, [tabindex]:not([tabindex='-1'])";
 
 /** Keep Tab inside `ref` while `active`; Esc calls onEscape; focus returns to the opener afterwards. */

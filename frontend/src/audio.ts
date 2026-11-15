@@ -8,7 +8,7 @@ import { api, assetUrl, type MonitoringInfo } from "./api";
 import { groupScores, lastSamples, type AudioScores } from "./audioScores";
 
 type Classifier = { classify: (data: Float32Array, sampleRate?: number) => { classifications: { categories: { categoryName: string; score: number }[] }[] }[]; close: () => void };
-export type SpeechStatus = "off" | "loading" | "running" | "muted" | "error";
+export type SpeechStatus = "off" | "loading" | "running" | "muted" | "suspended" | "error";
 
 let classifierPromise: Promise<Classifier> | null = null;
 
@@ -42,6 +42,8 @@ export class SpeechScorer {
   private timer: number | null = null;
   private inFlight = false;
   private runId = 0;
+  // iOS Safari keeps an AudioContext created outside a tap suspended (no samples): resume it on the next touch.
+  private resumeOnTap = () => { if (this.ctx?.state === "suspended") void this.ctx.resume().catch(() => undefined); };
 
   constructor(private examId: number, private micOn: () => boolean) {}
 
@@ -69,6 +71,7 @@ export class SpeechScorer {
       this.node.connect(sink);
       sink.connect(this.ctx.destination);
       await this.ctx.resume().catch(() => undefined);
+      window.addEventListener("pointerdown", this.resumeOnTap);
       this.status = "running";
       this.lastError = "";
       this.timer = window.setInterval(() => void this.tick(classifier), Math.max(250, cfg.interval_ms || 500));
@@ -90,6 +93,7 @@ export class SpeechScorer {
   }
 
   private teardown() {
+    window.removeEventListener("pointerdown", this.resumeOnTap);
     this.node?.disconnect();
     this.source?.disconnect();
     if (this.node) this.node.onaudioprocess = null;
@@ -112,6 +116,7 @@ export class SpeechScorer {
   private async tick(classifier: Classifier) {
     if (!this.ctx || this.inFlight) return;
     if (!this.micOn()) { this.status = "muted"; return; }               // student muted: send nothing
+    if (this.ctx.state !== "running") { this.status = "suspended"; return; }   // iOS: waiting for a tap (resumeOnTap)
     this.status = "running";
     const clip = lastSamples(this.ring, this.writePos, this.filled, Math.round(this.ctx.sampleRate));
     if (!clip) return;

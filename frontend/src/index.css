@@ -121,6 +121,34 @@ header.sticky {
 .overflow-x-auto[data-scroll="start"] { -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 44px), transparent); mask-image: linear-gradient(to left, #000 calc(100% - 44px), transparent); }
 .overflow-x-auto[data-scroll="both"] { -webkit-mask-image: linear-gradient(to right, transparent, #000 44px, #000 calc(100% - 44px), transparent); mask-image: linear-gradient(to right, transparent, #000 44px, #000 calc(100% - 44px), transparent); }
 
+/* HP (< 768 px): tabel data bertanda "m-stack" tampil sebagai kartu, satu baris tabel = satu kartu, judul kolom di kiri
+   setiap nilai (data-label dari src/stackTables.ts). Kolom aksi dan status selalu terlihat, tanpa geser menyamping.
+   Di desktop aturan ini tidak berlaku. */
+@media (max-width: 767px) {
+  table.m-stack { display: block; min-width: 0 !important; width: 100%; }
+  table.m-stack > thead { display: block; position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  table.m-stack > tbody { display: block; }
+  table.m-stack > tbody > tr { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px; border-top: 1px solid #e2e8f0; }
+  table.m-stack > tbody > tr:first-child { border-top: 0; }
+  table.m-stack > tbody > tr > td { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 0 !important;
+    text-align: right; white-space: normal !important; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+  table.m-stack > tbody > tr > td::before { content: attr(data-label); flex: 0 0 auto; max-width: 45%; text-align: left;
+    font-size: 12px; font-weight: 500; color: #64748b; }
+  table.m-stack > tbody > tr > td > * { min-width: 0; }
+  /* first column = what the row is about (name, exam): a title line without label */
+  table.m-stack > tbody > tr > td:first-child { display: block; text-align: left; font-weight: 600; font-size: 15px; color: #14213d; }
+  table.m-stack > tbody > tr > td:first-child::before { content: none; }
+  /* cells without a header (actions, empty-state rows): full width, actions on the left edge */
+  table.m-stack > tbody > tr > td[data-wide] { justify-content: flex-start; text-align: left; }
+  table.m-stack > tbody > tr > td[data-wide]::before { content: none; }
+  table.m-stack > tbody > tr > td[colspan] { display: block; text-align: center; }
+  .overflow-x-auto:has(> table.m-stack) { -webkit-mask-image: none; mask-image: none; }
+
+  /* Beranda: card text was 12 px, too small on a phone */
+  .bd-band .bd-card-text { font-size: 14px; line-height: 1.55; }      /* .bd-band: wins over the base rule further down */
+  .bd-band .bd-card-title { font-size: 19px; }
+}
+
 /* Dasbor Admin dan Pengawas: grid diagram (DashboardChartHub). Kartu satu baris sama tinggi, isi di tengah area konten,
    judul seragam; saat data kosong hanya pesan "Belum ada data" yang tampil (bentuk dekoratif disembunyikan). */
 .chart-hub section { display: flex; flex-direction: column; min-width: 0; }
@@ -129,6 +157,9 @@ header.sticky {
 .chart-hub [data-empty-deco] { display: none; }
 .chart-hub [data-empty-box] { background: transparent; }
 @media (min-width: 900px) { .chart-hub section { min-height: 15rem; } }
+/* HP: chart cards are one per row, so there is no row height to share: content starts under the card heading
+   (no empty band above a donut), and the group headings (PhoneChartOrder) keep related cards together. */
+@media (max-width: 767px) { .chart-hub section > div:last-child { justify-content: flex-start; } }
 
 /* Notification panel slides in from the right (switched off with reduced motion, below). */
 .notif-panel { animation: notif-in 0.2s ease-out; }
