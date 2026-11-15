@@ -76,12 +76,9 @@ def test_offline_student_events_are_closed_by_the_sweep(client):
     assert ev["status"] == "closed" and ev["reason"].endswith("(siswa terputus)")
 
 
-def test_only_the_student_can_report_presence_and_school_sees_device_cases_after_review(client):
+def test_only_the_student_can_report_presence_and_the_school_sees_device_cases(client):
     hs, hp = start_exam_session(client)
     assert client.post("/api/exams/1/presence", headers=hp, json={"camera_on": False, "mic_on": False, "connection": "baik"}).status_code == 403
     beat(client, hs, camera=False); beat(client, hs, camera=False)
     hsek = login(client, "sekolah1@gmail.com")
-    assert not [c for c in client.get("/api/cases", headers=hsek).json()["cases"] if c["indicator"] == "CAMERA_OFF"]
-    case = next(c for c in client.get("/api/cases", headers=hp).json()["cases"] if c["indicator"] == "CAMERA_OFF")
-    client.post(f"/api/cases/{case['case_id']}/reviews", headers=hp, json={"decision": "Tidak Valid"})
     assert [c for c in client.get("/api/cases", headers=hsek).json()["cases"] if c["indicator"] == "CAMERA_OFF"]

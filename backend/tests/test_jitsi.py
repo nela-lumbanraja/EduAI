@@ -399,7 +399,7 @@ def test_live_video_only_for_assigned_supervisor_and_admin(real):
     for who in ("penyelenggara1", "sekolah1", "pengawas2", "siswa1", "siswa2"):
         assert real.get("/api/exams/1/jitsi/watch", headers=login(real, f"{who}@gmail.com")).status_code == 403, who
     denied = real.app.state.db.all("SELECT role FROM audit WHERE action='Video langsung siswa ditolak'")
-    assert sorted(r["role"] for r in denied) == ["pengawas", "penyelenggara", "sekolah"]
+    assert sorted(r["role"] for r in denied) == ["pengawas", "penyelenggara", "penyelenggara"]   # sekolah1 = penyelenggara
     assert real.app.state.db.one("SELECT 1 FROM audit WHERE action LIKE 'Melihat video langsung%' AND role='pengawas'")
 
 

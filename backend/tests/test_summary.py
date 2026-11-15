@@ -260,7 +260,7 @@ def test_summary_content_groups_by_student_and_behaviour_without_fabrication(cli
 
 def test_summary_endpoints_are_for_monitoring_roles_only(client):
     assert client.get("/api/summaries", headers=login(client, "siswa1@gmail.com")).status_code == 403
-    assert client.get("/api/exams/1/summary", headers=login(client, "sekolah1@gmail.com")).status_code == 403
+    assert client.get("/api/exams/1/summary", headers=login(client, "pengawas2@gmail.com")).status_code == 403
 
 
 def test_rules_can_be_overridden_from_config():

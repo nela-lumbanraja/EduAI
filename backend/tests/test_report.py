@@ -147,14 +147,12 @@ def test_access_without_permission(client):
     assert rep["events"][0]["evidence"] == {"state": "available", "url": None}
 
 
-def test_school_sees_reviewed_only_including_totals(client):
-    hp, hk = login(client, "pengawas1@gmail.com"), login(client, "sekolah1@gmail.com")
-    a, _ = add_event(client), add_event(client)
+def test_school_is_the_organiser_and_sees_every_indication(client):
+    hk = login(client, "sekolah1@gmail.com")                  # Pihak Sekolah = Penyelenggara Ujian
+    a, b = add_event(client), add_event(client)
     rep = report(client, hk)
-    assert rep["events"] == [] and rep["indications"]["total"] == 0 and rep["indications"]["unreviewed"] == 0
-    client.patch(f"/api/events/{a}/review", headers=hp, json=DECIDED)
-    rep = report(client, hk)
-    assert [e["event_id"] for e in rep["events"]] == [a] and rep["events"][0]["evidence"]["url"] is None
+    assert {e["event_id"] for e in rep["events"]} == {a, b} and rep["indications"]["unreviewed"] == 2
+    assert all(e["evidence"]["url"] is None for e in rep["events"]) and rep["can_edit"] is False
 
 
 def test_signed_url_rules(client):
@@ -410,7 +408,7 @@ def test_denied_attempts_are_audited_with_the_user(client):
         client.get(frame, headers=login(client, f"{who}@gmail.com"))
     client.get(signed_for(client, "penyelenggara1@gmail.com", eid))
     rows = client.app.state.db.all("SELECT * FROM audit WHERE action='Akses gambar bukti ditolak' ORDER BY id")
-    assert [r["role"] for r in rows] == ["penyelenggara", "sekolah", "pengawas", "penyelenggara"]
+    assert [r["role"] for r in rows] == ["penyelenggara", "penyelenggara", "pengawas", "penyelenggara"]
     assert all(r["status"] == "Ditolak" and r["target"] == f"exam:1 event:{eid[:8]}" for r in rows)
     client.get(meta, headers=login(client, "admin1@gmail.com"))
     assert len(client.app.state.db.all("SELECT 1 FROM audit WHERE status='Ditolak'")) == 4     # allowed = not logged as denied
@@ -443,7 +441,8 @@ def test_pdf_images_follow_the_same_rule(client, monkeypatch):
         assert client.get("/api/sessions/1/report.pdf", headers=login(client, f"{who}@gmail.com")).status_code == 200
         assert seen["frames"] == count, who
     assert report_export.image_note(seen["data"]["events"][0], seen["data"]) == reporting.RESTRICTED_TEXT
-    assert client.app.state.db.one("SELECT 1 FROM audit WHERE role='sekolah' AND action LIKE 'Mengekspor laporan PDF (0 gambar%'")
+    assert client.app.state.db.one("SELECT 1 FROM audit WHERE user_id=? AND action LIKE 'Mengekspor laporan PDF (0 gambar%'",
+                                        (client.app.state.db.one("SELECT id FROM users WHERE email='sekolah1@gmail.com'")["id"],))
 
 
 def test_revocation_is_a_new_audit_line_and_history_is_untouched(client):

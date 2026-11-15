@@ -212,12 +212,10 @@ def test_case_access_rules(client):
     assert client.get("/api/exams/1/cases", headers=p2).status_code in (403, 404)
     assert client.get("/api/cases/c-nope-unknown", headers=p1).status_code == 404
     assert client.get("/api/cases/xyz", headers=p1).status_code == 404
-    # school: reviewed indications only, cannot review
-    assert cases_of(client, sk)["cases"] == []
-    assert client.get(f"/api/cases/c-{a}", headers=sk).status_code == 403
-    assert client.post(f"/api/cases/c-{a}/reviews", headers=sk, json={"decision": "Valid"}).status_code == 403
+    # Pihak Sekolah = Penyelenggara Ujian: every case, also before review
+    assert {c["case_id"] for c in cases_of(client, sk)["cases"]} == {f"c-{a}", f"c-{b}"}
+    assert client.get(f"/api/cases/c-{a}", headers=sk).status_code == 200
     assert client.post(f"/api/cases/c-{a}/reviews", headers=p1, json={"decision": "Valid"}).status_code == 201
-    assert [c["case_id"] for c in cases_of(client, sk)["cases"]] == [f"c-{a}"]
     assert client.post(f"/api/cases/c-{a}/reviews", headers=p1, json={"decision": "Terbukti curang"}).status_code == 422
     admin = login(client, "admin1@gmail.com")
     assert {c["case_id"] for c in cases_of(client, admin)["cases"]} == {f"c-{a}", f"c-{b}"}

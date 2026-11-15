@@ -23,7 +23,7 @@ USERS = [
     ("pengawas2@gmail.com", "Agus Wirawan", "pengawas", None, None),
     ("penyelenggara1@gmail.com", "Dedi Kurniawan", "penyelenggara", None, None),
     ("admin1@gmail.com", "Nadia Aulia", "admin", None, None),
-    ("sekolah1@gmail.com", "Maya Sari", "sekolah", None, None),
+    ("sekolah1@gmail.com", "Maya Sari", "penyelenggara", None, None),
 ]
 
 

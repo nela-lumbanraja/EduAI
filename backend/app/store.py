@@ -21,6 +21,19 @@ def to_iso(ts) -> Optional[str]:
     return str(ts)
 
 
+MERGE_ACTION = "Menggabungkan peran Pihak Sekolah ke Penyelenggara Ujian"
+
+
+def merge_school_role(db) -> int:
+    """Pihak Sekolah and Penyelenggara Ujian are one role: accounts still on the old role "sekolah" move to
+    "penyelenggara". Email, password and status stay as they are; one audit line per account. Returns the count."""
+    rows = db.all("SELECT id FROM users WHERE role='sekolah'")
+    for r in rows:
+        db.run("UPDATE users SET role='penyelenggara' WHERE id=? AND role='sekolah'", (r["id"],))
+        audit(db, None, MERGE_ACTION, f"user:{r['id']}")
+    return len(rows)
+
+
 def audit(db, user: Optional[dict], action: str, target: str = "", status: str = "Berhasil"):
     db.run("INSERT INTO audit (ts,user_id,user_name,role,action,target,status) VALUES (?,?,?,?,?,?,?)",
            (now_iso(), user["id"] if user else None, user["name"] if user else "Sistem",

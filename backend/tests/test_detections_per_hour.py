@@ -57,7 +57,7 @@ def test_access_per_role(client):
     assert hours(client.get(q, headers=login(client, "pengawas2@gmail.com"))) == {8: 1, 9: 1}
     assert hours(client.get(q, headers=login(client, "admin1@gmail.com"))) == {8: 2, 9: 1}
     assert hours(client.get(q, headers=login(client, "penyelenggara1@gmail.com"))) == {8: 2, 9: 1}
-    assert hours(client.get(q, headers=login(client, "sekolah1@gmail.com"))) == {9: 1}              # reviewed only
+    assert hours(client.get(q, headers=login(client, "sekolah1@gmail.com"))) == {8: 2, 9: 1}         # = penyelenggara
     assert client.get(q, headers=login(client, "siswa1@gmail.com")).status_code == 403
     assert client.get(q).status_code == 401
 

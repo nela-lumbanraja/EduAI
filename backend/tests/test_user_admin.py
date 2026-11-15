@@ -12,9 +12,10 @@ def test_admin_edits_name_email_role_status_and_it_is_audited(client):
     r = edit(client, ha, "sekolah1@gmail.com", {"name": "  Maya  Sari Baru ", "email": " Maya.Baru@Sekolah.id "})
     assert r.status_code == 200, r.text
     assert r.json()["name"] == "Maya Sari Baru" and r.json()["email"] == "maya.baru@sekolah.id"
-    assert client.post("/api/auth/login", json={"email": "maya.baru@sekolah.id", "password": "123456", "role": "sekolah"}).status_code == 200   # new login email
-    r = edit(client, ha, "penyelenggara1@gmail.com", {"role": "sekolah"})
-    assert r.status_code == 200 and r.json()["role"] == "sekolah" and r.json()["role_label"] == "Pihak Sekolah"
+    assert client.post("/api/auth/login", json={"email": "maya.baru@sekolah.id", "password": "123456", "role": "penyelenggara"}).status_code == 200   # new login email
+    assert edit(client, ha, "penyelenggara1@gmail.com", {"role": "sekolah"}).status_code == 422          # merged into penyelenggara
+    r = edit(client, ha, "penyelenggara1@gmail.com", {"role": "pengawas"})
+    assert r.status_code == 200 and r.json()["role"] == "pengawas" and r.json()["role_label"] == "Pengawas"
     hs = login(client, "siswa3@gmail.com")
     r = edit(client, ha, "siswa3@gmail.com", {"active": False})
     assert r.status_code == 200 and r.json()["active"] is False
@@ -57,17 +58,16 @@ def test_last_active_admin_stays(client):
     assert r.status_code == 409
 
 
-def test_only_admin_and_school_may_edit_users(client):
-    for email in ("penyelenggara1@gmail.com", "pengawas1@gmail.com", "siswa1@gmail.com"):
+def test_only_admin_and_organiser_may_edit_users(client):
+    for email in ("pengawas1@gmail.com", "siswa1@gmail.com"):
         assert edit(client, login(client, email), "siswa2@gmail.com", {"name": "Tidak Boleh"}).status_code == 403, email
     assert client.patch(f"/api/users/{uid(client, 'siswa2@gmail.com')}", json={"name": "X Y"}).status_code == 401
 
 
 def test_school_manages_student_accounts_only(client):
     hk = login(client, "sekolah1@gmail.com")
-    listed = client.get("/api/users", headers=hk).json()
-    assert listed and {u["role"] for u in listed} == {"siswa"}                              # "Akun Siswa": students only
-    assert {u["role"] for u in client.get("/api/users?role=admin", headers=hk).json()} == {"siswa"}
+    listed = client.get("/api/users?role=siswa", headers=hk).json()                      # "Akun Siswa"
+    assert listed and {u["role"] for u in listed} == {"siswa"}
     r = edit(client, hk, "siswa2@gmail.com", {"name": "Bima P", "email": "bima.p@sekolah.id", "nis": "999", "class_name": "XII", "active": False})
     assert r.status_code == 200 and r.json()["email"] == "bima.p@sekolah.id" and r.json()["active"] is False
     assert edit(client, hk, "bima.p@sekolah.id", {"role": "pengawas"}).status_code == 403           # no role change
@@ -75,7 +75,10 @@ def test_school_manages_student_accounts_only(client):
     for staff in ("pengawas1@gmail.com", "admin1@gmail.com", "penyelenggara1@gmail.com", "sekolah1@gmail.com"):
         assert edit(client, hk, staff, {"name": "Tidak Boleh"}).status_code == 403, staff          # staff accounts: no
     a = client.app.state.db.one("SELECT * FROM audit WHERE action LIKE 'Mengubah data pengguna%' ORDER BY id LIMIT 1")
-    assert a["user_id"] == uid(client, "sekolah1@gmail.com") and a["role"] == "sekolah"
+    assert a["user_id"] == uid(client, "sekolah1@gmail.com") and a["role"] == "penyelenggara"
+    hp = login(client, "penyelenggara1@gmail.com")                                           # same role, same rule
+    assert edit(client, hp, "siswa3@gmail.com", {"class_name": "XII IPA 1"}).status_code == 200
+    assert edit(client, hp, "pengawas1@gmail.com", {"name": "Tidak Boleh"}).status_code == 403
 
 
 # ------------------------------------------------------------------ Tambah User (POST /api/users)
@@ -86,7 +89,7 @@ def new(client, h, **body):
 
 def test_admin_adds_each_role_and_the_account_can_log_in(client):
     ha = login(client, "admin1@gmail.com")
-    cases = [("siswa", {"nis": "2301099", "class_name": "XI IPA 3"}), ("pengawas", {}), ("penyelenggara", {}), ("admin", {}), ("sekolah", {})]
+    cases = [("siswa", {"nis": "2301099", "class_name": "XI IPA 3"}), ("pengawas", {}), ("penyelenggara", {}), ("admin", {})]
     for role, extra in cases:
         email = f"{role}.baru@sekolah.id"
         r = new(client, ha, name=f"  Akun  {role} ", email=email.upper(), role=role, **extra)
@@ -98,7 +101,8 @@ def test_admin_adds_each_role_and_the_account_can_log_in(client):
         assert r.status_code == 200 and r.json()["user"]["role"] == role                     # can log in with the initial password
     actions = [a["action"] for a in client.app.state.db.all("SELECT action FROM audit WHERE action LIKE 'Menambah pengguna%' ORDER BY id")]
     assert actions == ["Menambah pengguna (Siswa)", "Menambah pengguna (Pengawas)", "Menambah pengguna (Penyelenggara Ujian)",
-                       "Menambah pengguna (Admin)", "Menambah pengguna (Pihak Sekolah)"]
+                       "Menambah pengguna (Admin)"]
+    assert new(client, ha, role="sekolah", email="sekolah.baru@sekolah.id").status_code == 422   # merged into penyelenggara
     assert "rahasia" not in str(client.app.state.db.all("SELECT * FROM audit"))                  # the password is never logged
 
 

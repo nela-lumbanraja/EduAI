@@ -79,7 +79,7 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"     # salin ke EDUA
 ```
 Buka `backend\.env` di VS Code dan isi kedua nilai tersebut. Nilai lain boleh dibiarkan default untuk uji lokal. Opsional, enkripsi evidence: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` → `EDUAI_EVIDENCE_KEY`.
 
-`EDUAI_SEED_DEMO=true` membuat akun demo (kata sandi `123456`): `siswa1`–`siswa6`, `pengawas1`, `pengawas2`, `penyelenggara1`, `admin1`, `sekolah1` (semua `@gmail.com`) dan tiga ujian contoh; "Ujian Akhir Matematika XI" berstatus *Sedang Berlangsung* hari ini. **Matikan (`false`) dan ganti kata sandi untuk penggunaan nyata.** Seed tidak pernah membuat kejadian AI.
+`EDUAI_SEED_DEMO=true` membuat akun demo (kata sandi `123456`): `siswa1`–`siswa6`, `pengawas1`, `pengawas2`, `penyelenggara1`, `admin1`, `sekolah1` (semua `@gmail.com`; `sekolah1` berperan Penyelenggara Ujian karena pihak sekolah dan penyelenggara adalah satu peran) dan tiga ujian contoh; "Ujian Akhir Matematika XI" berstatus *Sedang Berlangsung* hari ini. **Matikan (`false`) dan ganti kata sandi untuk penggunaan nyata.** Seed tidak pernah membuat kejadian AI.
 
 Opsional, kop surat PDF laporan: `EDUAI_SCHOOL_NAME`, `EDUAI_SCHOOL_ADDRESS`, `EDUAI_SCHOOL_PHONE`, `EDUAI_SCHOOL_EMAIL`, `EDUAI_SCHOOL_CITY`. Bila kosong, PDF menampilkan isian template. Nomor surat, NIP, jalannya ujian, dan tindak lanjut diisi tangan.
 
@@ -260,8 +260,9 @@ python tests\e2e\e2e_livekit_worker.py --y4m fake.y4m --mode kill
 - Tidak ada penyimpanan video penuh atau audio. Analisis suara (bila siswa menyetujui secara terpisah) berjalan di browser siswa; yang dikirim hanya tiga skor (ucapan/bisikan/musik) per ±1 dtk. Evidence = maks. 12 cuplikan JPEG kecil per indikasi, ID acak, opsional terenkripsi, dihapus otomatis setelah 24 jam (`EDUAI_EVIDENCE_RETENTION_HOURS`), akses hanya lewat endpoint berautentikasi dan tercatat di audit log.
 - **Retensi evidence dan laporan:** evidence sesi yang laporannya belum final ditahan sampai finalisasi, paling lama 7 hari sejak sesi selesai (`EDUAI_EVIDENCE_HOLD_DAYS`), lalu dihapus walaupun laporan belum final. "Sesi selesai" berarti waktu yang lebih awal antara status Selesai dan jadwal berakhir, sehingga sesi yang tidak pernah ditutup tetap punya batas. Finalisasi menyalin satu gambar per kejadian; salinan ini dihapus otomatis 24 jam setelah finalisasi (`EDUAI_REPORT_FRAME_RETENTION_HOURS`) dan penghapusannya dicatat di audit log. Setelah itu laporan menampilkan "Gambar bukti sudah dihapus sesuai kebijakan retensi". Pemeriksaan berjalan tiap 10 menit, tetapi gambar yang kedaluwarsa langsung berhenti disajikan.
 - **Berkas PDF dan Excel yang diunduh berada di luar penghapusan otomatis.** PDF dari pengawas atau admin memuat gambar bukti, jadi simpan sesuai kebijakan sekolah. Setiap ekspor tercatat di audit log.
-- Gambar bukti di laporan hanya untuk pengawas sesi dan admin; penyelenggara dan pihak sekolah melihat laporan tanpa gambar dan tanpa hak ubah. Catatan AI hanya penanda hal yang perlu diperiksa, bukan bukti pelanggaran.
-- Siswa tidak pernah dapat membaca status AI, indikasi, atau evidence. Pihak sekolah hanya melihat indikasi yang sudah divalidasi.
+- Gambar bukti di laporan hanya untuk pengawas sesi dan admin; penyelenggara (pihak sekolah) melihat laporan tanpa gambar dan tanpa hak ubah. Catatan AI hanya penanda hal yang perlu diperiksa, bukan bukti pelanggaran.
+- Siswa tidak pernah dapat membaca status AI, indikasi, atau evidence.
+- **Pihak Sekolah dan Penyelenggara Ujian adalah satu peran** (`penyelenggara`). Akun lama berperan `sekolah` dipindahkan otomatis saat backend dimulai (email, kata sandi, dan status tetap; tercatat di audit log). Staf sekolah masuk lewat tab **Penyelenggara**. Peran ini mendapat menu **Akun Siswa** (ubah data akun siswa, tanpa mengubah peran) selain menu penyelenggara.
 
 ## Langkah manual yang masih diperlukan
 

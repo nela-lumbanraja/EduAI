@@ -17,9 +17,10 @@ from fastapi import Depends, Header, HTTPException, Request
 
 ROLE_LABELS = {
     "siswa": "Siswa", "pengawas": "Pengawas", "penyelenggara": "Penyelenggara Ujian",
-    "admin": "Admin", "sekolah": "Pihak Sekolah",
+    "admin": "Admin",
+    "sekolah": "Penyelenggara Ujian",   # old role, merged into "penyelenggara" at startup (store.merge_school_role)
 }
-STAFF = ("pengawas", "penyelenggara", "admin", "sekolah")
+STAFF = ("pengawas", "penyelenggara", "admin")
 _ITER = 200_000
 
 

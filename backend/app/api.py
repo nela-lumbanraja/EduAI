@@ -58,7 +58,7 @@ def _enrolled(db, exam_id: int, student_id: int) -> bool:
 
 def _can_view(db, user: dict, exam: dict) -> bool:
     r = user["role"]
-    if r in ("admin", "penyelenggara", "sekolah"):
+    if r in ("admin", "penyelenggara"):
         return True
     if r == "pengawas":
         return exam["supervisor_id"] == user["id"]
@@ -102,7 +102,7 @@ def _not_final(db, exam_id: int):
 
 
 def _accessible_exam_ids(db, user) -> List[int]:
-    if user["role"] in ("admin", "penyelenggara", "sekolah"):
+    if user["role"] in ("admin", "penyelenggara"):
         return [r["id"] for r in db.all("SELECT id FROM exams")]
     if user["role"] == "pengawas":
         return [r["id"] for r in db.all("SELECT id FROM exams WHERE supervisor_id = ?", (user["id"],))]
@@ -165,8 +165,6 @@ def _events_query(db, exam_ids, user, *, student_id=None, category=None, since=N
         return []
     sql = f"SELECT * FROM events WHERE exam_id IN ({','.join('?' * len(exam_ids))})"
     params = list(exam_ids)
-    if user["role"] == "sekolah":                       # school sees reviewed indications only
-        sql += " AND category='indication' AND review_status IS NOT NULL"
     if student_id is not None:
         sql += " AND student_id = ?"; params.append(student_id)
     if category:
@@ -239,7 +237,7 @@ def register(body: RegisterIn, request: Request):
     email = body.email.strip().lower()
     if not email.startswith("siswa") or "@" not in email:
         raise HTTPException(400, "Pendaftaran mandiri hanya untuk akun siswa (email diawali 'siswa'). "
-                                 "Akun pengawas, penyelenggara, admin, dan sekolah dibuat oleh Admin.")
+                                 "Akun pengawas, penyelenggara/pihak sekolah, dan admin dibuat oleh Admin.")
     if st.db.one("SELECT 1 FROM users WHERE email=?", (email,)):
         raise HTTPException(409, "Email ini sudah terdaftar.")
     uid = st.db.run("INSERT INTO users (email,name,role,password_hash,created_at) VALUES (?,?,?,?,?)",
@@ -265,10 +263,8 @@ def update_me(body: ProfileIn, request: Request, user=Depends(get_current_user))
 
 
 @router.get("/users")
-def list_users(request: Request, role: Optional[str] = None, user=Depends(require_roles("admin", "penyelenggara", "sekolah"))):
+def list_users(request: Request, role: Optional[str] = None, user=Depends(require_roles("admin", "penyelenggara"))):
     db = _st(request).db
-    if user["role"] == "sekolah":
-        role = "siswa"                                  # Pihak Sekolah: student accounts only (menu "Akun Siswa")
     rows = db.all("SELECT * FROM users WHERE (? IS NULL OR role = ?) ORDER BY role, name", (role, role))
     return [{**public_user(r), "active": bool(r["active"]), "created_at": r["created_at"]} for r in rows]
 
@@ -295,7 +291,7 @@ FIELD_LABELS = {"name": "nama", "email": "email", "role": "peran", "active": "st
 
 
 @router.patch("/users/{user_id}")
-def update_user(user_id: int, body: UserPatch, request: Request, user=Depends(require_roles("admin", "sekolah"))):
+def update_user(user_id: int, body: UserPatch, request: Request, user=Depends(require_roles("admin", "penyelenggara"))):
     """Manajemen User: the admin changes name, email, role, status, NIS or class of an account.
     Guards: unique email; an admin cannot change their own role or deactivate themselves; the last active admin
     stays an active admin; the role of someone still linked to an unfinished exam (as supervisor or student) cannot
@@ -304,8 +300,9 @@ def update_user(user_id: int, body: UserPatch, request: Request, user=Depends(re
     target = db.one("SELECT * FROM users WHERE id=?", (user_id,))
     if not target:
         raise HTTPException(404, "Pengguna tidak ditemukan.")
-    if user["role"] == "sekolah" and (target["role"] != "siswa" or (body.role is not None and body.role != "siswa")):
-        raise HTTPException(403, "Pihak sekolah hanya dapat mengubah data akun siswa, tanpa mengubah perannya.")
+    # Penyelenggara Ujian (= Pihak Sekolah, one role): student accounts only (menu "Akun Siswa"), never the role.
+    if user["role"] == "penyelenggara" and (target["role"] != "siswa" or (body.role is not None and body.role != "siswa")):
+        raise HTTPException(403, "Penyelenggara/pihak sekolah hanya dapat mengubah data akun siswa, tanpa mengubah perannya.")
     new = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None or k in ("nis", "class_name")}
     if "active" in new:
         new["active"] = 1 if new["active"] else 0
@@ -996,8 +993,6 @@ def _event_for(db, user, event_id) -> dict:
     _view_exam(db, user, ev["exam_id"])
     if user["role"] == "siswa":
         raise HTTPException(403, "Anda tidak memiliki izin untuk aksi ini.")
-    if user["role"] == "sekolah" and (ev["category"] != "indication" or ev["review_status"] is None):
-        raise HTTPException(403, "Pihak sekolah hanya dapat melihat indikasi yang sudah divalidasi.")
     return ev
 
 
@@ -1037,8 +1032,6 @@ def _indication_rows(db, exam_ids, user, student_id=None) -> List[dict]:
         return []
     sql = f"SELECT * FROM events WHERE category='indication' AND exam_id IN ({','.join('?' * len(exam_ids))})"
     params = list(exam_ids)
-    if user["role"] == "sekolah":                       # school sees reviewed indications only (same rule as /events)
-        sql += " AND review_status IS NOT NULL"
     if student_id is not None:
         sql += " AND student_id = ?"; params.append(student_id)
     return db.all(sql, params)
@@ -1322,8 +1315,7 @@ def _report_summary(rows: List[dict], cannot: List[dict]) -> dict:
 
 
 def _report_rows(db, user, exam_id: int):
-    rows = db.all("SELECT * FROM events WHERE exam_id=? AND category='indication'"
-                  + (" AND review_status IS NOT NULL" if user["role"] == "sekolah" else "") + " ORDER BY start_ts", (exam_id,))
+    rows = db.all("SELECT * FROM events WHERE exam_id=? AND category='indication' ORDER BY start_ts", (exam_id,))
     return rows, db.all("SELECT start_ts, end_ts FROM events WHERE exam_id=? AND category='cannot_analyze'", (exam_id,))
 
 
@@ -1521,8 +1513,6 @@ def detections_per_hour(request: Request, date: Optional[str] = Query(default=No
         utc_dates = [(day - timedelta(days=1)).isoformat(), day.isoformat()]
         sql = (f"SELECT start_ts FROM events WHERE category='indication' AND exam_id IN ({','.join('?' * len(ids))})"
                " AND substr(start_ts, 1, 10) IN (?, ?)")
-        if user["role"] == "sekolah":
-            sql += " AND review_status IS NOT NULL"
         for r in db.all(sql, [*ids, *utc_dates]):
             t = _utc(r["start_ts"])
             if t is not None and t.astimezone(WIB).date() == day:

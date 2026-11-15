@@ -56,4 +56,4 @@ def test_case_review_from_the_viewer_uses_the_existing_case_api(client):
     assert r.status_code == 201
     after = next(c for c in client.get("/api/cases", headers=hp).json()["cases"] if c["case_id"] == case["case_id"])
     assert after["review_status"] == "Perlu Tinjauan Lanjut" and after["unreviewed_count"] == 0
-    assert client.post(f"/api/cases/{case['case_id']}/reviews", headers=login(client, "sekolah1@gmail.com"), json={"decision": "Valid"}).status_code == 403
+    assert client.post(f"/api/cases/{case['case_id']}/reviews", headers=login(client, "siswa1@gmail.com"), json={"decision": "Valid"}).status_code == 403

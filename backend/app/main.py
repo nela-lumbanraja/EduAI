@@ -67,6 +67,8 @@ def create_app(settings=None, perception_factory=None) -> FastAPI:
         db = Database(settings.db_path)
         if settings.seed_demo and seed_demo(db):
             log.warning("Seeded DEMO accounts (password 123456). Set EDUAI_SEED_DEMO=false for real deployments.")
+        if n := store.merge_school_role(db):
+            log.warning("Merged %d Pihak Sekolah account(s) into Penyelenggara Ujian.", n)
         app.state.settings = settings
         app.state.db = db
         app.state.limiter = LoginLimiter()

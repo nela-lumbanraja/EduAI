@@ -133,8 +133,6 @@ def test_role_based_access(client):
     hp2 = login(client, "pengawas2@gmail.com")                    # not assigned to exam 1
     assert client.get("/api/exams/1", headers=hp2).status_code == 403
     assert client.post("/api/exams/1/monitoring/start", headers=hp2, json={}).status_code == 403
-    hk = login(client, "sekolah1@gmail.com")
-    assert client.post("/api/exams/1/monitoring/start", headers=hk, json={}).status_code == 403
     assert client.post("/api/exams", headers=login(client, "pengawas1@gmail.com"), json={}).status_code in (403, 422)
 
 
@@ -204,14 +202,13 @@ def test_face_absent_indication_end_to_end(client):
     assert client.get(f"/api/evidence/{ev['evidence_id']}/frames/99", headers=hp).status_code == 404
     assert client.app.state.db.one("SELECT 1 FROM audit WHERE action='Melihat evidence'")
 
-    # school cannot see it before review, can after; supervisor decides
+    # Pihak Sekolah = Penyelenggara Ujian: sees the indication before review, never the evidence image; supervisor decides
     hk = login(client, "sekolah1@gmail.com")
-    assert client.get("/api/events", headers=hk).json()["events"] == []
+    assert len(client.get("/api/events", headers=hk).json()["events"]) == 1
     assert client.get(f"/api/evidence/{ev['evidence_id']}", headers=hk).status_code == 403
     r = client.post(f"/api/events/{ev['event_id']}/reviews", headers=hp, json={"decision": "Valid", "note": "Keluar bingkai"})
     assert r.status_code == 201 and r.json()["review_status"] == "Valid" and r.json()["reviews"][0]["reviewer"] == "Rina Setiawati"
-    assert len(client.get("/api/events", headers=hk).json()["events"]) == 1
-    assert client.post(f"/api/events/{ev['event_id']}/reviews", headers=hk, json={"decision": "Valid"}).status_code == 403
+    assert client.get("/api/events", headers=hk).json()["events"][0]["review_status"] == "Valid"
 
     rep = client.get("/api/exams/1/report", headers=hp).json()
     assert rep["indications"]["total"] == 1 and rep["indications"]["valid"] == 1 and rep["attendance"]["joined"] == 1

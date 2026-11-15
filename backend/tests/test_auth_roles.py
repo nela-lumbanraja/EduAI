@@ -6,7 +6,7 @@ import jwt
 from tests.test_api import client, login  # noqa: F401  (client = pytest fixture)
 
 ROLES = {"admin1@gmail.com": "admin", "pengawas1@gmail.com": "pengawas", "penyelenggara1@gmail.com": "penyelenggara",
-         "sekolah1@gmail.com": "sekolah", "siswa1@gmail.com": "siswa"}
+         "sekolah1@gmail.com": "penyelenggara", "siswa1@gmail.com": "siswa"}
 MISMATCH = "Role akun tidak sesuai dengan pilihan login. Silakan pilih role yang benar."
 
 

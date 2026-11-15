@@ -61,7 +61,8 @@ def test_key_validation():
 def test_only_admin_and_organiser_change_settings(client):
     assert configure(client).status_code == 200
     assert configure(client, who="penyelenggara1@gmail.com").status_code == 200
-    for who in ("pengawas1@gmail.com", "siswa1@gmail.com", "sekolah1@gmail.com"):
+    assert configure(client, who="sekolah1@gmail.com").status_code == 200            # Pihak Sekolah = Penyelenggara
+    for who in ("pengawas1@gmail.com", "siswa1@gmail.com"):
         assert configure(client, who=who).status_code == 403, who
         assert client.get("/api/exams/1/seb", headers=login(client, who)).status_code == 403, who
 

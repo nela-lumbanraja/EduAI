@@ -17,7 +17,7 @@ class Credentials(BaseModel):
 class LoginIn(Credentials):
     # Required: the role chosen on the login portal (Siswa portal = "siswa", staff portal = the selected tab).
     # The backend compares it with the account's role in the database; a request without it is rejected (422).
-    role: Literal["siswa", "pengawas", "penyelenggara", "admin", "sekolah"]
+    role: Literal["siswa", "pengawas", "penyelenggara", "admin"]
 
 
 class RegisterIn(Credentials):
@@ -44,7 +44,7 @@ class UserPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: Optional[str] = Field(default=None, min_length=1, max_length=120)
     email: Optional[str] = Field(default=None, min_length=3, max_length=200)
-    role: Optional[Literal["siswa", "pengawas", "penyelenggara", "admin", "sekolah"]] = None
+    role: Optional[Literal["siswa", "pengawas", "penyelenggara", "admin"]] = None
     active: Optional[bool] = None
     nis: Optional[str] = Field(default=None, max_length=40)
     class_name: Optional[str] = Field(default=None, max_length=60)
@@ -77,7 +77,7 @@ class UserCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=120)
     email: str = Field(min_length=3, max_length=200)
-    role: Literal["siswa", "pengawas", "penyelenggara", "admin", "sekolah"]
+    role: Literal["siswa", "pengawas", "penyelenggara", "admin"]
     password: str = Field(min_length=8, max_length=200)
     nis: Optional[str] = Field(default=None, max_length=40)
     class_name: Optional[str] = Field(default=None, max_length=60)
