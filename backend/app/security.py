@@ -16,7 +16,7 @@ import jwt
 from fastapi import Depends, Header, HTTPException, Request
 
 ROLE_LABELS = {
-    "siswa": "Siswa", "pengawas": "Pengawas", "penyelenggara": "Penyelenggara Ujian",
+    "siswa": "Mahasiswa", "pengawas": "Pengawas", "penyelenggara": "Penyelenggara Ujian",
     "admin": "Admin",
     "sekolah": "Penyelenggara Ujian",   # old role, merged into "penyelenggara" at startup (store.merge_school_role)
 }

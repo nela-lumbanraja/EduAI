@@ -23,7 +23,7 @@ def test_admin_edits_name_email_role_status_and_it_is_audited(client):
     assert edit(client, ha, "siswa3@gmail.com", {"active": True, "nis": " 12345 ", "class_name": "XI IPA 9"}).json()["nis"] == "12345"
     actions = [a["action"] for a in client.app.state.db.all("SELECT action FROM audit WHERE action LIKE 'Mengubah data pengguna%' ORDER BY id")]
     assert actions == ["Mengubah data pengguna (nama, email)", "Mengubah data pengguna (peran)", "Mengubah data pengguna (status)",
-                       "Mengubah data pengguna (status, NIS, kelas)"]
+                       "Mengubah data pengguna (status, NIM, kelas)"]
     before = len(actions)
     assert edit(client, ha, "siswa3@gmail.com", {"class_name": "XI IPA 9"}).status_code == 200      # no change: not audited
     assert client.app.state.db.one("SELECT COUNT(*) n FROM audit WHERE action LIKE 'Mengubah data pengguna%'")["n"] == before
@@ -100,7 +100,7 @@ def test_admin_adds_each_role_and_the_account_can_log_in(client):
         r = client.post("/api/auth/login", json={"email": email, "password": "rahasia-123", "role": role})
         assert r.status_code == 200 and r.json()["user"]["role"] == role                     # can log in with the initial password
     actions = [a["action"] for a in client.app.state.db.all("SELECT action FROM audit WHERE action LIKE 'Menambah pengguna%' ORDER BY id")]
-    assert actions == ["Menambah pengguna (Siswa)", "Menambah pengguna (Pengawas)", "Menambah pengguna (Penyelenggara Ujian)",
+    assert actions == ["Menambah pengguna (Mahasiswa)", "Menambah pengguna (Pengawas)", "Menambah pengguna (Penyelenggara Ujian)",
                        "Menambah pengguna (Admin)"]
     assert new(client, ha, role="sekolah", email="sekolah.baru@sekolah.id").status_code == 422   # merged into penyelenggara
     assert "rahasia" not in str(client.app.state.db.all("SELECT * FROM audit"))                  # the password is never logged

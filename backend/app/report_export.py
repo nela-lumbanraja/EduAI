@@ -138,8 +138,8 @@ def build_pdf(data: dict, frames: Dict[str, bytes], settings) -> bytes:
     time_of = lambda iso: (local(iso, tz).strftime("%H.%M.%S") if iso else "")   # noqa: E731
     supervisor = (exam.get("supervisor") or {}).get("name") or ""
 
-    kop = [f"<b>{escape(settings.school_name or '[NAMA SEKOLAH]')}</b>", escape(settings.school_address or "[Alamat sekolah]"),
-           f"· Telp. {escape(settings.school_phone or '[.........]')}", f"· {escape(settings.school_email or '[email sekolah]')}"]
+    kop = [f"<b>{escape(settings.school_name or '[NAMA PROGRAM STUDI]')}</b>", escape(settings.school_address or "[Alamat program studi]"),
+           f"· Telp. {escape(settings.school_phone or '[.........]')}", f"· {escape(settings.school_email or '[email program studi]')}"]
     brand = Table([[Image(str(SEAL), width=62, height=62),
                     [Paragraph("EduAI", ParagraphStyle("b", fontName="Times-Bold", fontSize=26, leading=30, textColor=NAVY)),
                      Paragraph("PENGAWASAN UJIAN", ParagraphStyle("t", fontName="Helvetica", fontSize=9, leading=13, textColor=GREY))]]],
@@ -148,7 +148,7 @@ def build_pdf(data: dict, frames: Dict[str, bytes], settings) -> bytes:
     s = [brand, Spacer(1, 8), Paragraph(" ".join(kop), BODY), HRFlowable(width="100%", thickness=0.7, color=GREY, spaceAfter=6),
          _p(TITLE, H1), _p("Nomor: ......../......../20...."), _p("Lampiran: ...... lembar"), _p(f"Perihal: {TITLE}"),
          _p("I. Identitas Ujian", H2),
-         _table([["Keterangan", "Isian"], ["Nama ujian", exam["name"]], ["Mata pelajaran", exam.get("subject") or ""],
+         _table([["Keterangan", "Isian"], ["Nama ujian", exam["name"]], ["Mata kuliah", exam.get("subject") or ""],
                  ["Kelas", exam.get("class_name") or ""], ["Hari, tanggal", _date_id(exam)],
                  ["Waktu", f"{start} s.d. {end} WIB ({exam['duration_min']} menit)"],
                  ["Bentuk ujian", "Daring, diawasi melalui EduAI"], ["Pengawas", supervisor]], [110, 300]),
@@ -180,7 +180,7 @@ def build_pdf(data: dict, frames: Dict[str, bytes], settings) -> bytes:
           _p("V. Tindak Lanjut", H2), _p(DOTS), _p(DOTS),
           _p("Demikian laporan ini dibuat dengan sebenarnya untuk dapat dipergunakan sebagaimana mestinya."),
           _p(f"{settings.school_city or '[Kota]'}, .................... 20...."),
-          KeepTogether(_table([["Mengetahui,", ""], ["Kepala Sekolah", "Pengawas Ujian"], [Spacer(1, 38), Spacer(1, 38)],
+          KeepTogether(_table([["Mengetahui,", ""], ["Ketua Program Studi", "Pengawas Ujian"], [Spacer(1, 38), Spacer(1, 38)],
                                ["( .............................. )", f"( {supervisor or '..............................'} )"],
                                ["NIP. ........................", "NIP. ........................"]], [140, 140])),
           Spacer(1, 10), HRFlowable(width="100%", thickness=0.7, color=GREY, spaceAfter=6),
@@ -209,7 +209,7 @@ def build_xlsx(data: dict, settings) -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "Indikasi"
-    head = ["No", "Nama peserta", "NIS", "Kejadian yang tercatat", "Mulai", "Selesai", "Hasil peninjauan pengawas",
+    head = ["No", "Nama peserta", "NIM", "Kejadian yang tercatat", "Mulai", "Selesai", "Hasil peninjauan pengawas",
             "Catatan pengawas", "Peninjau", "Gambar bukti"]
     ws.append(head)
     tz = settings.exam_timezone

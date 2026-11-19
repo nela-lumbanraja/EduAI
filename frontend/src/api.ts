@@ -282,8 +282,8 @@ export const api = {
 
 // ---- display helpers ----
 export const EVIDENCE_RESTRICTED = "Gambar bukti hanya untuk pengawas dan admin";
-export const ROLE_LABEL: Record<RoleCode, "Siswa" | "Pengawas" | "Penyelenggara Ujian" | "Admin"> = {
-  siswa: "Siswa", pengawas: "Pengawas", penyelenggara: "Penyelenggara Ujian", admin: "Admin",
+export const ROLE_LABEL: Record<RoleCode, "Mahasiswa" | "Pengawas" | "Penyelenggara Ujian" | "Admin"> = {
+  siswa: "Mahasiswa", pengawas: "Pengawas", penyelenggara: "Penyelenggara Ujian", admin: "Admin",
 };
 export const STATE_LABEL: Record<AnalysisState, string> = {
   not_started: "AI belum dimulai", no_data: "Menunggu hasil analisis", ai_offline: "Analisis AI terputus", warming_up: "Menyiapkan acuan", normal: "Normal", indication: "Indikasi aktif",
@@ -292,15 +292,15 @@ export const STATE_LABEL: Record<AnalysisState, string> = {
 // Why speech-sound analysis is not running (backend: _audio_block / _audio_state). [short, full]
 export type AudioReason = "not_consented" | "monitoring_off" | "disabled" | "ai_unavailable" | "model_missing" | "worker_mode" | "jitsi_mode" | "mic_off" | "no_scores";
 export const AUDIO_REASON: Record<AudioReason, [string, string]> = {
-  not_consented: ["tidak disetujui", "Siswa tidak menyetujui analisis suara."],
+  not_consented: ["tidak disetujui", "Mahasiswa tidak menyetujui analisis suara."],
   monitoring_off: ["AI belum dimulai", "Pemantauan AI belum dimulai."],
   disabled: ["dimatikan", "Analisis suara dimatikan di konfigurasi server (EDUAI_AUDIO_ANALYSIS / OTHER_VOICE)."],
   ai_unavailable: ["AI belum siap", "Layanan AI di server belum siap."],
   model_missing: ["model tidak ada", "Model suara (ai/eduai-ai/models/yamnet.tflite) tidak ditemukan di server."],
   worker_mode: ["mode OpenVidu", "Hanya tersedia pada mode frame browser; worker OpenVidu hanya menganalisis video."],
   jitsi_mode: ["mode Jitsi", "Hanya tersedia pada mode frame browser; mode Jitsi hanya menganalisis video."],
-  mic_off: ["mikrofon mati", "Mikrofon siswa mati."],
-  no_scores: ["belum ada skor", "Belum ada skor suara dari browser siswa (model masih dimuat atau gagal di perangkat siswa)."],
+  mic_off: ["mikrofon mati", "Mikrofon mahasiswa mati."],
+  no_scores: ["belum ada skor", "Belum ada skor suara dari browser mahasiswa (model masih dimuat atau gagal di perangkat mahasiswa)."],
 };
 export const SOURCE_LABEL: Record<AnalysisSource, string> = { browser: "Browser", livekit: "OpenVidu", jitsi: "Jitsi" };
 export const FRAME_REASON: Record<string, string> = {

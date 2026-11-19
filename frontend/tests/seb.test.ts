@@ -39,7 +39,7 @@ test("user agent alone only marks SEB as present, without keys", async () => {
 });
 
 test("launch link: https -> sebs, http -> seb, anything else -> none", () => {
-  assert.equal(sebLaunchLink("https://sekolah.sch.id/ujian.seb"), "sebs://sekolah.sch.id/ujian.seb");
+  assert.equal(sebLaunchLink("https://prodi.ac.id/ujian.seb"), "sebs://prodi.ac.id/ujian.seb");
   assert.equal(sebLaunchLink("http://192.168.1.5:8080/u.seb"), "seb://192.168.1.5:8080/u.seb");
   assert.equal(sebLaunchLink("javascript:alert(1)"), null);
   assert.equal(sebLaunchLink(""), null);

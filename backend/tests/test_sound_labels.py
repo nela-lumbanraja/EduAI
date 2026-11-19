@@ -28,7 +28,7 @@ def test_speech_with_still_mouth_event_carries_type_and_scores(tmp_path, monkeyp
             frame(c, hs, t)
         e = next(x for x in c.get("/api/exams/1/events", headers=hp).json()["events"] if x["indicator"] == "OTHER_VOICE")
         assert e["category"] == "indication" and e["details"]["sound_type"] == "BICARA_MULUT_DIAM"
-        assert e["sound_text"] == "Jenis suara: bicara saat mulut siswa diam (speech 0,82, whisper 0,00, media 0,05)"
+        assert e["sound_text"] == "Jenis suara: bicara saat mulut mahasiswa diam (speech 0,82, whisper 0,00, media 0,05)"
         detail = c.get(f"/api/events/{e['event_id']}", headers=hp).json()
         assert detail["sound_text"] == e["sound_text"]
         rep = c.get("/api/exams/1/report", headers=hp).json()

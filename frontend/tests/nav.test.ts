@@ -6,11 +6,11 @@ import { BADGE_ROLES, DRAWER_ACCOUNT, NAV_MENUS, PROFILE_SCREEN, badgeText, draw
 const labels = (role: keyof typeof NAV_MENUS) => NAV_MENUS[role].map((m) => m.label);
 
 test("menus per role are the ones that already existed (Profil moved to the avatar)", () => {
-  assert.deepEqual(labels("Siswa"), ["Dasbor", "Ujian Saya"]);                     // no "Rapat Video" for students
+  assert.deepEqual(labels("Mahasiswa"), ["Dasbor", "Ujian Saya"]);                     // no "Rapat Video" for students
   assert.deepEqual(labels("Pengawas"), ["Dasbor", "Sesi Ujian", "Monitoring", "Indikasi", "Riwayat", "Laporan", "Rapat Video"]);
-  assert.deepEqual(labels("Penyelenggara Ujian"), ["Dasbor", "Sesi Ujian", "Peserta", "Pengawas", "Akun Siswa", "Laporan", "Rapat Video"]);
+  assert.deepEqual(labels("Penyelenggara Ujian"), ["Dasbor", "Sesi Ujian", "Peserta", "Pengawas", "Akun Mahasiswa", "Laporan", "Rapat Video"]);
   assert.deepEqual(labels("Admin"), ["Dasbor", "Daftar Ujian", "Indikasi", "Manajemen User", "Konfigurasi", "Retensi Data", "Audit Log", "Rapat Video"]);
-  assert.deepEqual(Object.keys(NAV_MENUS), ["Siswa", "Pengawas", "Penyelenggara Ujian", "Admin"]);   // Pihak Sekolah = Penyelenggara Ujian
+  assert.deepEqual(Object.keys(NAV_MENUS), ["Mahasiswa", "Pengawas", "Penyelenggara Ujian", "Admin"]);   // Pihak Sekolah = Penyelenggara Ujian
   for (const items of Object.values(NAV_MENUS)) {
     assert.ok(items.every((m) => m.id !== PROFILE_SCREEN), "Profil is the avatar, not an icon");
     assert.equal(new Set(items.map((m) => m.id)).size, items.length, "no duplicates");
@@ -36,21 +36,21 @@ test("badge: hidden at 0, number otherwise, capped at 99+; only roles that see u
 });
 
 test("phone drawer: every menu of the role (same list as the desktop sidebar), then Akun = what 'Lainnya' held", () => {
-  for (const [role, items] of Object.entries(NAV_MENUS) as [keyof typeof NAV_MENUS, typeof NAV_MENUS.Siswa][]) {
+  for (const [role, items] of Object.entries(NAV_MENUS) as [keyof typeof NAV_MENUS, typeof NAV_MENUS.Mahasiswa][]) {
     const { items: drawer, account } = drawerMenu(role);
     assert.deepEqual(drawer, items, role);                                   // nothing added, removed or mixed between roles
     assert.equal(account, DRAWER_ACCOUNT, role);
   }
   assert.deepEqual(DRAWER_ACCOUNT.children.map((c) => c.id), [PROFILE_SCREEN, "logout"]);   // Profil & Pengaturan, Keluar
-  assert.deepEqual(drawerMenu("Siswa").items.map((m) => m.label), ["Dasbor", "Ujian Saya"]);
+  assert.deepEqual(drawerMenu("Mahasiswa").items.map((m) => m.label), ["Dasbor", "Ujian Saya"]);
 });
 
 test("every sidebar menu (and the profile page) can be opened by its role, so no menu leads to 403", async () => {
   const { ALLOWED_SCREENS } = await import("../src/routes.ts");
-  for (const [role, menus] of Object.entries(NAV_MENUS) as [keyof typeof NAV_MENUS, typeof NAV_MENUS.Siswa][]) {
+  for (const [role, menus] of Object.entries(NAV_MENUS) as [keyof typeof NAV_MENUS, typeof NAV_MENUS.Mahasiswa][]) {
     for (const m of menus) assert.ok(ALLOWED_SCREENS[role].includes(m.id), `${role}: menu "${m.label}" (${m.id}) is not allowed`);
     assert.ok(ALLOWED_SCREENS[role].includes(PROFILE_SCREEN), `${role}: Profil`);
   }
   assert.ok(ALLOWED_SCREENS["Penyelenggara Ujian"].includes("student-accounts"));   // Akun Siswa (former Pihak Sekolah)
-  assert.ok(!("Pihak Sekolah" in ALLOWED_SCREENS));
+  assert.ok(!("Pihak Program Studi" in ALLOWED_SCREENS));
 });

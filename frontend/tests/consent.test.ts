@@ -9,14 +9,14 @@ test("no Jitsi sentence without a configured server", () => {
 });
 
 test("the school is only named when the backend declares it", () => {
-  const text = jitsiNotice({ configured: true, domain: "meet.sekolah.sch.id", operator: "school" });
-  assert.ok(text?.includes("server Jitsi yang dikelola sekolah"));
+  const text = jitsiNotice({ configured: true, domain: "meet.prodi.ac.id", operator: "school" });
+  assert.ok(text?.includes("server Jitsi yang dikelola program studi"));
 });
 
 test("any other server is stated as a third party, with its domain", () => {
   const text = jitsiNotice({ configured: true, domain: "alpha.example.net", operator: "third_party" }) ?? "";
   assert.ok(text.includes("pihak ketiga") && text.includes("alpha.example.net"));
-  assert.ok(!text.includes("dikelola sekolah"));
+  assert.ok(!text.includes("dikelola program studi"));
   assert.ok((jitsiNotice({ configured: true, domain: "x.test", operator: null }) ?? "").includes("pihak ketiga"));
 });
 

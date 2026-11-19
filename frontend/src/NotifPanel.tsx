@@ -85,7 +85,7 @@ export function NotifPanel({ open, onClose, cases, summaries, user, canOpenEvide
         {filter === "semua" && summaries.length > 0 && <section className="pt-4"><h3 className="font-sans text-sm font-bold">Ringkasan ujian</h3>
           {summaries.slice(0, 2).map((s) => <button key={s.exam_id} type="button" onClick={() => { onClose(); onOpenSummary(s.exam_id); }} className="mt-2 flex w-full items-center gap-3 rounded py-1.5 text-left outline-none hover:bg-[#F4F5F7] focus-visible:ring-2 focus-visible:ring-[#c9a227]">
             <span className="grid size-11 shrink-0 place-items-center rounded-full bg-[#F4F5F7] text-[#14213d]"><LineIcon name="layers" size={18} /></span>
-            <span className="min-w-0 text-[13px]"><span className="line-clamp-2">{s.kind === "pre_end" ? "Ringkasan 10 menit sebelum selesai" : "Ringkasan akhir"} · {s.summary.exam_name}</span><span className="text-xs text-[#626F86]">{s.summary.students.filter((x) => x.indications.length).length} siswa dengan indikasi</span></span>
+            <span className="min-w-0 text-[13px]"><span className="line-clamp-2">{s.kind === "pre_end" ? "Ringkasan 10 menit sebelum selesai" : "Ringkasan akhir"} · {s.summary.exam_name}</span><span className="text-xs text-[#626F86]">{s.summary.students.filter((x) => x.indications.length).length} mahasiswa dengan indikasi</span></span>
           </button>)}</section>}
         {groupByTime(shown, now).map((g) => <section key={g.group} className="pt-4" aria-label={g.group}>
           <h3 className="font-sans text-sm font-bold" data-group={g.group}>{g.group}</h3>
@@ -201,7 +201,7 @@ export function StoryViewer({ row, user, canReview, onClose }: { row: NotifRow; 
     <div className="flex h-full w-full flex-col sm:h-auto sm:max-h-full sm:w-[min(92vw,820px)]">
       <div className="relative min-h-0 flex-1 overflow-hidden bg-black sm:aspect-[4/3] sm:flex-none sm:rounded">
         {frameUrl && <img src={frameUrl} alt={`Cuplikan bukti ${pos.frame + 1} dari ${frames[pos.seg] ?? 1}: ${seg?.label ?? ""}`} draggable={false} onContextMenu={(e) => e.preventDefault()} className="absolute inset-0 size-full select-none object-contain" />}
-        {!frameUrl && !err && <p className="absolute inset-0 grid place-items-center text-sm text-white/70">{segs && !segs.length ? "Belum ada cuplikan bukti untuk siswa ini." : "Memuat bukti…"}</p>}
+        {!frameUrl && !err && <p className="absolute inset-0 grid place-items-center text-sm text-white/70">{segs && !segs.length ? "Belum ada cuplikan bukti untuk mahasiswa ini." : "Memuat bukti…"}</p>}
         {err && <p role="alert" className="absolute inset-x-6 top-1/2 -translate-y-1/2 rounded bg-black/70 p-3 text-center text-sm">{err}</p>}
         {/* watermark */}
         <p aria-hidden="true" className="pointer-events-none absolute bottom-3 right-3 select-none text-[12px] text-white/55">EduAI · Rahasia · {user.name} · {formatWib(clock)}</p>

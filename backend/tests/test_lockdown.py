@@ -77,7 +77,7 @@ def test_stale_verification_and_lost_connection_are_recorded_by_the_sweep(client
     assert lockdown.sweep(db, 15)["opened"] == 2
     by = {e["student_id"]: e for e in events(client)[1]}
     assert by[s1]["details"]["trigger"] == "stale" and "tidak memverifikasi ulang" in by[s1]["reason"]
-    assert by[s2]["details"]["trigger"] == "offline" and "Koneksi siswa terputus" in by[s2]["reason"]
+    assert by[s2]["details"]["trigger"] == "offline" and "Koneksi mahasiswa terputus" in by[s2]["reason"]
     assert lockdown.sweep(db, 15)["opened"] == 0                    # one event per episode
 
 

@@ -58,7 +58,7 @@ export function ActivityCard({ items, now, capped, onOpenCase }: { items: Activi
             <button type="button" onClick={() => onOpenCase(a.case.case_id)} className="inline-flex max-w-full items-center gap-1 rounded px-0.5 align-middle font-medium text-[#14213d] underline-offset-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-[#c9a227]"
               aria-label={`Buka kasus ${kindLabel(a.case)} ${a.case.student?.name ?? ""}`}>
               <LineIcon name={kindIcon(a.case.indicator)} size={14} /><span className="sr-only">{kindLabel(a.case)}: </span>
-              <span className="truncate">{a.case.student?.name ?? "Siswa"} – {a.case.exam?.name ?? `Ujian ${a.case.exam_id}`}</span>
+              <span className="truncate">{a.case.student?.name ?? "Mahasiswa"} – {a.case.exam?.name ?? `Ujian ${a.case.exam_id}`}</span>
             </button>{" "}menjadi <StatusBadge status={decisionKey(a.decision)} />
             <p className="text-xs leading-5" style={{ color: MUTED }}><time dateTime={a.at} title={formatWib(parseUtc(a.at) ?? 0)}>{timeAgo(a.at, now)}</time>{a.events > 1 ? ` · ${a.events} kejadian` : ""}</p>
           </div>
@@ -72,7 +72,7 @@ export function KindBarChart({ bars, selected, onSelect }: { bars: KindBar[] | n
   const [ref, width] = useWidth<HTMLDivElement>();
   const [focus, setFocus] = useState<JenisKey | null>(null);
   const phone = useIsPhone();
-  const card = (body: ReactNode) => <SummaryCard title="Indikasi per jenis" sub="Jumlah kasus per jenis indikasi. Pilih batang untuk melihat siswanya.">{body}</SummaryCard>;
+  const card = (body: ReactNode) => <SummaryCard title="Indikasi per jenis" sub="Jumlah kasus per jenis indikasi. Pilih batang untuk melihat mahasiswanya.">{body}</SummaryCard>;
   if (!bars) return card(<p className="py-6 text-center text-xs" style={{ color: MUTED }}>Memuat…</p>);
   const max = Math.max(0, ...bars.map((b) => b.value));
   if (!max) return card(<Empty />);
@@ -124,7 +124,7 @@ export function KindBarChart({ bars, selected, onSelect }: { bars: KindBar[] | n
 // ---------------------------------------------------------------- donuts: kinds and supervisor load
 export function KindDonut({ slices, selected, onSelect }: { slices: KindSlice[] | null; selected: JenisKey | null; onSelect: (s: KindSlice) => void }) {
   const sel = slices?.find((s) => selected && s.kinds.includes(selected))?.key ?? null;
-  return <DonutCard title="Jenis indikasi" sub="Bagian setiap jenis dari semua kasus. Pilih bagian untuk melihat siswanya." unit="kasus" attr="slice" caption="Jenis indikasi"
+  return <DonutCard title="Jenis indikasi" sub="Bagian setiap jenis dari semua kasus. Pilih bagian untuk melihat mahasiswanya." unit="kasus" attr="slice" caption="Jenis indikasi"
     slices={slices} selected={sel} onSelect={(key) => { const s = slices?.find((x) => x.key === key); if (s) onSelect(s); }}
     alt={(t) => `Jenis indikasi: total ${t} kasus. ${(slices ?? []).filter((s) => s.value).map((s) => `${s.label} ${s.value}`).join(", ")}.`} />;
 }
@@ -167,8 +167,8 @@ export function StudentDrawer({ source, cases, canOpenEvidence, onClose, onOpenC
     <aside ref={ref} role="dialog" aria-modal="true" aria-labelledby="drawer-title" data-drawer className="notif-panel fixed inset-y-0 right-0 z-[65] flex w-full flex-col border-l bg-white sm:w-[440px]" style={{ borderColor: BORDER, color: TEXT }}>
       <div className="flex items-start justify-between gap-3 border-b px-5 py-4" style={{ borderColor: BORDER }}>
         <div className="min-w-0"><h2 id="drawer-title" className="font-sans text-base font-bold">{title}</h2>
-          <p className="mt-0.5 text-xs" style={{ color: MUTED }}>{cases.length} kasus · pilih siswa untuk membuka tinjauan kasus</p></div>
-        <button type="button" onClick={onClose} aria-label="Tutup daftar siswa" className="grid size-8 shrink-0 place-items-center rounded outline-none hover:bg-[#F4F5F7] focus-visible:ring-2 focus-visible:ring-[#c9a227]">
+          <p className="mt-0.5 text-xs" style={{ color: MUTED }}>{cases.length} kasus · pilih mahasiswa untuk membuka tinjauan kasus</p></div>
+        <button type="button" onClick={onClose} aria-label="Tutup daftar mahasiswa" className="grid size-8 shrink-0 place-items-center rounded outline-none hover:bg-[#F4F5F7] focus-visible:ring-2 focus-visible:ring-[#c9a227]">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg></button>
       </div>
       <div className="flex-1 overflow-y-auto px-5 py-2">
@@ -177,7 +177,7 @@ export function StudentDrawer({ source, cases, canOpenEvidence, onClose, onOpenC
             <Thumb c={c} canOpen={canOpenEvidence} />
             <div className="min-w-0 flex-1">
               <button type="button" onClick={() => onOpenCase(c.case_id)} className="max-w-full truncate rounded text-left text-[13px] font-semibold text-[#14213d] underline-offset-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-[#c9a227]"
-                aria-label={`Buka kasus ${c.student?.name ?? "Siswa"}, ${kindLabel(c)}`}>{c.student?.name ?? "Siswa"}</button>
+                aria-label={`Buka kasus ${c.student?.name ?? "Mahasiswa"}, ${kindLabel(c)}`}>{c.student?.name ?? "Mahasiswa"}</button>
               <p className="truncate text-xs" style={{ color: MUTED }}>{c.exam?.name ?? `Ujian ${c.exam_id}`}</p>
               <p className="mt-1 flex items-center gap-1 text-xs" style={{ color: MUTED }}><LineIcon name={kindIcon(c.indicator)} size={14} />{kindLabel(c)} · {c.event_count} kejadian</p>
               <p className="text-xs" style={{ color: MUTED }}><time dateTime={c.last_start_ts}>{formatWib(parseUtc(c.last_start_ts) ?? 0)}</time></p>

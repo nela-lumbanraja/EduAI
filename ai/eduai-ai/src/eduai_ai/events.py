@@ -31,18 +31,18 @@ INDICATORS = {
     "BOOK_VISIBLE": "Objek menyerupai buku terlihat",
     "PHONE_VISIBLE": "Objek menyerupai ponsel terlihat",
     "CANNOT_ANALYZE": "Video tidak dapat dianalisis",
-    "OTHER_VOICE": "Suara bicara terdengar saat mulut siswa diam",
+    "OTHER_VOICE": "Suara bicara terdengar saat mulut mahasiswa diam",
     "WHISPER": "Suara bisikan terdengar",
     "MEDIA_SOUND": "Suara musik/media terdengar",
-    "STUDENT_SPEECH": "Siswa berbicara",
+    "STUDENT_SPEECH": "Mahasiswa berbicara",
     "BOOK_SOUND": "Suara kertas/halaman buku terdengar",
 }
 
 # What kind of sound an audio event heard, from YAMNet scores + mouth movement. It never says WHO spoke:
 # there is no speaker recognition and no speaker count (see docs).
 SOUND_TYPES = {
-    "BICARA_MULUT_DIAM": "bicara saat mulut siswa diam",
-    "BICARA_SISWA": "siswa berbicara (mulut bergerak)",
+    "BICARA_MULUT_DIAM": "bicara saat mulut mahasiswa diam",
+    "BICARA_SISWA": "mahasiswa berbicara (mulut bergerak)",
     "BISIKAN": "bisikan",
     "MUSIK_MEDIA": "musik/media (TV, radio)",
     "KERTAS_BUKU": "kertas/halaman buku (gemerisik, dibalik, diremas)",

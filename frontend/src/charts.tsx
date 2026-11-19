@@ -202,7 +202,7 @@ function SessionColumns({ data, title, stepMin: fixed, note }: { data: TimelineD
       {hb.total ? <>
         <span className="block text-[#687382]">{hb.total} indikasi</span>
         <ul className="mt-1 space-y-0.5">{KINDS.filter((k) => hb.byKind[k.key]).map((k) => <li key={k.key} className="flex items-center justify-between gap-2"><span className="flex items-center gap-1.5"><KindBadge kind={k.key} size={18} />{k.label}</span><b className="text-navy">{hb.byKind[k.key]}</b></li>)}</ul>
-        <span className="mt-1 block border-t border-[#e5e7e9] pt-1 text-[#687382]">Siswa: {hb.students.slice(0, 3).join(", ")}{hb.students.length > 3 ? ` +${hb.students.length - 3}` : ""}</span>
+        <span className="mt-1 block border-t border-[#e5e7e9] pt-1 text-[#687382]">Mahasiswa: {hb.students.slice(0, 3).join(", ")}{hb.students.length > 3 ? ` +${hb.students.length - 3}` : ""}</span>
       </> : <span className="block text-[#687382]">Tidak ada indikasi</span>}
     </div>}
     {phone ? <ul aria-label="Keterangan jenis indikasi" className="mt-4 grid grid-cols-2 gap-x-3 gap-y-2.5 border-t border-[#eef0f2] pt-3 text-xs text-[#334054]">{kinds.map((k) => <li key={k.key} data-kind-legend={k.key} title={`${k.label}: ${k.n} indikasi`}
@@ -211,7 +211,7 @@ function SessionColumns({ data, title, stepMin: fixed, note }: { data: TimelineD
       className="flex items-center gap-1.5 rounded-full border border-[#e5e7e9] py-0.5 pl-0.5 pr-2.5"><KindBadge kind={k.key} /><span data-legend-label>{k.label}</span><b className="tabular-nums text-navy">{k.n}</b></li>)}</ul>}
     {data.outside > 0 && !fixed && <p className="mt-2 text-xs text-[#7d8794]">{data.outside} indikasi di luar jadwal sesi tidak digambar.</p>}
     {note && <p className="mt-2 text-xs text-[#7d8794]">{note}</p>}
-    <SrTable caption={title} head={["Waktu (WIB)", "Jumlah", "Jenis", "Siswa"]}
+    <SrTable caption={title} head={["Waktu (WIB)", "Jumlah", "Jenis", "Mahasiswa"]}
       rows={bins.filter((b) => b.total).map((b) => [b.range, b.total, KINDS.filter((k) => b.byKind[k.key]).map((k) => `${k.label} ${b.byKind[k.key]}`).join(", "), b.students.join(", ")])} />
   </div>;
 }
@@ -314,9 +314,9 @@ export function HistoryChart({ data }: { data: ReturnType<typeof historyRows> | 
 
 export function MonitoringCharts({ status, timeline }: { status: { segments: (Segment & { key: MonitorKey })[]; total: number } | null; timeline: TimelineData | null }) {
   return <div className="grid gap-[18px] lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
-    <Card title="Status siswa" sub="Setiap siswa dihitung satu kali (Offline, Perlu perhatian, Tidak dapat dianalisis, Online). Diperbarui setiap 3 detik.">
-      {status ? <Donut segments={status.segments.map((s) => ({ ...s, color: MONITOR_COLOR[s.key] }))} total={status.total} unit="siswa" caption="Status siswa"
-        alt={`Status siswa, total ${status.total}: ${status.segments.map((s) => `${s.label} ${s.value}`).join(", ")}.`} /> : loadingText}
+    <Card title="Status mahasiswa" sub="Setiap mahasiswa dihitung satu kali (Offline, Perlu perhatian, Tidak dapat dianalisis, Online). Diperbarui setiap 3 detik.">
+      {status ? <Donut segments={status.segments.map((s) => ({ ...s, color: MONITOR_COLOR[s.key] }))} total={status.total} unit="mahasiswa" caption="Status mahasiswa"
+        alt={`Status mahasiswa, total ${status.total}: ${status.segments.map((s) => `${s.label} ${s.value}`).join(", ")}.`} /> : loadingText}
     </Card>
     <Card title="Indikasi sesi ini" sub="Jumlah indikasi per selang waktu sepanjang jadwal ujian (WIB), ditumpuk per jenis.">
       {timeline ? <SessionColumns data={timeline} title="Indikasi sesi ini" /> : loadingText}
@@ -338,7 +338,7 @@ export function ReportAttendance({ attendance, unreadable }: { attendance: { seg
   const mins = Math.round(unreadable.seconds / 60);
   return <Donut segments={attendance.segments.map((s) => ({ ...s, color: ATT_COLOR[s.key] }))} total={attendance.total} unit="peserta" caption="Kehadiran"
     alt={`Kehadiran: ${attendance.segments.map((s) => `${s.label} ${s.value}`).join(", ")} dari ${attendance.total} peserta. Periode tidak terbaca: ${unreadable.periods}.`} mismatch={attendance.mismatch}
-    below={<p className="mt-3 flex items-center justify-between gap-3 rounded bg-[#f7f6f2] px-2.5 py-2 text-xs text-[#334054]"><span>Periode tidak terbaca<span className="block text-[#7d8794]">Dihitung per periode, bukan per siswa</span></span><b className="text-right text-navy">{unreadable.periods}{unreadable.periods ? ` (± ${mins} menit)` : ""}</b></p>} />;
+    below={<p className="mt-3 flex items-center justify-between gap-3 rounded bg-[#f7f6f2] px-2.5 py-2 text-xs text-[#334054]"><span>Periode tidak terbaca<span className="block text-[#7d8794]">Dihitung per periode, bukan per mahasiswa</span></span><b className="text-right text-navy">{unreadable.periods}{unreadable.periods ? ` (± ${mins} menit)` : ""}</b></p>} />;
 }
 
 export function ReportResults({ results }: { results: { segments: Segment[]; total: number; mismatch: string | null } }) {

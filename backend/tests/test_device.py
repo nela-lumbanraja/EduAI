@@ -63,7 +63,7 @@ def test_nothing_without_monitoring_and_events_close_on_stop_and_leave(client):
     assert client.post("/api/exams/1/monitoring/start", headers=hp, json={"source": "browser"}).status_code == 200
     beat(client, hs, camera=False); beat(client, hs, camera=False)
     assert client.post("/api/exams/1/leave", headers=hs).status_code == 200
-    assert all(e["status"] == "closed" for e in device_events(client)) and device_events(client)[-1]["reason"].endswith("(siswa keluar)")
+    assert all(e["status"] == "closed" for e in device_events(client)) and device_events(client)[-1]["reason"].endswith("(mahasiswa keluar)")
 
 
 def test_offline_student_events_are_closed_by_the_sweep(client):
@@ -73,7 +73,7 @@ def test_offline_student_events_are_closed_by_the_sweep(client):
     client.app.state.db.run("UPDATE presence SET last_seen='2000-01-01T00:00:00+00:00'")
     assert device.sweep_offline(client.app.state, 20.0) == 1
     [ev] = device_events(client)
-    assert ev["status"] == "closed" and ev["reason"].endswith("(siswa terputus)")
+    assert ev["status"] == "closed" and ev["reason"].endswith("(mahasiswa terputus)")
 
 
 def test_only_the_student_can_report_presence_and_the_school_sees_device_cases(client):

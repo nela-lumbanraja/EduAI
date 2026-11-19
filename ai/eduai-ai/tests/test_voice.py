@@ -42,7 +42,7 @@ def opened(events, name="OTHER_VOICE"):
 
 def test_config_section_and_label(cfg):
     assert cfg["indicators"]["OTHER_VOICE"]["enabled"] is True
-    assert INDICATORS["OTHER_VOICE"] == "Suara bicara terdengar saat mulut siswa diam"
+    assert INDICATORS["OTHER_VOICE"] == "Suara bicara terdengar saat mulut mahasiswa diam"
 
 
 def test_speech_with_still_mouth_opens_after_min_duration(cfg):
@@ -52,7 +52,7 @@ def test_speech_with_still_mouth_opens_after_min_duration(cfg):
     ev, _ = play(e, 2.0, speech=0.8, t0=1.5)
     o = opened(ev)
     assert len(o) == 1 and o[0].category == "indication" and o[0].score == 0.8
-    assert "mulut siswa tampak diam" in o[0].reason
+    assert "mulut mahasiswa tampak diam" in o[0].reason
     assert e.analysis_state() == STATE_INDICATION
 
 

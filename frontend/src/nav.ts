@@ -9,7 +9,7 @@ export type NavIconName =
 export type NavItem = { id: string; label: string; icon: NavIconName };
 
 export const NAV_MENUS: Record<Role, NavItem[]> = {
-  Siswa: [
+  Mahasiswa: [
     { id: "dashboard", label: "Dasbor", icon: "dashboard" },
     { id: "my-exams", label: "Ujian Saya", icon: "calendar" },
   ],
@@ -27,7 +27,7 @@ export const NAV_MENUS: Record<Role, NavItem[]> = {
     { id: "sessions", label: "Sesi Ujian", icon: "calendar" },
     { id: "students", label: "Peserta", icon: "users" },
     { id: "users", label: "Pengawas", icon: "user-check" },
-    { id: "student-accounts", label: "Akun Siswa", icon: "users" },     // from the former role Pihak Sekolah
+    { id: "student-accounts", label: "Akun Mahasiswa", icon: "users" },     // from the former role Pihak Sekolah
     { id: "report", label: "Laporan", icon: "report" },
     { id: "meeting", label: "Rapat Video", icon: "video" },
   ],

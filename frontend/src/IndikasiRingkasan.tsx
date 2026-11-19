@@ -201,7 +201,7 @@ export function UnreadableCard({ rows, capped, onOpen }: { rows: UnreadableRow[]
           <span className="grid size-8 shrink-0 place-items-center rounded bg-[#F4F5F7] text-[#626F86]"><LineIcon name="camera-off" /></span>
           <div className="min-w-0 flex-1">
             <p className="truncate text-[13px] font-semibold" style={{ color: TEXT }}>{r.exam}</p>
-            <p className="text-xs" style={{ color: MUTED }}>{r.periods} periode · {r.students} siswa{r.seconds ? ` · ± ${Math.max(1, Math.round(r.seconds / 60))} menit` : ""}</p>
+            <p className="text-xs" style={{ color: MUTED }}>{r.periods} periode · {r.students} mahasiswa{r.seconds ? ` · ± ${Math.max(1, Math.round(r.seconds / 60))} menit` : ""}</p>
           </div>
           <button type="button" onClick={() => onOpen(r.examId)} className="h-7 shrink-0 rounded border bg-white px-2.5 text-xs font-medium text-[#14213d] outline-none hover:bg-[#F4F5F7] focus-visible:ring-2 focus-visible:ring-[#c9a227]" style={{ borderColor: BORDER }}
             aria-label={`Lihat laporan ${r.exam}`}>Lihat</button>

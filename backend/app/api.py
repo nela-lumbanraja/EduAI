@@ -241,11 +241,11 @@ def logout(request: Request, user=Depends(get_current_user)):
 def register(body: RegisterIn, request: Request):
     st = _st(request)
     if not st.settings.allow_self_register:
-        raise HTTPException(403, "Pendaftaran mandiri dinonaktifkan. Hubungi admin sekolah.")
+        raise HTTPException(403, "Pendaftaran mandiri dinonaktifkan. Hubungi admin program studi.")
     email = body.email.strip().lower()
-    if not email.startswith("siswa") or "@" not in email:
-        raise HTTPException(400, "Pendaftaran mandiri hanya untuk akun siswa (email diawali 'siswa'). "
-                                 "Akun pengawas, penyelenggara/pihak sekolah, dan admin dibuat oleh Admin.")
+    if not email.startswith(("mahasiswa", "siswa")) or "@" not in email:
+        raise HTTPException(400, "Pendaftaran mandiri hanya untuk akun mahasiswa (email diawali 'mahasiswa' atau 'siswa'). "
+                                 "Akun pengawas, penyelenggara/pihak program studi, dan admin dibuat oleh Admin.")
     if st.db.one("SELECT 1 FROM users WHERE email=?", (email,)):
         raise HTTPException(409, "Email ini sudah terdaftar.")
     uid = st.db.run("INSERT INTO users (email,name,role,password_hash,created_at) VALUES (?,?,?,?,?)",
@@ -283,9 +283,9 @@ def create_user(body: UserCreate, request: Request, user=Depends(require_roles("
     """Manajemen User > Tambah User. Students need NIS and class; other roles must not have them. Email unique."""
     db = _st(request).db
     if body.role == "siswa" and not (body.nis and body.class_name):
-        raise HTTPException(422, "Akun siswa memerlukan NIS/NISN dan kelas.")
+        raise HTTPException(422, "Akun mahasiswa memerlukan NIM dan kelas.")
     if body.role != "siswa" and (body.nis or body.class_name):
-        raise HTTPException(422, "NIS/NISN dan kelas hanya untuk akun siswa.")
+        raise HTTPException(422, "NIM dan kelas hanya untuk akun mahasiswa.")
     if db.one("SELECT 1 FROM users WHERE email=?", (body.email,)):
         raise HTTPException(409, "Email sudah dipakai akun lain.")
     uid = db.run("INSERT INTO users (email,name,role,password_hash,nis,class_name,created_at) VALUES (?,?,?,?,?,?,?)",
@@ -295,7 +295,7 @@ def create_user(body: UserCreate, request: Request, user=Depends(require_roles("
     return {**public_user(row), "active": bool(row["active"]), "created_at": row["created_at"]}
 
 
-FIELD_LABELS = {"name": "nama", "email": "email", "role": "peran", "active": "status", "nis": "NIS", "class_name": "kelas"}
+FIELD_LABELS = {"name": "nama", "email": "email", "role": "peran", "active": "status", "nis": "NIM", "class_name": "kelas"}
 
 
 @router.patch("/users/{user_id}")
@@ -310,7 +310,7 @@ def update_user(user_id: int, body: UserPatch, request: Request, user=Depends(re
         raise HTTPException(404, "Pengguna tidak ditemukan.")
     # Penyelenggara Ujian (= Pihak Sekolah, one role): student accounts only (menu "Akun Siswa"), never the role.
     if user["role"] == "penyelenggara" and (target["role"] != "siswa" or (body.role is not None and body.role != "siswa")):
-        raise HTTPException(403, "Penyelenggara/pihak sekolah hanya dapat mengubah data akun siswa, tanpa mengubah perannya.")
+        raise HTTPException(403, "Penyelenggara/pihak program studi hanya dapat mengubah data akun mahasiswa, tanpa mengubah perannya.")
     new = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None or k in ("nis", "class_name")}
     if "active" in new:
         new["active"] = 1 if new["active"] else 0
@@ -364,7 +364,7 @@ def create_exam(body: ExamIn, request: Request, user=Depends(require_roles("admi
     ids = sorted(set(body.student_ids))
     found = db.all(f"SELECT id FROM users WHERE role='siswa' AND id IN ({','.join('?' * len(ids))})", ids)
     if len(found) != len(ids):
-        raise HTTPException(400, "Daftar peserta berisi akun yang bukan siswa.")
+        raise HTTPException(400, "Daftar peserta berisi akun yang bukan mahasiswa.")
     eid = db.run("INSERT INTO exams (name,description,subject,class_name,date,start_time,duration_min,status,"
                  "supervisor_id,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                  (body.name, body.description, body.subject, body.class_name, body.date, body.start_time,
@@ -469,16 +469,16 @@ def student_timeline(exam_id: int, student_id: int, request: Request, user=Depen
     db = _st(request).db
     _monitor_exam(db, user, exam_id)
     if not _enrolled(db, exam_id, student_id):
-        raise HTTPException(404, "Siswa tidak terdaftar pada ujian ini.")
+        raise HTTPException(404, "Mahasiswa tidak terdaftar pada ujian ini.")
     items = []
     p = db.one("SELECT * FROM presence WHERE exam_id=? AND student_id=?", (exam_id, student_id))
     c = db.one("SELECT accepted_at FROM consents WHERE exam_id=? AND student_id=?", (exam_id, student_id))
     if c:
         items.append({"ts": c["accepted_at"], "kind": "consent", "title": "Persetujuan perekaman diberikan"})
     if p and p.get("joined_at"):
-        items.append({"ts": p["joined_at"], "kind": "presence", "title": "Siswa bergabung ke ruang ujian"})
+        items.append({"ts": p["joined_at"], "kind": "presence", "title": "Mahasiswa bergabung ke ruang ujian"})
     if p and p.get("left_at"):
-        items.append({"ts": p["left_at"], "kind": "presence", "title": "Siswa keluar dari ruang ujian"})
+        items.append({"ts": p["left_at"], "kind": "presence", "title": "Mahasiswa keluar dari ruang ujian"})
     for ev in db.all("SELECT * FROM events WHERE exam_id=? AND student_id=? ORDER BY start_ts", (exam_id, student_id)):
         items.append({"ts": ev["start_ts"], "kind": ev["category"], "title": ev["label"] or ev["indicator"],
                       "event_id": ev["event_id"], "status": ev["status"], "review_status": ev["review_status"],
@@ -544,7 +544,7 @@ def jitsi_watch(exam_id: int, request: Request, user=Depends(get_current_user)):
     exam = _exam_or_404(db, exam_id)
     if not _can_watch_video(db, user, exam):
         if user["role"] != "siswa":
-            store.audit(db, user, "Video langsung siswa ditolak", f"exam:{exam_id}", status="Ditolak")
+            store.audit(db, user, "Video langsung mahasiswa ditolak", f"exam:{exam_id}", status="Ditolak")
         raise HTTPException(403, "Video langsung hanya untuk pengawas yang ditugaskan dan admin.")
     if not (exam["monitoring_active"] and exam["analysis_source"] == "jitsi" and st.settings.jitsi_domain):
         return {"server": jitsi.client_config(st.settings), "rooms": []}
@@ -557,7 +557,7 @@ def jitsi_watch(exam_id: int, request: Request, user=Depends(get_current_user)):
     target = f"exam:{exam_id} video"
     since = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(timespec="milliseconds")
     if not db.one("SELECT 1 FROM audit WHERE user_id=? AND target=? AND ts>?", (user["id"], target, since)):
-        store.audit(db, user, "Melihat video langsung siswa (tidak direkam)", target)
+        store.audit(db, user, "Melihat video langsung mahasiswa (tidak direkam)", target)
     return {"server": jitsi.client_config(st.settings), "rooms": rooms}
 
 
@@ -845,7 +845,7 @@ async def leave(exam_id: int, request: Request, user=Depends(require_roles("sisw
     st = _st(request)
     _view_exam(st.db, user, exam_id)
     st.db.run("UPDATE presence SET left_at=? WHERE exam_id=? AND student_id=?", (now_iso(), exam_id, user["id"]))
-    device.close_student(st, exam_id, user["id"], " (siswa keluar)")
+    device.close_student(st, exam_id, user["id"], " (mahasiswa keluar)")
     await st.ai.stop_student(exam_id, user["id"])
     store.audit(st.db, user, "Keluar ruang ujian", f"exam:{exam_id}")
     return {"ok": True}
@@ -968,7 +968,7 @@ def start_monitoring(exam_id: int, body: MonitoringStartIn, request: Request, us
         st.db.run("UPDATE exams SET monitoring_active=1, analysis_source='livekit' WHERE id=?", (exam_id,))
         res = st.workers.start(exam_id)
         if not res["started"] and res.get("reason") != "already running":
-            note = f"Worker OpenVidu tidak berjalan ({res['reason']}). Analisis memakai frame dari browser siswa."
+            note = f"Worker OpenVidu tidak berjalan ({res['reason']}). Analisis memakai frame dari browser mahasiswa."
             source = "browser"
     if source in ("browser", "jitsi"):
         _stop_worker(st, exam_id)                    # switching from the OpenVidu worker to uploaded frames
@@ -1292,7 +1292,7 @@ def add_note(exam_id: int, body: NoteIn, request: Request, user=Depends(require_
     _monitor_exam(db, user, exam_id)
     _not_final(db, exam_id)
     if body.student_id is not None and not _enrolled(db, exam_id, body.student_id):
-        raise HTTPException(400, "Siswa tidak terdaftar pada ujian ini.")
+        raise HTTPException(400, "Mahasiswa tidak terdaftar pada ujian ini.")
     nid = db.run("INSERT INTO manual_notes (exam_id,student_id,author_id,time_text,kind,note,created_at) VALUES (?,?,?,?,?,?,?)",
                  (exam_id, body.student_id, user["id"], body.time_text, body.kind, body.note, now_iso()))
     store.audit(db, user, "Menambah catatan manual", f"exam:{exam_id}")

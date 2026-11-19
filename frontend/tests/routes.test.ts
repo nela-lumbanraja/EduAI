@@ -23,7 +23,7 @@ test("Beranda signed in: 'Kembali ke Dasbor' goes straight to the dashboard, wit
 });
 
 test("'Kembali ke Dasbor' opens the dashboard of the account's role", () => {
-  assert.equal(dashboardKind("Siswa"), "siswa");
+  assert.equal(dashboardKind("Mahasiswa"), "siswa");
   assert.equal(dashboardKind("Pengawas"), "pengawas");
   assert.equal(dashboardKind("Admin"), "admin");
   assert.equal(dashboardKind("Penyelenggara Ujian"), "institusi");
@@ -42,6 +42,6 @@ test("login errors are Indonesian and never reveal whether the account exists", 
 });
 
 test("registration keeps the backend's own (Indonesian) explanation", () => {
-  assert.equal(authErrorMessage(400, "Pendaftaran mandiri hanya untuk akun siswa.", true), "Pendaftaran mandiri hanya untuk akun siswa.");
+  assert.equal(authErrorMessage(400, "Pendaftaran mandiri hanya untuk akun mahasiswa.", true), "Pendaftaran mandiri hanya untuk akun mahasiswa.");
   assert.equal(authErrorMessage(422, "value is not a valid email address", true), "Periksa kembali nama, email, dan kata sandi.");
 });

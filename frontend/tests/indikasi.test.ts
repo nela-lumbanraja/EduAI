@@ -95,7 +95,7 @@ test("'tidak dapat dianalisis' grouped per exam, most periods first", () => {
 test("a filter in the URL opens Indikasi for signed-in staff only", () => {
   assert.equal(opensIndications("?jenis=hp", "Pengawas"), true);
   assert.equal(opensIndications("?status=belum", "Admin"), true);
-  assert.equal(opensIndications("?jenis=hp", "Siswa"), false);
+  assert.equal(opensIndications("?jenis=hp", "Mahasiswa"), false);
   assert.equal(opensIndications("?jenis=hp", null), false);
   assert.equal(opensIndications("", "Pengawas"), false);
 });

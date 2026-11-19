@@ -10,6 +10,6 @@ export const JITSI_NOTICE_UNKNOWN = "Bila ujian memakai Jitsi, video kamera mele
 export function jitsiNotice(server: JitsiNoticeServer | null): string | null {
   if (!server?.configured) return null;
   return server.operator === "school"
-    ? "Bila ujian memakai Jitsi, video kamera melewati server Jitsi yang dikelola sekolah."
-    : `Bila ujian memakai Jitsi, video kamera melewati server Jitsi pihak ketiga (${server.domain}), bukan server milik sekolah.`;
+    ? "Bila ujian memakai Jitsi, video kamera melewati server Jitsi yang dikelola program studi."
+    : `Bila ujian memakai Jitsi, video kamera melewati server Jitsi pihak ketiga (${server.domain}), bukan server milik program studi.`;
 }

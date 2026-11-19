@@ -115,5 +115,5 @@ test("story navigation: next/previous frame and evidence, auto end, progress fil
 
 test("a copied case link (?kasus=) opens Indikasi for signed-in staff", () => {
   assert.equal(opensIndications("?kasus=k:1:2:x", "Pengawas"), true);
-  assert.equal(opensIndications("?kasus=k:1:2:x", "Siswa"), false);
+  assert.equal(opensIndications("?kasus=k:1:2:x", "Mahasiswa"), false);
 });

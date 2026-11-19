@@ -98,7 +98,7 @@ test("front or back camera: the chosen side is asked for in every attempt, front
 });
 
 test("camera needs a secure page: https or localhost; a phone on http://<ip> is told why", () => {
-  assert.equal(insecurePageHint(true, "https:", "ujian.sekolah.sch.id"), null);
+  assert.equal(insecurePageHint(true, "https:", "ujian.prodi.ac.id"), null);
   assert.equal(insecurePageHint(true, "http:", "localhost"), null);
   const hint = insecurePageHint(false, "http:", "192.168.1.10");
   assert.ok(hint && hint.includes("http://192.168.1.10") && hint.includes("https://"));
@@ -106,14 +106,14 @@ test("camera needs a secure page: https or localhost; a phone on http://<ip> is 
 
 test("video server address seen from the student's device", () => {
   // localhost / 127.0.0.1 from a phone = the phone itself
-  assert.match(mediaServerProblem("ws://localhost:7880", "ujian.sekolah.sch.id", "https:") ?? "", /perangkat ini sendiri/);
+  assert.match(mediaServerProblem("ws://localhost:7880", "ujian.prodi.ac.id", "https:") ?? "", /perangkat ini sendiri/);
   assert.match(mediaServerProblem("ws://127.0.0.1:7880", "192.168.1.10", "http:") ?? "", /perangkat ini sendiri/);
   assert.equal(mediaServerProblem("ws://localhost:7880", "localhost", "http:"), null);          // computer that runs it
   // ws:// is blocked on an https page
-  assert.match(mediaServerProblem("ws://192.168.1.10:7880", "ujian.sekolah.sch.id", "https:") ?? "", /wss:\/\//);
+  assert.match(mediaServerProblem("ws://192.168.1.10:7880", "ujian.prodi.ac.id", "https:") ?? "", /wss:\/\//);
   assert.equal(mediaServerProblem("ws://192.168.1.10:7880", "192.168.1.10", "http:"), null);
-  assert.equal(mediaServerProblem("wss://video.sekolah.sch.id", "ujian.sekolah.sch.id", "https:"), null);
+  assert.equal(mediaServerProblem("wss://video.prodi.ac.id", "ujian.prodi.ac.id", "https:"), null);
   // Jitsi gives a bare domain
-  assert.equal(mediaServerProblem("meet.sekolah.sch.id", "ujian.sekolah.sch.id", "https:"), null);
-  assert.match(mediaServerProblem("localhost:8443", "ujian.sekolah.sch.id", "https:") ?? "", /localhost/);
+  assert.equal(mediaServerProblem("meet.prodi.ac.id", "ujian.prodi.ac.id", "https:"), null);
+  assert.match(mediaServerProblem("localhost:8443", "ujian.prodi.ac.id", "https:") ?? "", /localhost/);
 });

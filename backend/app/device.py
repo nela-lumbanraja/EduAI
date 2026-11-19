@@ -23,8 +23,8 @@ from .db import now_iso
 
 SOURCE = "presence"
 DEVICES = {
-    "CAMERA_OFF": ("Kamera dimatikan", "Kamera siswa mati atau tidak mengirim gambar selama pemantauan."),
-    "MIC_OFF": ("Mikrofon dimatikan", "Mikrofon siswa mati selama pemantauan, padahal siswa menyetujui pemakaian mikrofon."),
+    "CAMERA_OFF": ("Kamera dimatikan", "Kamera mahasiswa mati atau tidak mengirim gambar selama pemantauan."),
+    "MIC_OFF": ("Mikrofon dimatikan", "Mikrofon mahasiswa mati selama pemantauan, padahal mahasiswa menyetujui pemakaian mikrofon."),
 }
 
 
@@ -98,6 +98,6 @@ def sweep_offline(st, online_s: float) -> int:
         if r["last_seen"]:
             age = (datetime.now(timezone.utc) - datetime.fromisoformat(r["last_seen"])).total_seconds()
         if r["left_at"] or age is None or age >= online_s:
-            close_student(st, r["exam_id"], r["student_id"], " (siswa terputus)")
+            close_student(st, r["exam_id"], r["student_id"], " (mahasiswa terputus)")
             n += 1
     return n

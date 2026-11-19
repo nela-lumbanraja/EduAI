@@ -199,8 +199,8 @@ SOUND_DEFAULTS = {
 }
 SOUND_NAMES = ("OTHER_VOICE", "STUDENT_SPEECH", "WHISPER", "MEDIA_SOUND", "BOOK_SOUND")
 SOUND_REASONS = {
-    "OTHER_VOICE": "Suara bicara terdengar saat mulut siswa tampak diam",
-    "STUDENT_SPEECH": "Siswa tampak berbicara (suara bicara, mulut bergerak); info, bukan indikasi",
+    "OTHER_VOICE": "Suara bicara terdengar saat mulut mahasiswa tampak diam",
+    "STUDENT_SPEECH": "Mahasiswa tampak berbicara (suara bicara, mulut bergerak); info, bukan indikasi",
     "WHISPER": "Suara bisikan terdengar",
     "MEDIA_SOUND": "Suara musik/media (TV, radio) terdengar",
     "BOOK_SOUND": "Suara kertas/halaman buku terdengar (dibuka atau dibalik)",

@@ -9,7 +9,7 @@ const exam = (o: Partial<Exam>): Exam => ({
   status: "Sedang Berlangsung", monitoring_active: true, analysis_source: "browser", monitoring_started_at: null, supervisor: null,
   student_count: 6, ...o,
 });
-const student = (o: Partial<StudentRow>): StudentRow => ({ id: 1, name: "Siswa", nis: null, class_name: null, ...o });
+const student = (o: Partial<StudentRow>): StudentRow => ({ id: 1, name: "Mahasiswa", nis: null, class_name: null, ...o });
 
 test("'Tidak dapat dianalisis' counts camera and sound quality gaps per student", () => {
   const rows = [
@@ -19,7 +19,7 @@ test("'Tidak dapat dianalisis' counts camera and sound quality gaps per student"
     student({ id: 4, audio: { consented: false, active: false, reason: "not_consented" } }),   // no consent: not a quality gap
     student({ id: 5, ai: { state: "normal", last_state: "normal", frame_status: null, reason: null, face_count: 1, latency_ms: 20, updated_at: null, source: null } }),
   ];
-  assert.deepEqual(analysisGaps(rows), { camera: 2, sound: 1, students: 3, label: "Tidak dapat dianalisis: 3 siswa (kamera 2, suara 1)" });
+  assert.deepEqual(analysisGaps(rows), { camera: 2, sound: 1, students: 3, label: "Tidak dapat dianalisis: 3 mahasiswa (kamera 2, suara 1)" });
 });
 
 test("no gaps: no 'Tidak dapat dianalisis' label, and it is never an indication", () => {

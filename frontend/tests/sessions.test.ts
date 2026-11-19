@@ -4,8 +4,8 @@ import { test } from "node:test";
 import { ALL_STATUSES, filterSessions, sessionDateText, sessionTone, STATUS_OPTIONS } from "../src/sessions.ts";
 
 const rows = [
-  { name: "Ujian Akhir Matematika", subject: "Matematika", class_name: "XI IPA 2", status: "Sedang Berlangsung" as const },
-  { name: "Evaluasi Bahasa", subject: "Bahasa Indonesia", class_name: "XI IPA 2", status: "Terjadwal" as const },
+  { name: "Ujian Akhir Matematika", subject: "Matematika", class_name: "IF-2023-A", status: "Sedang Berlangsung" as const },
+  { name: "Evaluasi Bahasa", subject: "Bahasa Indonesia", class_name: "IF-2023-A", status: "Terjadwal" as const },
   { name: "UTS Fisika", subject: "Fisika", class_name: "XII", status: "Selesai" as const },
   { name: "Draf Kimia", subject: "Kimia", class_name: "X", status: "Draft" as const },
 ];
@@ -22,7 +22,7 @@ test("status filter: every option, including 'Semua status'", () => {
 
 test("search and status together; search covers name, subject and class", () => {
   assert.deepEqual(filterSessions(rows, "fisika", ALL_STATUSES).map((r) => r.name), ["UTS Fisika"]);
-  assert.deepEqual(filterSessions(rows, "  XI IPA ", "Terjadwal").map((r) => r.name), ["Evaluasi Bahasa"]);
+  assert.deepEqual(filterSessions(rows, "  IF-2023 ", "Terjadwal").map((r) => r.name), ["Evaluasi Bahasa"]);
   assert.deepEqual(filterSessions(rows, "fisika", "Terjadwal"), []);
 });
 
@@ -38,7 +38,7 @@ test("date and time text in WIB", () => {
   assert.equal(sessionDateText({ date: "", start_time: "" }), "Belum ada data");
 });
 
-test("Ujian Saya (siswa): filter by running, scheduled and finished; counts add up", async () => {
+test("Ujian Saya (mahasiswa): filter by running, scheduled and finished; counts add up", async () => {
   const { filterStudentExams, studentFilterCounts, studentKind } = await import("../src/sessions.ts");
   const ex = (id: number, status: string) => ({ id, status }) as { id: number; status: "Sedang Berlangsung" | "Terjadwal" | "Selesai" };
   const list = [ex(1, "Sedang Berlangsung"), ex(2, "Terjadwal"), ex(3, "Selesai"), ex(4, "Selesai")];

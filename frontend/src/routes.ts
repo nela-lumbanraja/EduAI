@@ -4,7 +4,7 @@
 // page URL into its keys, so a history.pushState() after load could make the SEB check of a student fail.
 
 /** "Penyelenggara Ujian" is also the school (Pihak Sekolah): one role. */
-export type Role = "Siswa" | "Pengawas" | "Penyelenggara Ujian" | "Admin";
+export type Role = "Mahasiswa" | "Pengawas" | "Penyelenggara Ujian" | "Admin";
 export type Entry = "beranda" | "login" | "dashboard";
 
 /** First screen for the URL the page was opened with. Signed in: always the dashboard (also for /login). */
@@ -16,7 +16,7 @@ export function initialScreen(pathname: string, signedIn: boolean): Entry {
 /** Signed-in staff who open a URL with an Indikasi filter (?jenis=..., ?status=...) or a case link (?kasus=...) start on the Indikasi page.
  *  Only the Indikasi page writes this query (a staff page; students in Safe Exam Browser never reach it). */
 export function opensIndications(search: string, role: Role | null): boolean {
-  if (!role || role === "Siswa") return false;
+  if (!role || role === "Mahasiswa") return false;
   const q = new URLSearchParams(search);
   return q.has("jenis") || q.has("status") || q.has("kasus");
 }
@@ -31,7 +31,7 @@ export type DashboardKind = "siswa" | "admin" | "institusi" | "pengawas";
 
 /** The dashboard a role sees. The role always comes from the account the backend returned. */
 export function dashboardKind(role: Role): DashboardKind {
-  if (role === "Siswa") return "siswa";
+  if (role === "Mahasiswa") return "siswa";
   if (role === "Admin") return "admin";
   if (role === "Penyelenggara Ujian") return "institusi";
   return "pengawas";
@@ -58,7 +58,7 @@ export function authErrorMessage(status: number, serverMessage: string, register
 /** Screens each role may open (App.tsx shows "403 – Akses Ditolak" for any other). Every sidebar menu of a role
  *  (nav.ts) must be in its list; tests/nav.test.ts checks that. */
 export const ALLOWED_SCREENS: Record<Role, string[]> = {
-  Siswa: ["login", "dashboard", "my-exams", "seb-check", "consent", "device", "exam", "settings", "access-denied"],
+  Mahasiswa: ["login", "dashboard", "my-exams", "seb-check", "consent", "device", "exam", "settings", "access-denied"],
   Pengawas: ["login", "dashboard", "sessions", "exam-detail", "waiting", "monitor", "student-detail", "detail", "timeline", "report", "indications", "history", "students", "meeting", "settings", "access-denied"],
   "Penyelenggara Ujian": ["login", "dashboard", "sessions", "exam-detail", "waiting", "monitor", "student-detail", "detail", "timeline", "report", "indications", "history", "students", "users", "student-accounts", "meeting", "settings", "access-denied"],
   Admin: ["login", "dashboard", "sessions", "create", "exam-detail", "waiting", "seb-check", "consent", "device", "exam", "monitor", "student-detail", "detail", "timeline", "report", "indications", "history", "students", "users", "configuration", "retention", "audit", "meeting", "settings", "access-denied"],

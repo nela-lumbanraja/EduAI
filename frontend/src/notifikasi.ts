@@ -44,7 +44,7 @@ export function buildRows(cases: CaseSummary[], cannot: Pick<AIEvent, "category"
   const m = new Map<string, NotifRow>();
   for (const c of cases) {
     const key = `k:${c.exam_id}:${c.student_id}`;
-    const r = m.get(key) ?? { key, kind: "kasus" as const, student: { id: c.student_id, name: c.student?.name ?? "Siswa" }, exam: { id: c.exam_id, name: c.exam?.name ?? `Ujian ${c.exam_id}` },
+    const r = m.get(key) ?? { key, kind: "kasus" as const, student: { id: c.student_id, name: c.student?.name ?? "Mahasiswa" }, exam: { id: c.exam_id, name: c.exam?.name ?? `Ujian ${c.exam_id}` },
       cases: [], periods: 0, labels: [], latest: 0, unreviewed: 0, evidence: 0 };
     r.cases.push(c);
     if (!r.labels.includes(label(c))) r.labels.push(label(c));
@@ -56,7 +56,7 @@ export function buildRows(cases: CaseSummary[], cannot: Pick<AIEvent, "category"
   for (const e of cannot) {
     if (e.category !== "cannot_analyze") continue;
     const key = `t:${e.exam_id}:${e.student_id}`;
-    const r = m.get(key) ?? { key, kind: "tidak-terbaca" as const, student: { id: e.student_id, name: e.student?.name ?? "Siswa" }, exam: { id: e.exam_id, name: e.exam?.name ?? `Ujian ${e.exam_id}` },
+    const r = m.get(key) ?? { key, kind: "tidak-terbaca" as const, student: { id: e.student_id, name: e.student?.name ?? "Mahasiswa" }, exam: { id: e.exam_id, name: e.exam?.name ?? `Ujian ${e.exam_id}` },
       cases: [], periods: 0, labels: ["Tidak dapat dianalisis"], latest: 0, unreviewed: 0, evidence: 0 };
     r.periods += 1; r.latest = Math.max(r.latest, ms(e.start_ts));
     m.set(key, r);

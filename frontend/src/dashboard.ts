@@ -41,7 +41,7 @@ export function analysisGaps(students: StudentRow[]): { camera: number; sound: n
     total += cam || snd ? 1 : 0;
   }
   const parts = [camera ? `kamera ${camera}` : "", sound ? `suara ${sound}` : ""].filter(Boolean).join(", ");
-  return { camera, sound, students: total, label: total ? `Tidak dapat dianalisis: ${total} siswa (${parts})` : null };
+  return { camera, sound, students: total, label: total ? `Tidak dapat dianalisis: ${total} mahasiswa (${parts})` : null };
 }
 
 /** Icon for an indicator on the dashboard list. */

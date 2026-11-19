@@ -33,7 +33,7 @@ MODELS = {
                         "runs_in": "backend", "function": "Buku dipegang atau dibuka di depan kamera"},
     "audio_classifier": {"name": "YAMNet", "library": "MediaPipe Tasks Audio (TFLite)", "package": "mediapipe",
                          "runs_in": "browser", "function": "Jenis suara (bicara, bisikan, media, kertas); dijalankan di "
-                                                           "browser siswa, backend memeriksa dan menyajikan filenya"},
+                                                           "browser mahasiswa, backend memeriksa dan menyajikan filenya"},
 }
 
 

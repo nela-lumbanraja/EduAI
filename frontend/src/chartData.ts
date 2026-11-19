@@ -107,7 +107,7 @@ export function sessionTimeline(events: Pick<AIEvent, "event_id" | "start_ts" | 
     if (t === null) continue;
     if (!(end > start) || t < start || t > end) { outside += 1; continue; }
     const kind = indicationKind(e.indicator);
-    points.push({ id: e.event_id, at: t, x: (t - start) / (end - start), kind, student: e.student?.name ?? "Siswa tidak dikenal", label: e.label ?? kindLabel(kind), time: clockLabelWib(t) });
+    points.push({ id: e.event_id, at: t, x: (t - start) / (end - start), kind, student: e.student?.name ?? "Mahasiswa tidak dikenal", label: e.label ?? kindLabel(kind), time: clockLabelWib(t) });
   }
   points.sort((a, b) => a.at - b.at);
   return { points, outside, start, end, startLabel: clockLabelWib(start), endLabel: clockLabelWib(end) };

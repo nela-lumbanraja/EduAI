@@ -37,7 +37,7 @@ export function captureAttempts(facing: Facing = "user"): MediaStreamConstraints
 export function insecurePageHint(secure: boolean, protocol: string, hostname: string): string | null {
   if (secure) return null;
   return `Halaman ini dibuka lewat ${protocol}//${hostname}, bukan HTTPS, sehingga browser tidak mengizinkan kamera dan mikrofon. `
-    + "Buka EduAI melalui alamat https:// dari sekolah. (http://localhost hanya berlaku di komputer server itu sendiri, bukan di HP.)";
+    + "Buka EduAI melalui alamat https:// dari program studi. (http://localhost hanya berlaku di komputer server itu sendiri, bukan di HP.)";
 }
 
 const LOOPBACK = /^(localhost|127(?:\.\d+){3}|\[?::1\]?|0\.0\.0\.0)$/i;
@@ -49,7 +49,7 @@ export function mediaServerProblem(url: string, pageHostname: string, pageProtoc
   let u: URL;
   try { u = new URL(/^[a-z]+:\/\//i.test(url) ? url : `https://${url}`); } catch { return "Alamat server video tidak valid."; }
   if (LOOPBACK.test(u.hostname) && !LOOPBACK.test(pageHostname))
-    return `Server video diatur ke ${u.hostname}, yang dari perangkat ini berarti perangkat ini sendiri. Admin perlu mengisi alamat publik (wss://domain-sekolah) di konfigurasi backend.`;
+    return `Server video diatur ke ${u.hostname}, yang dari perangkat ini berarti perangkat ini sendiri. Admin perlu mengisi alamat publik (wss://domain-prodi) di konfigurasi backend.`;
   if (pageProtocol === "https:" && (u.protocol === "ws:" || u.protocol === "http:"))
     return "Server video memakai sambungan tidak aman (ws:// atau http://) sementara halaman memakai HTTPS, sehingga browser memblokirnya. Admin perlu memakai wss://.";
   return null;
@@ -68,7 +68,7 @@ const PERMISSION_HELP: Record<Platform, string> = {
 
 /** Indonesian message for a failed camera/microphone request, with the steps for the student's own phone. */
 export function mediaErrorText(name: string | undefined, secure: boolean, platform: Platform, inApp = false): string {
-  if (!secure) return "Kamera hanya dapat dipakai lewat alamat HTTPS (atau http://localhost). Buka EduAI melalui alamat https:// dari sekolah.";
+  if (!secure) return "Kamera hanya dapat dipakai lewat alamat HTTPS (atau http://localhost). Buka EduAI melalui alamat https:// dari program studi.";
   if (name === "UnsupportedError" || name === "TypeError")
     return inApp ? "Browser di dalam aplikasi ini (misalnya WhatsApp atau Instagram) tidak mendukung kamera. Salin tautan EduAI lalu buka di Chrome (Android) atau Safari (iPhone)."
       : "Browser ini tidak mendukung kamera/mikrofon. Buka EduAI di Chrome (Android) atau Safari (iPhone) versi terbaru.";

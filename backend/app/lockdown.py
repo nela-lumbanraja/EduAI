@@ -24,11 +24,11 @@ INDICATOR = "LOCKDOWN_LOST"
 LABEL = "Lockdown terputus"
 REASONS = {
     "not_seb": "Halaman ujian dibuka di luar Safe Exam Browser.",
-    "key_mismatch": "Konfigurasi Safe Exam Browser tidak sesuai dengan yang ditetapkan sekolah.",
+    "key_mismatch": "Konfigurasi Safe Exam Browser tidak sesuai dengan yang ditetapkan program studi.",
     "url_mismatch": "Halaman ujian dibuka dari alamat yang tidak diizinkan.",
     "not_configured": "Pengaturan Safe Exam Browser ujian ini belum lengkap.",
     "stale": "Safe Exam Browser tidak memverifikasi ulang (aplikasi mungkin ditutup atau halaman ditinggalkan).",
-    "offline": "Koneksi siswa terputus selama ujian dengan lockdown.",
+    "offline": "Koneksi mahasiswa terputus selama ujian dengan lockdown.",
 }
 
 
@@ -108,7 +108,7 @@ def sweep(db, online_s: float) -> dict:
                         " LEFT JOIN seb_status s ON s.exam_id=p.exam_id AND s.student_id=p.student_id"
                         " WHERE p.exam_id=? AND p.joined_at IS NOT NULL", (ex["id"],)):
             if r["left_at"]:
-                out["closed"] += close_event(db, ex["id"], r["student_id"], " (siswa keluar dari ujian)")
+                out["closed"] += close_event(db, ex["id"], r["student_id"], " (mahasiswa keluar dari ujian)")
                 continue
             if r["state"] != "verified":
                 continue                                   # a failed check already opened the event (on_check)

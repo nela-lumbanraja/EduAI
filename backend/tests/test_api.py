@@ -120,6 +120,9 @@ def test_login_register_and_limits(client):
     assert r.status_code == 400                                   # only students self-register
     r = client.post("/api/auth/register", json={"email": "siswa9@gmail.com", "password": "123456", "name": "Sari"})
     assert r.status_code == 201 and r.json()["user"]["role"] == "siswa"
+    r = client.post("/api/auth/register", json={"email": "mahasiswa9@gmail.com", "password": "123456", "name": "Dewi"})
+    assert r.status_code == 201 and r.json()["user"]["role"] == "siswa" and r.json()["user"]["role_label"] == "Mahasiswa"
+    assert client.post("/api/auth/register", json={"email": "dosen9@gmail.com", "password": "123456", "name": "Y"}).status_code == 400
     for _ in range(5):
         client.post("/api/auth/login", json={"email": "admin1@gmail.com", "password": "nope", "role": "admin"})
     assert client.post("/api/auth/login", json={"email": "admin1@gmail.com", "password": "123456", "role": "admin"}).status_code == 429

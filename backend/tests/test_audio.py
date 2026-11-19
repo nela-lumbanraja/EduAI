@@ -84,7 +84,7 @@ def test_speech_with_still_mouth_creates_indication(tmp_path, monkeypatch):
         ev = c.get("/api/exams/1/events", headers=hp, params={"category": "indication"}).json()["events"]
         voice = [e for e in ev if e["indicator"] == "OTHER_VOICE"]
         assert len(voice) == 1 and voice[0]["score"] == 0.8
-        assert voice[0]["label"] == "Suara bicara terdengar saat mulut siswa diam"
+        assert voice[0]["label"] == "Suara bicara terdengar saat mulut mahasiswa diam"
         rows = c.get("/api/exams/1/students", headers=hp).json()
         alya = next(r for r in rows if r["name"] == "Alya Putri")
         assert alya["audio"] == {"consented": True, "active": True, "reason": None}
