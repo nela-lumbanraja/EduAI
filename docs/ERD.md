@@ -1,9 +1,11 @@
 # Diagram relasional database EduAI
 
+> **Istilah.** Dokumen ini memakai istilah mitra Program Studi Informatika: mahasiswa, Program Studi, NIM, mata kuliah, dosen. Nama kode internal ditulis apa adanya: peran `siswa` (= mahasiswa), peran lama `sekolah` (= Penyelenggara Ujian/pihak Program Studi), kolom `nis` (= NIM), `class_name` (= kelas), jenis suara `BICARA_SISWA` (= mahasiswa berbicara), akun demo `siswa1`–`siswa6` dan `sekolah1`.
+
 Sumber: skema SQLite di `backend/app/db.py` (19 tabel, termasuk kolom tambahan dari migrasi). Gambar: [ERD.png](ERD.png).
 
 - **Garis tegas**: relasi yang dideklarasikan sebagai `REFERENCES` (foreign key) di skema.
-- **Garis putus-putus**: relasi logis. Kolomnya merujuk tabel lain, tetapi tanpa constraint foreign key. Tabel per siswa per ujian memakai pasangan `(exam_id, student_id)` yang sama dengan `exam_students`.
+- **Garis putus-putus**: relasi logis. Kolomnya merujuk tabel lain, tetapi tanpa constraint foreign key. Tabel per mahasiswa per ujian memakai pasangan `(exam_id, student_id)` yang sama dengan `exam_students`.
 
 ```mermaid
 erDiagram
@@ -219,6 +221,6 @@ erDiagram
 ```
 
 Catatan:
-- `presence`, `ai_status`, `seb_status`, dan `consents` menyimpan paling banyak satu baris per siswa per ujian (kunci primer `(exam_id, student_id)`).
+- `presence`, `ai_status`, `seb_status`, dan `consents` menyimpan paling banyak satu baris per mahasiswa per ujian (kunci primer `(exam_id, student_id)`).
 - Kejadian berkategori `info` (label suara) disimpan di `events` dengan detail di kolom `details`. Kejadian ini tidak dihitung sebagai indikasi.
 - `sqlite_sequence` adalah tabel internal SQLite untuk `AUTOINCREMENT` dan tidak digambar.

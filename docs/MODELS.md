@@ -1,5 +1,7 @@
 # Pemilihan model
 
+> **Istilah.** Dokumen ini memakai istilah mitra Program Studi Informatika: mahasiswa, Program Studi, NIM, mata kuliah, dosen. Nama kode internal ditulis apa adanya: peran `siswa` (= mahasiswa), peran lama `sekolah` (= Penyelenggara Ujian/pihak Program Studi), kolom `nis` (= NIM), `class_name` (= kelas), jenis suara `BICARA_SISWA` (= mahasiswa berbicara), akun demo `siswa1`–`siswa6` dan `sekolah1`.
+
 Prinsip: tidak ada pelatihan model pada tahap ini, dan tidak ada model yang dinyatakan "siap" tanpa berkas bobotnya benar-benar dimuat dan diuji.
 
 | Model | Fungsi di EduAI | Sumber resmi | Status di paket ini |
@@ -20,7 +22,7 @@ powershell -ExecutionPolicy Bypass -File scripts\download_models.ps1     # Windo
 python scripts\smoke_test_models.py --image C:\path\ke\foto-wajah.jpg     # bukti model termuat & berjalan
 ```
 
-Bila `storage.googleapis.com` diblokir jaringan sekolah, alternatif untuk detektor wajah saja:
+Bila `storage.googleapis.com` diblokir jaringan program studi, alternatif untuk detektor wajah saja:
 
 ```powershell
 python scripts\download_models.py --from-mediapipe-wheel

@@ -1,5 +1,7 @@
 # Daftar perubahan
 
+> **Catatan istilah (20 November 2026).** Isi di bawah dicatat ketika aplikasi masih memakai istilah sekolah/siswa/NIS dan **dibiarkan apa adanya** sebagai catatan sejarah. Sejak commit `083f97d`, UI dan pesan backend memakai istilah mitra Program Studi Informatika (mahasiswa, Program Studi, NIM, mata kuliah); nama kode internal (`siswa`, `nis`, `BICARA_SISWA`) tidak berubah.
+
 Sumber awal: `eduai-main.zip` (aplikasi web) dan `eduai-ai-prototype_1.zip` (modul AI). Struktur hasil integrasi:
 
 ```
@@ -430,3 +432,13 @@ Permintaan 10 Nov 2026: buku yang dipegang atau dibuka harus cepat terindikasi, 
 - **Dari suara (indikator baru BOOK_SOUND, "Suara kertas/halaman buku terdengar"):** browser siswa kini menghitung skor `paper` dari kelas YAMNet *Rustle*, *Crumpling, crinkling*, *Tearing*, dan *Flap* (nama dicek di daftar label model). Skor ≥ 0,25 selama ≥ 1 detik menjadi indikasi; jeda 30 detik; notifikasi sejak episode pertama. Hanya bila siswa menyetujui analisis suara. Tetap hanya angka: audio tidak direkam atau dikirim.
 - Jalur data: `frontend/src/audioScores.ts` → `POST /api/exams/{id}/audio` (`paper`, opsional untuk browser lama) → `eduai_ai.temporal` (aturan BOOK_SOUND) → event dengan `details.sound_type = "KERTAS_BUKU"` dan `details.paper`. Di halaman Indikasi, BOOK_SOUND masuk jenis **Buku**.
 - Tes: `ai/eduai-ai/tests/test_book.py`, `test_sound_labels.py` (bunyi kertas), `backend/tests/test_audio.py` (2 tes baru), `frontend/tests/audioScores.test.ts`.
+
+## Istilah mitra Program Studi Informatika (20 November 2026)
+
+- **UI (frontend):** siswa → mahasiswa, sekolah → Program Studi, NIS/NISN → NIM, mata pelajaran → mata kuliah, guru → dosen. Label peran "Siswa" → "Mahasiswa" (tipe `Role`, `ROLE_LABEL`, rute, menu "Akun Mahasiswa").
+- **Pesan backend yang tampil:** galat API, log audit, alasan kejadian perangkat/lockdown, label peran (`security.py`), label suara layanan AI.
+- **Laporan PDF:** "Kepala Sekolah" → "Ketua Program Studi", kolom NIS → NIM, "Mata pelajaran" → "Mata kuliah", placeholder kop "[NAMA PROGRAM STUDI]".
+- **Pendaftaran mandiri:** email berawalan `mahasiswa` atau `siswa` diterima. Risikonya dicatat di `docs/catatan_keamanan.md` (belum diperbaiki).
+- **Tidak berubah:** kode peran `siswa`, kolom `nis`, kode `BICARA_SISWA`, path/anchor, data demo (`siswa1`…, kelas "XI IPA 2").
+- **Tes:** asersi teks diselaraskan; tes baru pendaftaran `mahasiswa`. E2E (`run_e2e.py`) diselaraskan, belum dijalankan (Playwright tidak terpasang di venv proyek).
+- **Dokumentasi:** README.md, frontend/README.md, dan docs/*.md disesuaikan; CHANGES.md dan TEST_RESULTS.md hanya diberi catatan istilah.

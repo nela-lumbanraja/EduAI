@@ -1,11 +1,13 @@
 # Arsitektur & alur frame EduAI
 
+> **Istilah.** Dokumen ini memakai istilah mitra Program Studi Informatika: mahasiswa, Program Studi, NIM, mata kuliah, dosen. Nama kode internal ditulis apa adanya: peran `siswa` (= mahasiswa), peran lama `sekolah` (= Penyelenggara Ujian/pihak Program Studi), kolom `nis` (= NIM), `class_name` (= kelas), jenis suara `BICARA_SISWA` (= mahasiswa berbicara), akun demo `siswa1`–`siswa6` dan `sekolah1`.
+
 ## Komponen
 
 ```
 ┌──────────────────────┐        ┌────────────────────────────┐        ┌─────────────────────┐
 │ frontend/ (React 19) │  HTTPS │ backend/ (FastAPI)          │        │ OpenVidu 3 (LiveKit) │
-│  siswa: kamera,      │───────▶│  auth JWT + RBAC            │──token▶│  ruang eduai-exam-N  │
+│  mahasiswa: kamera,  │───────▶│  auth JWT + RBAC            │──token▶│  ruang eduai-exam-N  │
 │  pengawas: dasbor    │◀───────│  ujian, presence, persetujuan│        │  ws://…:7880         │
 └─────────┬────────────┘  JSON  │  event API, evidence, audit │        └──────────┬──────────┘
           │ WebRTC (opsional)   │  AIManager (in-process)     │                   │ WebRTC
@@ -15,7 +17,7 @@
                                 ┌──────────────▼──────────────┐   ┌───────────────▼───────────┐
                                 │ ai/eduai-ai (paket Python)  │   │ eduai_ai.livekit_worker    │
                                 │ quality → perception →      │   │ peserta tersembunyi,       │
-                                │ temporal → events/evidence  │◀──│ subscribe kamera siswa     │
+                                │ temporal → events/evidence  │◀──│ subscribe kamera mahasiswa │
                                 └─────────────────────────────┘   └────────────────────────────┘
 ```
 
@@ -32,22 +34,22 @@ Bergabung ke ruang OpenVidu **tidak** otomatis memberi AI akses ke piksel video.
 ### Jalur A — frame dari browser (default, sudah diuji E2E)
 
 ```
-kamera siswa ──getUserMedia──▶ <video> pratinjau
+kamera mahasiswa ──getUserMedia──▶ <video> pratinjau
    └─ tiap 1/EDUAI_UPLOAD_FPS dtk (default 0,5 dtk): canvas (lebar ≤ 640) → JPEG 0,8
-        └─ POST /api/exams/{id}/frames  (JWT siswa, persetujuan wajib, ujian berlangsung, pemantauan aktif)
-             └─ AIManager.submit_jpeg: ≤1 frame berjalan per siswa (frame berikut dibuang bila sibuk),
+        └─ POST /api/exams/{id}/frames  (JWT mahasiswa, persetujuan wajib, ujian berlangsung, pemantauan aktif)
+             └─ AIManager.submit_jpeg: ≤1 frame berjalan per mahasiswa (frame berikut dibuang bila sibuk),
                 semaphore global EDUAI_AI_MAX_CONCURRENT, analisis di thread (asyncio.to_thread)
                   └─ StudentAnalyzer.process → events / evidence / status
                        └─ store.upsert_event / save_evidence / upsert_status (SQLite + folder evidence)
 dasbor pengawas ◀─ polling 3 dtk: GET /students, GET /events ; notifikasi 4 dtk: GET /api/events
 ```
 
-Bila kamera dimatikan, browser tidak mengirim frame; status AI siswa menjadi "Belum ada data video" setelah 10 detik dan presence menampilkan "Kamera mati".
+Bila kamera dimatikan, browser tidak mengirim frame; status AI mahasiswa menjadi "Belum ada data video" setelah 10 detik dan presence menampilkan "Kamera mati".
 
 ### Jalur B — worker AI di ruang OpenVidu (kode lengkap, belum diuji tanpa server OpenVidu)
 
 ```
-siswa ──publish kamera (token: canPublish, canSubscribe=false)──▶ OpenVidu ruang eduai-exam-N
+mahasiswa ──publish kamera (token: canPublish, canSubscribe=false)──▶ OpenVidu ruang eduai-exam-N
 pengawas klik "Mulai AI" (EDUAI_ANALYSIS_SOURCE=livekit)
    └─ backend membuat token worker (hidden, canSubscribe, canPublish=false) dan menjalankan
       python -m eduai_ai.livekit_worker --session N   (token & kunci lewat environment, bukan argv)
@@ -66,13 +68,13 @@ Pengawas melihat **video langsung** hanya lewat OpenVidu (token subscribe-only).
 
 1. **Kualitas** (`quality.py`): resolusi, kecerahan, ketajaman, video beku. Gagal → `cannot_analyze` dengan alasan; frame ini tidak pernah dihitung sebagai indikasi dan tidak disimpan sebagai evidence.
 2. **Persepsi** (`perception.py`): BlazeFace (wajib) → jumlah wajah; Face Landmarker (opsional) → matriks transformasi → yaw/pitch; EfficientDet-Lite0 (opsional, tiap 0,5 dtk) → `cell phone`, `person`. Komponen yang tidak ada dilewati; indikator yang bergantung padanya tidak aktif.
-3. **Temporal** (`temporal.py`): durasi minimum, histeresis, cooldown, acuan pose kepala per siswa (45 dtk). Ambang ada di `config.yaml` dan bersifat **sementara** (belum dikalibrasi pada data sekolah).
+3. **Temporal** (`temporal.py`): durasi minimum, histeresis, cooldown, acuan pose kepala per mahasiswa (45 dtk). Ambang ada di `config.yaml` dan bersifat **sementara** (belum dikalibrasi pada data program studi).
 4. **Kejadian** (`events.py`): dikirim saat terbuka dan saat ditutup; skema 1.0.
 5. **Evidence** (`evidence.py`): buffer cincin di memori (5 dtk sebelum) + 5 dtk sesudah indikasi terbuka, maks. 12 JPEG lebar ≤ 480 px. Disimpan dengan ID acak, opsional terenkripsi (Fernet), dihapus otomatis setelah `EDUAI_EVIDENCE_RETENTION_HOURS` (default 24 jam, sesuai keputusan URS "riwayat 1 hari"). Akses hanya lewat endpoint berautentikasi dan dicatat di audit log.
 
 ## Keputusan desain
 
-- **Tidak ada penyimpanan video penuh/audio.** Evidence berupa cuplikan gambar kecil. Ini konsekuensi privasi yang disengaja; bila sekolah menghendaki klip video, perlu rekaman OpenVidu (Egress) dan kebijakan retensi tersendiri.
+- **Tidak ada penyimpanan video penuh/audio.** Evidence berupa cuplikan gambar kecil. Ini konsekuensi privasi yang disengaja; bila program studi menghendaki klip video, perlu rekaman OpenVidu (Egress) dan kebijakan retensi tersendiri.
 - **Indikasi ≠ pelanggaran.** UI selalu menyatakan keputusan ada pada pengawas; `cannot_analyze` dipisahkan dari indikasi di data, API, dan UI.
-- **Polling, bukan WebSocket.** Sederhana dan cukup untuk satu sekolah; interval 3–5 dtk. Dapat diganti SSE/WebSocket bila diperlukan.
+- **Polling, bukan WebSocket.** Sederhana dan cukup untuk satu program studi; interval 3–5 dtk. Dapat diganti SSE/WebSocket bila diperlukan.
 - **SQLite + satu proses backend.** Cocok untuk uji coba. Untuk beberapa proses/host: PostgreSQL, penyimpanan evidence bersama (S3/MinIO), dan antrean kerja terpisah.

@@ -1,6 +1,8 @@
 # Protokol Evaluasi Indikasi EduAI
 
-> **Status: USULAN. Perlu persetujuan pihak sekolah dan komite etik sebelum pilot dimulai.**
+> **Istilah.** Dokumen ini memakai istilah mitra Program Studi Informatika: mahasiswa, Program Studi, NIM, mata kuliah, dosen. Nama kode internal ditulis apa adanya: peran `siswa` (= mahasiswa), peran lama `sekolah` (= Penyelenggara Ujian/pihak Program Studi), kolom `nis` (= NIM), `class_name` (= kelas), jenis suara `BICARA_SISWA` (= mahasiswa berbicara), akun demo `siswa1`–`siswa6` dan `sekolah1`.
+
+> **Status: USULAN. Perlu persetujuan pihak program studi dan komite etik sebelum pilot dimulai.**
 > Tidak ada perekaman relawan yang boleh dilakukan sebelum kedua persetujuan itu tertulis.
 
 | | |
@@ -13,15 +15,15 @@
 
 ## 1. Tujuan dan pertanyaan evaluasi
 
-EduAI tidak memutuskan apakah siswa curang. EduAI menandai **indikasi** yang kemudian ditinjau pengawas. Karena itu, pertanyaannya bukan "apakah sistem mendeteksi kecurangan", melainkan:
+EduAI tidak memutuskan apakah mahasiswa curang. EduAI menandai **indikasi** yang kemudian ditinjau pengawas. Karena itu, pertanyaannya bukan "apakah sistem mendeteksi kecurangan", melainkan:
 
-> **Apakah setiap indikasi cukup andal untuk membantu pengawas, tanpa membebaninya dengan tanda palsu dan tanpa membuat siswa dicurigai tanpa alasan?**
+> **Apakah setiap indikasi cukup andal untuk membantu pengawas, tanpa membebaninya dengan tanda palsu dan tanpa membuat mahasiswa dicurigai tanpa alasan?**
 
 Dua ukuran utama per indikasi:
 
-| Ukuran | Arti bagi pengawas dan siswa |
+| Ukuran | Arti bagi pengawas dan mahasiswa |
 |---|---|
-| **False positive per jam (FP/jam) per siswa** | Berapa kali dalam satu jam ujian seorang siswa yang berperilaku wajar ditandai. Ini ukuran beban dan risiko utama. |
+| **False positive per jam (FP/jam) per mahasiswa** | Berapa kali dalam satu jam ujian seorang mahasiswa yang berperilaku wajar ditandai. Ini ukuran beban dan risiko utama. |
 | **Recall** | Dari kejadian yang memang terjadi, berapa bagian yang ditandai. |
 
 Precision dilaporkan sebagai pelengkap. Precision sangat bergantung pada seberapa sering perilaku itu muncul dalam pilot, sehingga tidak bisa dipindahkan begitu saja ke ujian sungguhan.
@@ -31,11 +33,11 @@ Indikasi yang dievaluasi, beserta aturannya saat ini (semua ambang **sementara**
 | Indikasi | Aturan sekarang | Model di baliknya |
 |---|---|---|
 | `FACE_ABSENT` | tidak ada wajah ≥5 detik | BlazeFace short-range |
-| `HEAD_TURN` | kepala berbelok ≥30° dari posisi normal siswa, ≥3 detik (posisi normal dipelajari 45 detik pertama) | Face Landmarker |
+| `HEAD_TURN` | kepala berbelok ≥30° dari posisi normal mahasiswa, ≥3 detik (posisi normal dipelajari 45 detik pertama) | Face Landmarker |
 | `HEAD_TURN_REPEATED` | 5 kali menoleh (masing-masing ≥1 detik) dalam 120 detik | Face Landmarker |
 | `PHONE_VISIBLE` | objek "cell phone" dengan skor ≥0,5 selama 1,5 detik | EfficientDet-Lite0 (COCO) |
 | `MULTIPLE_PERSONS` | ≥2 wajah atau ≥2 "person" selama 2 detik | BlazeFace + EfficientDet-Lite0 |
-| `OTHER_VOICE` | skor suara bicara ≥0,30 di browser, sementara mulut siswa diam, ≥2 detik | YAMNet (browser) + blendshape `jawOpen` |
+| `OTHER_VOICE` | skor suara bicara ≥0,30 di browser, sementara mulut mahasiswa diam, ≥2 detik | YAMNet (browser) + blendshape `jawOpen` |
 | `CANNOT_ANALYZE` | gelap, buram, beku, atau resolusi terlalu kecil ≥2 detik | aturan kualitas citra, tanpa model |
 
 `HEAD_TURN_REPEATED` ikut dievaluasi karena turunan langsung dari `HEAD_TURN`.
@@ -64,8 +66,8 @@ Kartu instruksi diacak urutannya per relawan, supaya sistem tidak "belajar" dari
 | `HEAD_TURN_REPEATED` | 5–7 kali menoleh dalam 2 menit | 2–3 kali menoleh dalam 2 menit; menoleh sesekali sepanjang sesi |
 | `PHONE_VISIBLE` | memegang ponsel di depan kamera; ponsel di meja terlihat; mengetik di ponsel | kalkulator, remote, dompet, power bank, kotak pensil gelap; ponsel di saku (tidak terlihat) |
 | `MULTIPLE_PERSONS` | orang kedua masuk di belakang; orang kedua duduk di samping | poster atau foto berwajah di dinding; pantulan di cermin atau jendela; boneka atau gambar wajah di sampul buku |
-| `OTHER_VOICE` | orang lain berbicara di luar bingkai saat siswa diam; orang lain berbisik | siswa membaca soal pelan-pelan; TV atau radio tetangga; suara kendaraan; batuk; siswa diam di ruangan sunyi |
-| `CANNOT_ANALYZE` | lampu dimatikan; lensa ditutup; cahaya kuat dari belakang (backlight); koneksi diputus sehingga gambar beku | ruangan redup tetapi wajah masih terlihat; siswa duduk sangat diam (bukan beku) |
+| `OTHER_VOICE` | orang lain berbicara di luar bingkai saat mahasiswa diam; orang lain berbisik | mahasiswa membaca soal pelan-pelan; TV atau radio tetangga; suara kendaraan; batuk; mahasiswa diam di ruangan sunyi |
+| `CANNOT_ANALYZE` | lampu dimatikan; lensa ditutup; cahaya kuat dari belakang (backlight); koneksi diputus sehingga gambar beku | ruangan redup tetapi wajah masih terlihat; mahasiswa duduk sangat diam (bukan beku) |
 
 **Kondisi perilaku wajar yang wajib ada di sesi wajar:** menunduk membaca, menulis di kertas, memakai kacamata (termasuk kacamata yang memantulkan cahaya layar), dan ruangan redup. Kondisi ini paling mungkin memicu tanda palsu, dan saat ini belum pernah diuji.
 
@@ -120,7 +122,7 @@ Angka ini batas bawah. Bila anggaran waktu memungkinkan, menambah **jumlah orang
 |---|---|---|
 | Recall | TP / (TP + FN) | Wilson |
 | Precision | TP / (TP + FP) | Wilson |
-| **FP/jam per siswa** | FP / jam paparan | Poisson eksak (Garwood). Wilson tidak tepat untuk laju. |
+| **FP/jam per mahasiswa** | FP / jam paparan | Poisson eksak (Garwood). Wilson tidak tepat untuk laju. |
 | Waktu sampai tanda | selisih antara awal label dan awal tanda sistem | median dan rentang antarkuartil |
 
 **Pencocokan kejadian.** Satu tanda sistem cocok dengan satu label bila indikasinya sama dan rentang waktunya beririsan, dengan toleransi ±2 detik di awal. Satu label hanya boleh dicocokkan satu kali. Tanda tambahan untuk kejadian yang sama dihitung sebagai FP dan dilaporkan terpisah sebagai "tanda ganda".
@@ -134,9 +136,9 @@ Angka ini batas bawah. Bila anggaran waktu memungkinkan, menambah **jumlah orang
 
 ### 5.2 Kriteria penerimaan
 
-Angka berikut **usulan yang harus disepakati dengan sekolah sebelum set uji dibuka**, bukan setelahnya:
+Angka berikut **usulan yang harus disepakati dengan program studi sebelum set uji dibuka**, bukan setelahnya:
 
-- Batas atas 95% FP/jam per siswa ≤ 0,5 untuk setiap indikasi. Dalam ujian 90 menit dengan 30 siswa, itu berarti paling banyak sekitar 22 tanda palsu yang perlu ditinjau pengawas.
+- Batas atas 95% FP/jam per mahasiswa ≤ 0,5 untuk setiap indikasi. Dalam ujian 90 menit dengan 30 mahasiswa, itu berarti paling banyak sekitar 22 tanda palsu yang perlu ditinjau pengawas.
 - Batas bawah 95% recall ≥ 0,60.
 - Indikasi yang tidak memenuhi kriteria dinonaktifkan atau diberi label "eksperimental" di antarmuka. Indikasi itu tidak dipakai sampai diperbaiki dan diuji ulang.
 
@@ -165,14 +167,14 @@ Metrik di 5.1 dihitung ulang per kelompok:
 
 - **Izin komite etik penelitian** (misalnya KEPK institusi atau universitas mitra) **wajib sebelum perekaman pertama.** Pilot ini merekam wajah dan, bila disetujui, audio. Wajah termasuk data biometrik, yang dalam UU No. 27 Tahun 2022 tentang Pelindungan Data Pribadi digolongkan sebagai data pribadi yang bersifat spesifik.
 - **Persetujuan tertulis relawan**, dengan penjelasan dalam bahasa sederhana: apa yang direkam, untuk apa, berapa lama disimpan, siapa yang melihat, dan hak untuk mundur kapan saja tanpa konsekuensi.
-- **Siswa di bawah 18 tahun** (sebagian besar siswa SMA): **persetujuan orang tua atau wali dan persetujuan siswa itu sendiri.** Keduanya diperlukan.
+- **Mahasiswa di bawah 18 tahun** (jarang, tetapi mungkin pada mahasiswa tahun pertama): **persetujuan orang tua atau wali dan persetujuan mahasiswa itu sendiri.** Keduanya diperlukan. Mahasiswa berusia 18 tahun ke atas memberi persetujuan sendiri.
 - **Persetujuan bertingkat** dengan kotak centang terpisah untuk:
   - rekaman video;
   - rekaman audio (untuk `OTHER_VOICE`);
   - pencatatan warna kulit dan penutup kepala;
   - pemakaian cuplikan wajah di publikasi (default: tidak).
-- **Kesukarelaan.** Pilot tidak boleh menjadi syarat nilai. Ikut atau tidak ikut tidak memengaruhi siswa. Rekaman pilot tidak boleh dipakai untuk penilaian atau tindakan disiplin apa pun.
-- Pelaksanaan pilot juga perlu disetujui pimpinan sekolah. Untuk penerapan sesudahnya, disarankan penilaian dampak pelindungan data pribadi (DPIA).
+- **Kesukarelaan.** Pilot tidak boleh menjadi syarat nilai. Ikut atau tidak ikut tidak memengaruhi mahasiswa. Rekaman pilot tidak boleh dipakai untuk penilaian atau tindakan disiplin apa pun.
+- Pelaksanaan pilot juga perlu disetujui pimpinan program studi. Untuk penerapan sesudahnya, disarankan penilaian dampak pelindungan data pribadi (DPIA).
 
 ### 6.2 Anonimisasi
 
@@ -193,7 +195,7 @@ Metrik di 5.1 dihitung ulang per kelompok:
 ### 6.4 Akses
 
 - **Hanya tim penelitian yang disebut namanya** dalam protokol yang disetujui komite etik: pelabel, adjudikator, dan penanggung jawab.
-- **Tidak termasuk** guru atau staf sekolah yang mengenal relawan, kecuali sebagai pelabel yang sudah menandatangani perjanjian kerahasiaan.
+- **Tidak termasuk** dosen atau staf program studi yang mengenal relawan, kecuali sebagai pelabel yang sudah menandatangani perjanjian kerahasiaan.
 - Penyimpanan terenkripsi, tanpa layanan awan publik kecuali disetujui komite etik. Akses dicatat.
 - Rekaman pilot **tidak boleh di-commit ke repositori**. `.gitignore` sudah mengecualikan `ai/eduai-ai/dataset_raw/`, `pilot/`, `preds/`, dan `evidence/`.
 
@@ -236,7 +238,7 @@ Perluasan `evaluate.py` sesuai tabel di atas sebaiknya dikerjakan **sebelum** se
 1. **Indikasi adalah aturan buatan tangan**, bukan model yang belajar dari perilaku ujian. Contohnya: "tidak ada wajah 5 detik", "menoleh 30° selama 3 detik".
 2. **Model yang dipakai adalah model umum tanpa pelatihan ulang:** BlazeFace, Face Landmarker, EfficientDet-Lite0 yang dilatih pada COCO, dan YAMNet. Tidak ada yang dilatih atau disetel dengan data ujian. EduAI tidak memiliki fungsi pelatihan.
 3. **Ambang bersifat sementara.** Versi `0.2-provisional` dipilih sebagai titik awal rekayasa, bukan dari literatur, dan belum dikalibrasi. Publikasi harus menyebut versi `config.yaml` yang diuji.
-4. **Frame berasal dari perangkat siswa.** Pada mode browser dan mode Jitsi, browser siswa mengambil dan mengirim frame. Server hanya bisa memeriksa bahwa frame masih masuk. Server tidak bisa memastikan frame itu berasal dari kamera sungguhan, bukan rekaman atau kamera virtual.
+4. **Frame berasal dari perangkat mahasiswa.** Pada mode browser dan mode Jitsi, browser mahasiswa mengambil dan mengirim frame. Server hanya bisa memeriksa bahwa frame masih masuk. Server tidak bisa memastikan frame itu berasal dari kamera sungguhan, bukan rekaman atau kamera virtual.
 5. **Belum pernah diuji dengan kamera fisik dan orang sungguhan.** Semua uji sejauh ini memakai kamera palsu Chrome atau berkas video. Itu mencakup uji dengan server Jitsi dan OpenVidu nyata.
 6. **Perilaku yang tidak tercakup:** buku atau catatan tidak sah (belum ada detektor), layar atau perangkat kedua di luar bingkai, earphone, dan bantuan yang tidak tampak atau terdengar.
 7. **Analisis bias berbasis sampel kecil** dan bersifat eksploratif (bagian 5.3).

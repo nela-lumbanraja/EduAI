@@ -1,5 +1,7 @@
 # Hasil pengujian
 
+> **Catatan istilah (20 November 2026).** Isi di bawah dicatat ketika aplikasi masih memakai istilah sekolah/siswa/NIS dan **dibiarkan apa adanya** sebagai catatan sejarah; teks UI yang dikutip di hasil uji lama bisa berbeda dengan UI sekarang. Sejak commit `083f97d`, UI dan pesan backend memakai istilah mitra Program Studi Informatika (mahasiswa, Program Studi, NIM, mata kuliah); nama kode internal (`siswa`, `nis`, `BICARA_SISWA`) tidak berubah.
+
 Lingkungan pengembangan: Linux container, 2 vCPU Intel Xeon 2,10 GHz, tanpa GPU; Python 3.13.16, MediaPipe 0.10.32, FastAPI 0.143.0, livekit (Python) 1.1.20, Node.js 22.22.0, Chromium (Playwright). Tanggal awal: 13 Oktober 2026; diperbarui 29 Oktober 2026 (audio, kasus, worker OpenVidu — lihat baris 16–22).
 **Belum diuji di Windows.** Langkah Windows di README disusun dari dokumentasi alat, bukan dari eksekusi.
 
