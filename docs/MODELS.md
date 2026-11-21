@@ -30,6 +30,17 @@ python scripts\download_models.py --from-mediapipe-wheel
 
 Perintah ini mengunduh wheel resmi `mediapipe==0.10.14` dari PyPI dan mengekstrak `face_detection_short_range.tflite` (dipakai otomatis lewat `fallback_paths` di `config.yaml`). Face Landmarker dan EfficientDet-Lite0 tidak ada di wheel tersebut dan tetap harus diunduh dari URL resmi.
 
+## Kecepatan dan beban (bukan akurasi)
+
+Dari `ai/eduai-ai`, di perangkat yang akan dipakai:
+
+```
+python scripts/benchmark_models.py --frames 300 --out bench.json             # latensi per komponen, throughput, memori
+python scripts/soak_test.py --duration 10m --students 4 --hold 10s --out soak.json   # beban beberapa mahasiswa
+```
+
+Hasil pertama dan cara membacanya: [PERUBAHAN_20261120_RETENSI_PELAPORAN_CONFIDENCE.md](PERUBAHAN_20261120_RETENSI_PELAPORAN_CONFIDENCE.md), bagian G-K2. Saat backend berjalan, admin melihat angka langsung di `GET /api/ai/performance`.
+
 ## Ambang aturan
 
 Semua ambang di `ai/eduai-ai/config.yaml` (`version: 0.2-provisional`) adalah titik awal rekayasa, **bukan angka dari paper** dan **belum dikalibrasi**. Rencana kalibrasi: kumpulkan video pilot berlabel (dengan persetujuan), jalankan `scripts/run_webcam.py --source <video> --events-out preds/<nama>.jsonl`, lalu `scripts/evaluate.py` untuk precision, recall, F1, dan indikasi palsu per jam; ubah ambang dan naikkan `version`.

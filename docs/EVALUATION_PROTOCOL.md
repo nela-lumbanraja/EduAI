@@ -7,7 +7,7 @@
 
 | | |
 |---|---|
-| Versi dokumen | 0.1 (usulan), 2 November 2026 |
+| Versi dokumen | 0.1 (usulan), 2 November 2026; ditambah §7a (21 November 2026). Rancangan revisi 0.2 ada di `EVALUATION_PROTOCOL_REVISI_0.2_RANCANGAN.md`, **belum berlaku** sampai persetujuan formal (PS-7). |
 | Konfigurasi yang dievaluasi | `ai/eduai-ai/config.yaml`, `version: 0.2-provisional` |
 | Alat yang ada | `ai/eduai-ai/scripts/run_webcam.py`, `ai/eduai-ai/scripts/evaluate.py` |
 
@@ -211,7 +211,24 @@ Sebelum dipakai dalam evaluasi atau publikasi, perlu dipastikan siapa yang ada d
 
 ## 7. Celah antara protokol ini dan alat yang ada
 
-`scripts/evaluate.py` dan `eval_behaviour.csv` **tidak diubah** dalam rangka dokumen ini. Yang sudah dan belum didukung:
+> **Pembaruan 20 November 2026 (G-E1).** Celah di tabel bawah sudah ditutup. Tabel lama tetap dipertahankan sebagai catatan sejarah. Status sekarang (semua di `ai/eduai-ai/scripts/`, diuji dengan data buatan yang jawabannya diketahui di `tests/test_evaluation_tools.py`):
+>
+> | Kebutuhan protokol | Alat sekarang |
+> |---|---|
+> | P, R, F1, FP/jam per indikasi + interval Wilson dan Poisson eksak (Garwood) | `evaluate.py` |
+> | Pencocokan optimal (maksimum), toleransi awal ±2 dtk, tanda ganda terpisah | `evaluate.py` (`--tolerance-s`, kolom `duplicates`) |
+> | Jam paparan per indikasi | `evaluate.py --exposure video,indicator,hours`. Tanpa itu dipakai durasi video, dan sumbernya ditulis di hasil. |
+> | `CANNOT_ANALYZE` | `evaluate.py --include-cannot-analyze` (baris kategori `cannot_analyze`) |
+> | Waktu sampai tanda | `evaluate.py` (median, Q1, Q3) |
+> | Pemisahan per peserta, cek kebocoran, analisis per kondisi | `evaluate.py --meta video,participant,split,... --split --group-by` |
+> | Versi dan hash konfigurasi, hash label | `evaluate.py` (versi dari prediksi, `--config` untuk SHA-256) |
+> | Dua pelabel, kappa per segmen 1 dtk, kasus adjudikasi, rata-rata batas ≤ 1 dtk | `label_agreement.py` |
+> | Evaluasi tingkat model (AP, ROC-AUC, confusion matrix, ambang dipilih hanya di set kalibrasi) | `eval_detector.py` |
+> | Kasus kosong | Tidak lagi error; nilai yang tidak terdefinisi ditulis kosong ("tidak dapat dihitung (n = 0)") |
+>
+> Yang **masih** di luar alat: pengukuran jam paparan itu sendiri. `exposure.csv` harus disusun dari log sesi (baseline, persetujuan audio, periode `CANNOT_ANALYZE`). Data pilot berlabel juga belum ada.
+
+`scripts/evaluate.py` dan `eval_behaviour.csv` **tidak diubah** dalam rangka dokumen ini. Yang sudah dan belum didukung (keadaan sebelum 20 November 2026):
 
 | Kebutuhan protokol | `evaluate.py` sekarang |
 |---|---|
@@ -232,6 +249,15 @@ Sebelum dipakai dalam evaluasi atau publikasi, perlu dipastikan siapa yang ada d
 Perluasan `evaluate.py` sesuai tabel di atas sebaiknya dikerjakan **sebelum** set uji dibuka, dan diuji dengan data buatan yang jawabannya sudah diketahui.
 
 ---
+
+## 7a. Keterkaitan dengan kalibrasi sesi (Session Report Phase 5)
+
+Ditambahkan 21 November 2026 atas keputusan pemilik proyek (Tahap 4 H2). Rincian ada di `docs/SESSION_CALIBRATION_DATASET.md` (rancangan) dan `docs/EDUAI_SESSION_REPORT_PHASE5_TAHAP4_H2.md`. Bagian lain protokol ini belum direvisi; revisi versi protokol diajukan di titik henti H3.
+
+- **Risiko TK-10, definisi "perilaku teramati".** Beberapa indikasi juga muncul pada ujian wajar (menoleh membaca soal, menunduk menulis, suara sekitar). Untuk label tingkat sesi (K1) dan label per indikasi (G-a), "teramati" **mengikuti definisi operasional per indikasi** yang membedakan perilaku relevan dari aktivitas wajar ujian. Satu kejadian umum **bukan** bukti kecurangan. Definisi yang terlalu longgar membuat hampir semua sesi wajar berlabel positif, sehingga kalibrasi tidak informatif.
+- **Pemisahan tujuan data (DC-2).** Sesi skenario (§2.1) dipakai untuk evaluasi deteksi dan label rentang (G-b). Kalibrasi sesi memakai **sesi wajar** saja, karena prevalensi sesi skenario ditentukan kartu instruksi dan tidak mewakili ujian.
+- **Satuan kesepakatan antarpelabel.** Label rentang (bagian 3): κ ≥ 0,70 per segmen 1 detik (tetap). Label tingkat sesi (K1) dan label per indikasi per sesi (G-a): κ ≥ 0,60. Satuan penilaiannya berbeda: segmen waktu, sesi, dan sesi × indikasi.
+- **Pemisahan data untuk kalibrasi sesi** lebih ketat daripada bagian 4: per peserta **dan** per sesi ujian, lintas himpunan indikasi.
 
 ## 8. Keterbatasan yang wajib diungkap di publikasi
 

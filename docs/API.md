@@ -46,6 +46,7 @@ Format galat: `{"detail": "<pesan dalam Bahasa Indonesia>"}` atau, untuk validas
 |---|---|---|
 | `GET /api/health` | publik | Status backend, AI tersedia/tidak, OpenVidu terkonfigurasi/tidak |
 | `GET /api/ai/health` | publik | Kesiapan model per komponen, retensi evidence, worker aktif |
+| `GET /api/ai/performance` | admin | FPS efektif dan latensi (median/p90/maks, total dan per komponen: `prepare`, `quality`, `face`, `landmarks`, `objects`, `clip`; plus `decode` dan `queue_wait`) per analyser aktif di proses backend, jendela 60 dtk, hanya di memori. Frame diterima/dibuang (`busy`) per mahasiswa. Analyser worker OpenVidu tidak termasuk. Angka operasional, bukan akurasi. Per mahasiswa juga `student_name`, `exam_name`, dan `capture_lag_ms`. Ditampilkan di Konfigurasi → "Performa AI" |
 | `POST /api/auth/login` | publik | Login → `{token, user}` |
 | `PATCH /api/auth/me` | semua pengguna (akun sendiri) | Ubah nama lengkap `{name}`; field lain ditolak (422) |
 | `POST /api/users` | admin | Tambah pengguna `{name, email, role, password (min 8), nis, class_name}`. Mahasiswa wajib NIM dan kelas; peran lain tanpa keduanya. 409 bila email dipakai |
@@ -64,7 +65,7 @@ Format galat: `{"detail": "<pesan dalam Bahasa Indonesia>"}` atau, untuk validas
 | `GET /api/exams/{id}/session-state` | mahasiswa | Status ujian & pemantauan (dipoll tiap 5 dtk) |
 | `POST /api/exams/{id}/presence` | mahasiswa | Heartbeat kamera/mikrofon/koneksi. Saat pemantauan aktif, kamera mati 2 heartbeat berturut-turut menjadi indikasi `CAMERA_OFF`; mikrofon mati (bila mahasiswa menyetujui suara) menjadi `MIC_OFF` (app/device.py) |
 | `POST /api/exams/{id}/leave` | mahasiswa | Keluar; analisis mahasiswa dihentikan dan kejadian terbuka ditutup |
-| `POST /api/exams/{id}/frames` | mahasiswa | **Jalur frame browser**: satu JPEG |
+| `POST /api/exams/{id}/frames` | mahasiswa | **Jalur frame browser**: satu JPEG. Field form opsional `captured_at` (epoch ms saat frame diambil), `client_age_ms` (ambil → kirim, `performance.now`), dan `prev_rtt_ms` (bolak-balik unggahan sebelumnya) hanya dipakai sebagai metrik di `/api/ai/performance`. Waktu kejadian tetap memakai jam server. Nilai kosong atau tidak masuk akal diabaikan dan tidak pernah membuat frame ditolak |
 | `POST /api/exams/{id}/monitoring/start` · `/stop` · `GET .../monitoring` | pengawas, penyelenggara, admin | Mulai/hentikan analisis AI, status worker |
 | `GET /api/exams/{id}/events` | staf | Kejadian AI per ujian (`student_id`, `category`, `since`, `review`, `limit`) |
 | `GET /api/events` | staf | Kejadian dari semua ujian yang boleh diakses (notifikasi, halaman Indikasi) |
@@ -72,7 +73,7 @@ Format galat: `{"detail": "<pesan dalam Bahasa Indonesia>"}` atau, untuk validas
 | `POST /api/events/{event_id}/reviews` | pengawas, penyelenggara, admin | Keputusan: Valid / Tidak Valid / Perlu Tinjauan Lanjut |
 | `POST /api/exams/{id}/audio` | mahasiswa (dengan persetujuan suara) | Tiga skor YAMNet dari browser mahasiswa: `speech`, `whisper`, `media` (0–1). Tanpa audio |
 | `GET /api/ai/models/yamnet.tflite` | publik | File model YAMNet (Google, AudioSet) untuk browser mahasiswa |
-| `GET /api/cases` · `GET /api/exams/{id}/cases` | staf | Kasus = indikasi berulang yang dikelompokkan (filter `review`, `student_id`, `exam_id`). Lihat "Pengelompokan kasus" |
+| `GET /api/cases` · `GET /api/exams/{id}/cases` | staf | Kasus = indikasi berulang yang dikelompokkan (filter `review`, `student_id`, `exam_id`). Lihat "Pengelompokan kasus". `sort=priority` (bawaan) adalah urutan prioritas tinjauan yang netral: ada kejadian belum ditinjau → aturan ringkasan terpenuhi → masih berlangsung → jumlah indikasi → total durasi → terbaru; tanpa bobot per jenis perilaku. `sort=latest` adalah urutan terbaru seperti sebelumnya. Setiap kasus memuat `priority_rank` (1 = ditinjau lebih dulu; sama di kedua urutan) dan `priority_reasons` (fakta, mis. "belum ditinjau", "3 kali"); respons memuat `sort` dan `priority_order`. Nilai `sort` lain → 422 |
 | `GET /api/cases/{case_id}` | staf | Ringkasan kasus + semua kejadian aslinya (skor, alasan, `evidence_id`, riwayat validasi) |
 | `POST /api/cases/{case_id}/reviews` | pengawas, penyelenggara, admin | Satu keputusan untuk kejadian yang dilihat (`event_ids`); dicatat sebagai validasi biasa per kejadian |
 | `POST /api/exams/{id}/notes` | pengawas, penyelenggara, admin | Catatan manual |
@@ -89,8 +90,11 @@ Format galat: `{"detail": "<pesan dalam Bahasa Indonesia>"}` atau, untuk validas
 | `PATCH /api/events/{event_id}/review` | pengawas sesi, admin | Ubah status dan/atau catatan dari tabel laporan; mengembalikan baris dan ringkasan baru |
 | `GET /api/report-frames/{event_id}?sig=...` | URL bertanda tangan (5 menit) | Satu JPEG gambar bukti (`no-store`, diaudit) |
 | `POST /api/sessions/{id}/finalize` | pengawas sesi, admin | Mengunci data sesi dan menyalin gambar bukti |
-| `GET /api/sessions/{id}/report.pdf` | staf | PDF "Laporan Hasil Pengawasan Ujian"; gambar hanya untuk pengawas sesi dan admin; tanda DRAF sebelum final |
-| `GET /api/sessions/{id}/report.xlsx` | staf | Excel berisi tabel indikasi, tanpa gambar |
+| `GET /api/sessions/{id}/session-summary` | staf | Session Summary per peserta. Isinya: duration score per indikasi (proporsi waktu terindikasi dari waktu yang dapat dianalisis, **bukan probabilitas**) dan P_total berbobot (`config.yaml` → `session_summary.indicator_weights`); average confidence per sumber (`null` = N/A, tanpa sampel); cakupan; interval tanpa data. `source: "final"` = snapshot beku yang ditulis saat finalisasi; `"live"` = dihitung saat diminta, tidak disimpan (status `sementara` bila sesi masih berjalan); `status: "tidak_tersedia"` = tanpa data cakupan atau laporan difinalisasi sebelum fitur ini (tidak dihitung ulang). `calibration.status` = `not_calibrated`, probabilitas `null`. Cakupan audio (`audio_coverage`, `audio_samples`; `null` tanpa persetujuan audio) terpisah dari cakupan video (`coverage`). `excluded` memuat alasan setiap indikasi yang tidak dihitung, termasuk `no_audio_data` dan indikasi yang dinonaktifkan atau berkategori info di config (`config_excluded`). `coverage_note` terisi bila cakupan 0%: skor 0 bukan bukti tidak ada indikasi. `config_version` = `<version>;w=<sidik bobot>`. Nilai presisi penuh (pembulatan hanya saat ditampilkan). Perubahan config berlaku setelah backend dimuat ulang. `model_availability` (D4) per peserta: `status` = `lengkap`, `model_unavailable` (model tidak termuat, gagal pemanasan, atau galat inferensi; `affected_indicators` menyebut indikasi terdampak dan modelnya, skor tetap dihitung dengan rumus Phase 4 tetapi tidak boleh dibaca sebagai "tidak terjadi"), atau `tidak_tercatat` (sesi sebelum pencatatan D4). Ikut dibekukan di snapshot final. **Kalibrasi (Phase 5 Tahap 3):** `total.calibration` live = status `not_calibrated`, `probability` selalu `null` (T3-2), `reasons` (kode dari daftar tetap: `no_calibrator`, `invalid_calibrator`, `algo_version_mismatch`, `weights_mismatch`, `indicator_set_mismatch`, `coverage_below_threshold`, `model_unavailable`, `model_availability_not_recorded`, `no_score`, `models_mismatch`), `details` (mis. `models_mismatch`: `tidak_tersedia…` atau `berbeda…`) dan `eligible_at_finalization`. Probabilitas hanya dihitung saat finalisasi bila kalibrator di `EDUAI_SESSION_CALIBRATOR` sah dan SHA-256-nya sama dengan `EDUAI_SESSION_CALIBRATOR_SHA256` (keduanya kosong secara bawaan = tanpa kalibrator). Final: `total.calibration` {status, version, probability} dari kolom snapshot, serta `calibration_reasons`, `calibration_details`, `calibration_approved_sha256`, `models_fingerprint`. Probabilitas = kemungkinan sesi memenuhi definisi perilaku teramati (K1), bukan probabilitas kecurangan. |
+| `GET /api/sessions/{id}/report.pdf` | staf | PDF "Laporan Hasil Pengawasan Ujian"; gambar hanya untuk pengawas sesi dan admin; tanda DRAF sebelum final. Bagian IV memuat "Ringkasan per indikasi" (jumlah indikasi, kejadian, rata-rata confidence deteksi, status tinjauan) di awal halaman 3 |
+| `GET /api/sessions/{id}/report.xlsx` | staf | Excel berisi tabel indikasi dan sheet "Ringkasan indikasi" (angka numerik), tanpa gambar |
+
+Data laporan (`GET /api/sessions/{id}/report`) memuat `by_indicator`: satu baris per indikator berisi `episodes`, `events`, `review` {valid, invalid, further, unreviewed}, dan `confidence` {sources [{source, mean, peak, n_frames}], events_with_stats, reason}. Ada juga `confidence_note`. Confidence adalah rata-rata skor detektor yang dibobot frame, dari `events.details` (sejak 20 Nov 2026). Bukan peluang pelanggaran. Bila tidak tersedia, `reason` menjelaskan sebabnya, dan nilainya tidak pernah diisi 0.
 | `GET /api/audit` | admin | Audit log |
 | `POST /api/ai/infer` | admin, penyelenggara | Inferensi 1–10 gambar (debug; tidak disimpan) |
 | `POST /api/ai/events` · `/evidence` · `/status` · `/heartbeat` | AI worker (service key) | Hasil dari worker OpenVidu |
@@ -410,7 +414,11 @@ POST /api/ai/status
 {"session_id": "1", "students": [{"student_id": "2", "state": "normal", "frame_status": "analyzed", "reason": "", "face_count": 1, "latency_ms": 6.1}]}
 
 POST /api/ai/heartbeat
-{"session_id": "1", "models": {...}, "students": 3, "source": "livekit"}
+{"session_id": "1", "models": {...}, "students": 3, "source": "livekit",
+ "student_models": {"2": {"models": {"object_detector": {"loaded": false, "reason": "load failed: RuntimeError"}},
+                          "inference_errors": {"book_classifier": 1}}}}
 ```
+
+`student_models` (Phase 5, D4; opsional, maks. 500 peserta): status pemuatan setiap model per peserta (tanpa path berkas) dan galat inferensi **baru** sejak heartbeat terakhir yang diterima. Backend menyimpannya di tabel `model_availability` (peserta tidak terdaftar diabaikan). Worker lama tanpa field ini tetap diterima.
 
 Heartbeat (tiap 5 dtk) menjawab `{"ok": true, "monitoring_active": true, "stop": false}`. `worker_id` (opsional, maks. 64 karakter, diisi backend lewat env `EDUAI_WORKER_ID` saat menjalankan worker) memungkinkan backend mengenali worker lama. `stop: true` bila pemantauan tidak berjalan dalam mode worker atau `worker_id` bukan milik worker yang sedang dijalankan backend; worker lalu menutup kejadiannya dan keluar. Worker juga keluar sendiri setelah 12 heartbeat gagal berturut-turut.

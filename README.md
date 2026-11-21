@@ -211,7 +211,17 @@ Bila `EDUAI_JITSI_APP_SECRET` terisi, backend menandatangani token untuk setiap 
 
 > Bukti berupa beberapa cuplikan gambar disimpan 24 jam, atau sampai laporan final dan paling lama 7 hari setelah ujian selesai; gambar pada laporan final dihapus 24 jam setelah finalisasi. Bukti hanya dapat dibuka oleh pengawas yang ditugaskan dan admin. Video penuh dan audio tidak pernah direkam atau disimpan.
 
-Bila `EDUAI_JITSI_DOMAIN` terisi, ditambahkan satu kalimat: "Bila ujian memakai Jitsi, video kamera melewati server Jitsi yang dikelola program studi." bila `EDUAI_JITSI_OPERATOR=school`; selain itu "...server Jitsi pihak ketiga (domain), bukan server milik program studi." Kalimat "hanya dapat dibuka oleh pengawas yang ditugaskan dan admin" kini ditegakkan backend: `GET /api/evidence/...`, URL gambar laporan, dan gambar di PDF memakai satu pemeriksaan izin. Penyelenggara dan pihak program studi tetap melihat laporan, status validasi, dan catatan, dengan keterangan "Gambar bukti hanya untuk pengawas dan admin". Percobaan yang ditolak dan pencabutan akses per peran dicatat di audit log tanpa mengubah baris lama. Domain tidak dapat membuktikan pemilik server, jadi `EDUAI_JITSI_OPERATOR` wajib diisi dengan benar. Masa simpan di teks ini tertulis tetap; bila pengaturan retensi diubah, ubah juga teksnya.
+Bila `EDUAI_JITSI_DOMAIN` terisi, ditambahkan satu kalimat: "Bila ujian memakai Jitsi, video kamera melewati server Jitsi yang dikelola program studi." bila `EDUAI_JITSI_OPERATOR=school`; selain itu "...server Jitsi pihak ketiga (domain), bukan server milik program studi." Kalimat "hanya dapat dibuka oleh pengawas yang ditugaskan dan admin" kini ditegakkan backend: `GET /api/evidence/...`, URL gambar laporan, dan gambar di PDF memakai satu pemeriksaan izin. Penyelenggara dan pihak program studi tetap melihat laporan, status validasi, dan catatan, dengan keterangan "Gambar bukti hanya untuk pengawas dan admin". Percobaan yang ditolak dan pencabutan akses per peran dicatat di audit log tanpa mengubah baris lama. Domain tidak dapat membuktikan pemilik server, jadi `EDUAI_JITSI_OPERATOR` wajib diisi dengan benar.
+
+**Masa simpan mengikuti pengaturan yang berlaku** (sejak 20 November 2026). Halaman persetujuan membaca `EDUAI_EVIDENCE_RETENTION_HOURS`, `EDUAI_EVIDENCE_HOLD_DAYS`, dan `EDUAI_REPORT_FRAME_RETENTION_HOURS` dari `GET /api/ai/health`, lalu menyusun kalimatnya dengan `evidenceNotice()` di `consent.ts`:
+
+- Dengan nilai bawaan (24 jam / 7 hari / 24 jam), kalimatnya persis seperti kutipan di atas.
+- Masa simpan ≥ 1 tahun (misalnya pengaturan uji coba) ditulis "tanpa penghapusan otomatis (sesuai pengaturan sistem saat ini)".
+- Bila pengaturan tidak dapat dimuat, kalimatnya mengatakan begitu, tanpa menebak.
+
+Versi yang disimpan bersama persetujuan (`consents.notice_version`) mencatat versi teks dan masa simpan yang ditampilkan, misalnya `2026-11-v3;r24;h7;f24`.
+
+Bagian "Analisis AI" kini menyebut objek menyerupai ponsel **atau buku**. Teks pilihan suara menyebut **empat** skor (bicara, bisikan, musik/TV, kertas/halaman buku) dan bahwa bisikan serta suara kertas/halaman buku juga dapat menjadi indikasi, sesuai `config.yaml`. Perubahan redaksi ini juga **perlu disetujui** program studi.
 
 **Belum sesuai kode:** teks ini belum menyebut bahwa pengawas yang ditugaskan dapat melihat video kamera mahasiswa secara langsung. Usulan redaksi baru menunggu persetujuan dan belum dipasang.
 
