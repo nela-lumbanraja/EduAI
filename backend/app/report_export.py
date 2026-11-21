@@ -122,6 +122,18 @@ def sound_info_text(data: dict) -> str:
     return "Catatan suara (info, bukan indikasi; tanpa gambar bukti): " + ", ".join(parts) + "."
 
 
+def duration_text(seconds) -> str:
+    """A duration for the report text: under a minute in whole seconds rounded half up ("30 detik"), otherwise
+    "sekitar N menit" rounded half up; 59.5 s and more already reads "sekitar 1 menit", never "60 detik".
+    Before 21 Nov 2026 (temuan T4) the minutes were always rounded with round(), so 30 s read "0 menit".
+    Presentation only: the stored seconds and every sum stay as they are."""
+    s = max(0.0, float(seconds or 0))
+    whole = int(s + 0.5)
+    if whole < 60:
+        return f"{whole} detik"
+    return f"sekitar {int(s / 60 + 0.5)} menit"
+
+
 def _num(x) -> str:
     return f"{float(x):.2f}".replace(".", ",")
 
@@ -212,7 +224,7 @@ def build_pdf(data: dict, frames: Dict[str, bytes], settings) -> bytes:
           _p("Ringkasan per indikasi (lanjutan bagian IV):"), indicator_table(data), Spacer(1, 3),
           _p(data.get("confidence_note") or "", NOTE), Spacer(1, 6),
           _p(f"Waktu video tidak dapat dianalisis (gelap, buram, atau kamera mati): {ind['cannot_analyze']} kali, "
-             f"total sekitar {round(ind.get('cannot_analyze_s', 0) / 60)} menit."),
+             f"total {duration_text(ind.get('cannot_analyze_s', 0))}."),
           _p(sound_info_text(data)),
           _p("V. Tindak Lanjut", H2), _p(DOTS), _p(DOTS),
           _p("Demikian laporan ini dibuat dengan sebenarnya untuk dapat dipergunakan sebagaimana mestinya."),

@@ -422,7 +422,7 @@ def compute_exam(db, exam: dict, tz_name: str = "", now: Optional[float] = None,
         base["models_fingerprint"] = models_fp or ""
         base["calibration_approved_sha256"] = calibrator.get("approved_sha256")
     if observation.observation_span(db, exam["id"]) is None:
-        return {**base, "status": "tidak_tersedia", "reason": "tidak ada data cakupan pengamatan untuk sesi ini", "students": []}
+        return {**base, "status": "tidak_tersedia", "reason": NO_OBSERVATION_REASON, "students": []}
     if window is None:
         return {**base, "status": "tidak_tersedia", "reason": "jadwal dan pengamatan tidak dapat dibaca", "students": []}
     if window["end"] - window["start"] > MAX_WINDOW_S:
@@ -494,12 +494,34 @@ def snapshot_statements(result: dict, config_version: str, computed_at: str) -> 
     return out
 
 
+NO_OBSERVATION_REASON = "tidak ada data cakupan pengamatan untuk sesi ini"
+# Written by api.finalize_report since Phase 4 when there was nothing to freeze (A7). A report finalised before Phase 4
+# has no such audit entry ("Memfinalisasi laporan (N gambar bukti disalin)" only).
+_FINAL_WITHOUT_SUMMARY = "Memfinalisasi laporan (%; Session Summary tidak tersedia)"
+
+
+def _final_without_summary(db, exam_id: int) -> Optional[dict]:
+    """Temuan T3 (21 Nov 2026): a session finalised by the current code while its Session Summary was not available
+    keeps its own reason instead of being reported as a session from before this feature. The reason is derived again
+    from the stored observation data, which can no longer change once the report is final (nothing is recomputed:
+    there are no scores). None = no such finalisation (a report finalised before Phase 4)."""
+    if not db.one("SELECT 1 FROM audit WHERE target=? AND action LIKE ? LIMIT 1", (f"exam:{exam_id}", _FINAL_WITHOUT_SUMMARY)):
+        return None
+    out = {"exam_id": exam_id, "source": "final", "status": "tidak_tersedia", "students": [],
+           "unavailable_kind": "tidak_tersedia_saat_finalisasi"}
+    if observation.observation_span(db, exam_id) is None:
+        # no observation at all: coverage 0 %, and the absence of scores is no evidence that nothing happened
+        return {**out, "reason": NO_OBSERVATION_REASON, "coverage": 0.0, "coverage_note": COVERAGE_ZERO_NOTE}
+    return {**out, "reason": "Session Summary tidak tersedia saat finalisasi: jendela sesi atau jadwal ujian tidak wajar"}
+
+
 def read_snapshot(db, exam_id: int) -> Optional[dict]:
-    """The frozen summary of a finalised exam, or None when nothing was stored (e.g. finalised before this feature)."""
+    """The frozen summary of a finalised exam. Without stored rows: the unavailable result of a session finalised by the
+    current code (T3, _final_without_summary), or None for a report finalised before this feature."""
     import json
     rows = db.all("SELECT * FROM session_participant_summary WHERE exam_id=? ORDER BY student_id, indicator", (exam_id,))
     if not rows:
-        return None
+        return _final_without_summary(db, exam_id)
     students: Dict[int, dict] = {}
     for r in rows:
         s = students.setdefault(r["student_id"], {"student_id": r["student_id"], "indicators": {}, "total": None,
