@@ -71,6 +71,9 @@ class MediaPipePerception:
         self._last_book_ts = None
         self._last_ms = -1
         self.status = {}
+        # Inference failures per model since this set was created (D4, Session Report). Counting only: a failure
+        # still stops the frame (face, landmarks, objects) or is skipped (CLIP) exactly as before.
+        self.inference_errors = {}
         # One detector pass serves three rules. Before 15 Nov 2026 it used the object threshold (0.4) for everything,
         # so BOOK_VISIBLE.min_score 0.35 could never apply. Now: the lowest threshold any rule needs.
         ind = cfg.get("indicators", {})
@@ -148,23 +151,39 @@ class MediaPipePerception:
         return cv2.resize(frame, (self.work_width, int(h * self.work_width / w)))
 
     def process(self, frame_bgr, ts: float) -> FrameSignals:
+        """metrics["timing_ms"]: wall time in ms of every component that ran on this frame (see perf.py)."""
         if frame_bgr is None:
             return FrameSignals(ts=ts, status=CANNOT_ANALYZE, reason="no_frame")
+        timing = {}
+        clock = time.perf_counter
+        t = clock()
         frame = self._resize(frame_bgr)
+        timing["prepare"] = (clock() - t) * 1000
+        t = clock()
         q = self.quality.check(frame, ts)
+        timing["quality"] = (clock() - t) * 1000
+        metrics = {**q.metrics, "timing_ms": timing}
         if not q.ok:
-            return FrameSignals(ts=ts, status=CANNOT_ANALYZE, reason=q.reason, metrics=q.metrics)
+            return FrameSignals(ts=ts, status=CANNOT_ANALYZE, reason=q.reason, metrics=metrics)
         if not self.ready:
-            return FrameSignals(ts=ts, status=MODEL_UNAVAILABLE, reason="face_detector", metrics=q.metrics)
+            return FrameSignals(ts=ts, status=MODEL_UNAVAILABLE, reason="face_detector", metrics=metrics)
 
         ms = max(int(ts * 1000), self._last_ms + 1)      # VIDEO mode: strictly increasing
         self._last_ms = ms
+        t = clock()
         image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB,
                                data=np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
+        timing["prepare"] += (clock() - t) * 1000
         w = frame.shape[1]
 
-        faces = self.face_detector.detect_for_video(image, ms).detections
-        sig = FrameSignals(ts=ts, status=ANALYZED, face_count=len(faces), metrics=q.metrics)
+        t = clock()
+        try:
+            faces = self.face_detector.detect_for_video(image, ms).detections
+        except Exception:
+            self._inference_failed("face_detector")
+            raise
+        timing["face"] = (clock() - t) * 1000
+        sig = FrameSignals(ts=ts, status=ANALYZED, face_count=len(faces), metrics=metrics)
         if faces:
             sig.face_width_ratio = round(max(d.bounding_box.width for d in faces) / w, 3)
 
@@ -172,7 +191,13 @@ class MediaPipePerception:
             if sig.face_width_ratio is not None and sig.face_width_ratio < self.min_face_width_ratio:
                 sig.reason = "face_too_small"            # head pose not analysed; not an indication
             else:
-                lm = self.landmarker.detect_for_video(image, ms)
+                t = clock()
+                try:
+                    lm = self.landmarker.detect_for_video(image, ms)
+                except Exception:
+                    self._inference_failed("face_landmarker")
+                    raise
+                timing["landmarks"] = (clock() - t) * 1000
                 if lm.facial_transformation_matrixes:
                     sig.landmarks_ok = True
                     sig.yaw, sig.pitch = yaw_pitch_from_matrix(lm.facial_transformation_matrixes[0])
@@ -185,7 +210,13 @@ class MediaPipePerception:
         if self.object_detector is not None and (
                 self._last_phone_ts is None or ts - self._last_phone_ts >= self.phone_every_s):
             self._last_phone_ts = ts
-            dets = self.object_detector.detect_for_video(image, ms).detections
+            t = clock()
+            try:
+                dets = self.object_detector.detect_for_video(image, ms).detections
+            except Exception:
+                self._inference_failed("object_detector")
+                raise
+            timing["objects"] = (clock() - t) * 1000
             top = [(d.categories[0].category_name, d.categories[0].score) for d in dets if d.categories]
             fh, fw = frame.shape[:2]
             sig.boxes = [{"label": d.categories[0].category_name, "score": round(d.categories[0].score, 3),
@@ -203,11 +234,17 @@ class MediaPipePerception:
         if self.book_classifier is not None and (
                 self._last_book_ts is None or ts - self._last_book_ts >= self.book_every_s):
             self._last_book_ts = ts
+            t = clock()
             try:
                 sig.book_clip_score = self.book_classifier.score(frame)
             except Exception as e:                       # never stop the analysis for the optional book model
                 log.warning("book classifier failed: %s", type(e).__name__)
+                self._inference_failed("book_classifier")
+            timing["clip"] = (clock() - t) * 1000
         return sig
+
+    def _inference_failed(self, name: str):
+        self.inference_errors[name] = self.inference_errors.get(name, 0) + 1
 
     def close(self):
         own_book = None if self._shared_book else self.book_classifier       # a shared CLIP stays open for the others

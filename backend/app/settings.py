@@ -78,6 +78,10 @@ class Settings:
     school_phone: str = ""
     school_email: str = ""
     school_city: str = ""
+    # Phase 5 Tahap 3: approved session calibrator (T3-1) and the SHA-256 of that exact file (C6, a separate setting).
+    # Both empty by default = no calibrator: every result stays not_calibrated, as in Phase 4.
+    session_calibrator: str = ""
+    session_calibrator_sha256: str = ""
     jwt_secret_generated: bool = False
     notes: list = field(default_factory=list)
 
@@ -125,6 +129,8 @@ def load_settings(env_file: Path = None) -> Settings:
         school_phone=os.environ.get("EDUAI_SCHOOL_PHONE", ""),
         school_email=os.environ.get("EDUAI_SCHOOL_EMAIL", ""),
         school_city=os.environ.get("EDUAI_SCHOOL_CITY", ""),
+        session_calibrator=os.environ.get("EDUAI_SESSION_CALIBRATOR", "").strip(),
+        session_calibrator_sha256=os.environ.get("EDUAI_SESSION_CALIBRATOR_SHA256", "").strip(),
         analysis_source=source,
         upload_fps=float(os.environ.get("EDUAI_UPLOAD_FPS", "2")),
         frame_max_bytes=int(os.environ.get("EDUAI_FRAME_MAX_BYTES", "400000")),

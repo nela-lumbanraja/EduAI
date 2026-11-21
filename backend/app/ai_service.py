@@ -7,12 +7,13 @@ A global semaphore limits how many analyses run at the same time.
 """
 import asyncio
 import logging
+import math
 import threading
 import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from . import store
+from . import model_availability, observation, store
 
 log = logging.getLogger("eduai.ai")
 IDLE_STOP_S = 120.0          # stop an analyser (closing its events) after this long without frames
@@ -24,8 +25,51 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+MAX_CLOCK_GAP_MS = 86_400_000      # |server - browser capture time| above one day: the laptop clock is unusable
+
+
+def capture_lag(values) -> Optional[dict]:
+    """Capture -> receive lag of one student in the window. "raw" still contains the (constant) difference between
+    the laptop clock and the server clock; "above_min" subtracts the smallest lag seen, which removes that constant
+    and leaves the variation from encoding, network and waiting (assumes the laptop clock does not jump)."""
+    from eduai_ai.perf import summarize_ms
+    v = list(values)
+    if not v:
+        return None
+    low = min(v)
+    return {"raw": summarize_ms(v), "above_min": summarize_ms(x - low for x in v), "min_raw": round(low, 1)}
+
+
+def _num(text) -> Optional[float]:
+    try:
+        v = float(text)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
+
+
+def frame_timing(captured_at, client_age_ms, prev_rtt_ms, received_at: float) -> dict:
+    """Browser timing fields (strings from the form) -> plausible numbers in ms, or {} (G-F1). Untrusted input:
+    used as performance metrics only, never for event times or ordering, and never a reason to reject a frame.
+      capture_to_receive  server receive time - browser capture time; includes the laptop's clock error
+      client_encode       capture -> upload start on the device (performance.now, not affected by the clock)
+      client_rtt          round trip of the previous upload as seen by the browser"""
+    out = {}
+    c = _num(captured_at)
+    if c is not None and abs(received_at * 1000 - c) <= MAX_CLOCK_GAP_MS:
+        out["capture_to_receive"] = received_at * 1000 - c
+    a = _num(client_age_ms)
+    if a is not None and 0 <= a <= 60_000:
+        out["client_encode"] = a
+    r = _num(prev_rtt_ms)
+    if r is not None and 0 <= r <= 120_000:
+        out["client_rtt"] = r
+    return out
+
+
 class _Entry:
-    __slots__ = ("analyzer", "lock", "last_ts", "last_seen", "source")
+    __slots__ = ("analyzer", "lock", "last_ts", "last_seen", "source", "received", "dropped",
+                 "availability_source", "errors_sent")
 
     def __init__(self, analyzer):
         self.analyzer = analyzer
@@ -33,6 +77,10 @@ class _Entry:
         self.last_ts = 0.0
         self.last_seen = time.monotonic()
         self.source = "browser"
+        self.received = 0                     # frames of this student that reached the analyser (memory only)
+        self.dropped = 0                      # of those, dropped because the previous frame was still analysed
+        self.availability_source = None       # D4: source whose model status was recorded for this analyser
+        self.errors_sent: dict = {}           # D4: inference errors of this analyser already recorded, per model
 
 
 class AIManager:
@@ -57,6 +105,11 @@ class AIManager:
         self.clock = time.time               # wall clock (epoch s); tests can replace it
         self.audio_seen: dict = {}           # (exam, student) -> clock time of the last accepted audio scores
         self.frame_seen: dict = {}           # (exam, student) -> clock time of the last frame (or of the first check)
+        # Session Report (Phase 2): persistent observed seconds + valid confidence samples per student (observation.py)
+        self.observations = observation.ObservationTracker(db)
+        # Phase 5 (D4): which models really ran for each student (model_availability.py)
+        self.availability = model_availability.ModelAvailability(db)
+        self._models_fp: Optional[str] = None  # Phase 5 Tahap 3 (C7): fingerprint of the loaded model files
 
     # ---------- readiness ----------
     # Startup: init() (fast, before the API serves) reads config.yaml and lists every model; load_models() (in a
@@ -114,7 +167,8 @@ class AIManager:
                             continue
                         status, err = mc.status_from_load(info)
                         m.update(status=status, error=err, load_ms=info.get("load_ms"))
-                    for key, r in mc.warm_up(p).items():
+                    p.warmup = mc.warm_up(p)                   # kept with the set: recorded per student (D4)
+                    for key, r in p.warmup.items():
                         m = self.models[key]
                         if m["status"] != mc.LOADING:
                             continue
@@ -180,7 +234,7 @@ class AIManager:
             from eduai_ai.perception import MediaPipePerception
             p = MediaPipePerception(self.cfg, book_classifier=self._clip)
             self.perceptions_created += 1
-            mc.warm_up(p, include_book=False)
+            p.warmup = mc.warm_up(p, include_book=False)   # result recorded per student when handed out (D4)
             with self._spare_lock:
                 if self._closing or self._spare is not None:
                     p.close()
@@ -205,6 +259,38 @@ class AIManager:
                 "process": {"perceptions_created": self.perceptions_created, "active_analyzers": len(self.entries),
                             "spare_ready": self._spare is not None, "clip_shared": self._clip is not None}}
 
+    def models_fingerprint(self) -> str:
+        """C7: SHA-256 over key, file name and content of every model this backend runs (the enabled ones; CLIP with
+        its prompt file), computed with eduai_ai.session_calibration.models_fingerprint, the same function that
+        defines lineage.models_fingerprint. "" (unavailable, never matches) unless the AI is READY and every file is
+        readable. Computed once per process; a failure is not cached. Says nothing about the OpenVidu worker's files
+        (risk D-R12)."""
+        if self.state != "READY" or not self.cfg:
+            return ""
+        if self._models_fp:
+            return self._models_fp
+        try:
+            from eduai_ai import session_calibration as sc
+            from eduai_ai.perception import find_model_files
+            files = find_model_files(self.cfg)
+            entries = []
+            for key, m in self.models.items():
+                if not m.get("required"):
+                    continue
+                path = (files.get(key) or {}).get("path") or m.get("path")
+                if not path:
+                    return ""
+                entries.append((key, path))
+                if key == "book_classifier" and files.get(key, {}).get("prompts_path"):
+                    entries.append(("book_classifier_prompts", files[key]["prompts_path"]))
+            fp = sc.models_fingerprint(entries)
+        except Exception:                                             # noqa: BLE001 - unavailable, never a crash
+            log.warning("model fingerprint could not be computed")
+            return ""
+        if fp:
+            self._models_fp = fp
+        return fp
+
     def health(self) -> dict:
         return {"available": self.available, "reason": self.reason, "state": self.state,
                 "config_version": (self.cfg or {}).get("version"),
@@ -214,6 +300,26 @@ class AIManager:
                            for k, v in self.models.items()},
                 "active_analyzers": len(self.entries), "max_concurrent": self.settings.ai_max_concurrent,
                 "frames_received": self.frames_in, "frames_dropped_busy": self.frames_dropped}
+
+    def performance(self) -> dict:
+        """GET /api/ai/performance (admin only): live FPS and latency per active analyser of THIS backend process,
+        from memory (eduai_ai.perf). Nothing is stored; a restarted backend or a stopped analyser starts at zero.
+        Analysers of the OpenVidu worker run in the worker process and are not included."""
+        now = self.clock()
+        students = []
+        for (exam_id, student_id), e in sorted(self.entries.items()):
+            perf = getattr(e.analyzer, "perf", None)
+            row = {"exam_id": exam_id, "student_id": student_id, "source": e.source,
+                   "frames_received": e.received, "frames_dropped_busy": e.dropped,
+                   **(perf.snapshot(now) if perf is not None else {})}
+            if perf is not None:
+                row["capture_lag_ms"] = capture_lag(perf.extra_values("capture_to_receive"))
+            students.append(row)
+        fps = [s["fps"] for s in students if s.get("fps") is not None]
+        return {"time": _now(), "scope": "backend", "state": self.state,
+                "active_analyzers": len(self.entries), "max_concurrent": self.settings.ai_max_concurrent,
+                "frames_received": self.frames_in, "frames_dropped_busy": self.frames_dropped,
+                "fps_sum": round(sum(fps), 2) if fps else None, "students": students}
 
     # ---------- frames ----------
     def _entry(self, exam_id: int, student_id: int) -> _Entry:
@@ -233,8 +339,10 @@ class AIManager:
                     await asyncio.to_thread(self._entry, exam_id, student_id)   # model loading is slow
         return self.entries[key]
 
-    async def submit_jpeg(self, exam_id: int, student_id: int, data: bytes, source: str = "browser") -> dict:
-        """`source` comes from the exam row on the server, never from the client."""
+    async def submit_jpeg(self, exam_id: int, student_id: int, data: bytes, source: str = "browser",
+                          timing: Optional[dict] = None) -> dict:
+        """`source` comes from the exam row on the server, never from the client.
+        `timing`: frame_timing() of this upload; recorded as metrics only (busy frames included)."""
         if not self.available:
             store.upsert_status(self.db, exam_id, student_id,
                                 {"state": "model_unavailable", "frame_status": "model_unavailable",
@@ -245,17 +353,62 @@ class AIManager:
         self.frame_seen[key] = self.clock()
         e = await self._ready_entry(exam_id, student_id)
         e.source = source
+        self._record_models(exam_id, student_id, e)
+        e.received += 1
+        now = self.clock()
+        for name, ms in (timing or {}).items():
+            e.analyzer.perf.record_extra(name, now, ms)
         if e.lock.locked():
             self.frames_dropped += 1
+            e.dropped += 1
             return {"accepted": False, "reason": "busy"}
         async with e.lock:
             e.last_seen = time.monotonic()
             ts = max(self.clock(), e.last_ts + 0.001)
             e.last_ts = ts
+            waited = time.perf_counter()
             async with self.sem:
-                result = await asyncio.to_thread(self._analyse, e.analyzer, data, ts)
+                e.analyzer.perf.record_extra("queue_wait", ts, (time.perf_counter() - waited) * 1000)
+                try:
+                    result = await asyncio.to_thread(self._analyse, e.analyzer, data, ts)
+                finally:                                  # also when the frame failed: the failure is recorded (D4)
+                    self._record_errors(exam_id, student_id, e)
             self.persist(exam_id, student_id, result, source)
+            self.observe(exam_id, student_id, source, ts, result.signals)
         return {"accepted": True}
+
+    def _record_models(self, exam_id: int, student_id: int, e: _Entry):
+        """D4: once per analyser and source, which of its models really loaded (and passed warm-up, if one ran).
+        Never lets a storage problem break the analysis."""
+        if e.availability_source == e.source:
+            return
+        try:
+            a = e.analyzer
+            warm = a.warmup_result() if hasattr(a, "warmup_result") else None
+            self.availability.record_load(exam_id, student_id, e.source, a.model_status(), warm)
+            e.availability_source = e.source
+        except Exception:                                         # noqa: BLE001
+            log.warning("model availability not recorded for exam %s student %s", exam_id, student_id)
+
+    def _record_errors(self, exam_id: int, student_id: int, e: _Entry):
+        """D4: inference errors of this analyser that are not recorded yet (a write only when there are new ones)."""
+        try:
+            total = e.analyzer.inference_errors() if hasattr(e.analyzer, "inference_errors") else {}
+            new = {m: n - e.errors_sent.get(m, 0) for m, n in total.items() if n > e.errors_sent.get(m, 0)}
+            if new:
+                self.availability.record_errors(exam_id, student_id, e.source, new)
+                e.errors_sent.update(total)
+        except Exception:                                         # noqa: BLE001
+            log.warning("inference errors not recorded for exam %s student %s", exam_id, student_id)
+
+    def observe(self, exam_id: int, student_id: int, source: str, ts: float, sig):
+        """Record one analysed frame for the Session Report; never lets a storage problem break the analysis."""
+        try:
+            self.observations.frame(exam_id, student_id, source, ts,
+                                    observation.is_observed(sig.status, sig.reason), observation.confidence_samples(sig))
+            self.observations.flush_if_due()
+        except Exception:                                         # noqa: BLE001 - logged in observation.flush
+            log.warning("observation tracking failed for exam %s student %s", exam_id, student_id)
 
     async def submit_gap(self, exam_id: int, student_id: int, reason: str, source: str = "jitsi"):
         """No usable video. Runs the same pipeline with an empty frame, so it becomes the normal
@@ -268,6 +421,7 @@ class AIManager:
         async with e.lock:
             e.last_seen = time.monotonic()       # one continuous period: the idle reaper must not split it
             e.source = source
+            self._record_models(exam_id, student_id, e)
             ts = max(self.clock(), e.last_ts + 0.001)
             e.last_ts = ts
             result = await asyncio.to_thread(e.analyzer.process, None, ts)
@@ -300,7 +454,19 @@ class AIManager:
             return {"accepted": False, "reason": "no_video_yet"}
         self.audio_seen[key] = now
         e.analyzer.update_audio(max(now, e.last_ts), speech, whisper, media, paper)
+        try:                                                          # valid audio samples (consent checked by the API)
+            self.observations.audio(exam_id, student_id, e.source, max(now, e.last_ts),
+                                    {"speech": speech, "whisper": whisper, "paper": paper})
+        except Exception:                                             # noqa: BLE001 - never break the audio path
+            log.warning("audio observation failed for exam %s student %s", exam_id, student_id)
         return {"accepted": True}
+
+    def flush_observations(self, exam_id=None, student_id=None) -> int:
+        """Write pending observation data now (stop, shutdown, the 10 s loop). Errors are logged, data kept."""
+        try:
+            return self.observations.flush(exam_id, student_id)
+        except Exception:                                             # noqa: BLE001
+            return 0
 
     def audio_active(self, exam_id: int, student_id: int) -> bool:
         return self.clock() - self.audio_seen.get((exam_id, student_id), -1e9) < 5.0
@@ -319,7 +485,9 @@ class AIManager:
     def _analyse(analyzer, data: bytes, ts: float):
         import cv2
         import numpy as np
+        t0 = time.perf_counter()
         frame = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)   # None if not an image
+        analyzer.perf.record_extra("decode", ts, (time.perf_counter() - t0) * 1000)
         return analyzer.process(frame, ts)
 
     def persist(self, exam_id: int, student_id: int, result, source: str, state_override: Optional[str] = None,
@@ -346,6 +514,8 @@ class AIManager:
         async with e.lock:
             result = await asyncio.to_thread(e.analyzer.stop)
             self.persist(exam_id, student_id, result, e.source, state_override="no_data")
+        self.flush_observations(exam_id, student_id)                 # normal stop: nothing observed is lost
+        self.observations.forget(exam_id, student_id)
 
     async def stop_exam(self, exam_id: int):
         for (ex, st) in [k for k in self.entries if k[0] == exam_id]:
@@ -361,6 +531,7 @@ class AIManager:
     async def shutdown(self):
         for key in list(self.entries):
             await self.stop_student(*key)
+        self.flush_observations()                                     # e.g. worker status / audio of stopped students
         with self._spare_lock:
             self._closing = True
             spare, self._spare = self._spare, None

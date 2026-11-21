@@ -92,6 +92,22 @@ export function cameraWorking(track: { readyState: string; muted: boolean } | un
   return !!track && track.readyState === "live" && !track.muted && newFrames;
 }
 
+/** Timing fields sent with every AI frame (G-F1). Measurements only: the server keeps its own clock for events.
+ *  captured_at   wall clock (epoch ms) when the frame was drawn from the camera; the server compares it with its own
+ *                clock, so the raw difference also contains the laptop's clock error
+ *  client_age_ms capture -> upload start on this device (performance.now: immune to a wrong laptop clock)
+ *  prev_rtt_ms   round trip of the previous upload (sending + analysis + answer), when there was one
+ *  Values that are not finite or not plausible are left out, never sent as 0. */
+export function frameTimingFields(capturedAtMs: number, capturePerfMs: number, sendPerfMs: number,
+                                  prevRttMs: number | null): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (Number.isFinite(capturedAtMs) && capturedAtMs > 0) out.captured_at = String(Math.round(capturedAtMs));
+  const age = sendPerfMs - capturePerfMs;
+  if (Number.isFinite(age) && age >= 0 && age <= 60_000) out.client_age_ms = age.toFixed(1);
+  if (prevRttMs !== null && Number.isFinite(prevRttMs) && prevRttMs >= 0 && prevRttMs <= 120_000) out.prev_rtt_ms = prevRttMs.toFixed(1);
+  return out;
+}
+
 /** Student-facing state of the broadcast to the supervisor. */
 export type BroadcastState = "off" | "connecting" | "reconnecting" | "sending" | "received";
 

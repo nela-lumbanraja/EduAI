@@ -125,10 +125,10 @@ def build(db, exam: dict, now: Optional[datetime] = None) -> dict:
                 "evidence_count": c["evidence_count"], "unreviewed": c["unreviewed_count"],
                 "rule": c["rule"]})
         items.sort(key=lambda i: (-i["occurrences"], i["indicator"]))
-        bad_s = sum(max(0.0, ((_parse(r["end_ts"]) or now) - _parse(r["start_ts"])).total_seconds()) for r in bad)
+        bad_eps = casing.episodes_of(bad, now)                       # same rule as the session report
         out.append({"student_id": s["id"], "name": s["name"], "nis": s["nis"],
                     "analysis": "analysed" if analysed else "no_data",
-                    "cannot_analyze": {"periods": len(bad), "total_s": round(bad_s, 1)},
+                    "cannot_analyze": {"periods": len(bad_eps), "total_s": casing.episode_seconds(bad_eps)},
                     "indications": items,
                     "rules_met": sum(1 for i in items if i["rule"]["met"])})
     return {"exam_id": exam["id"], "exam_name": exam["name"], "generated_at": now.isoformat(timespec="milliseconds"),

@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import cases as casing
-from . import api, device, exam_status, lockdown, report, store, summary
+from . import api, device, exam_status, lockdown, observation, report, store, summary
 from .ai_service import AIManager
 from .api import router
 from .db import Database
@@ -51,6 +51,14 @@ async def _maintenance(app: FastAPI):
                 await asyncio.to_thread(report.run_retention, app.state)
         except Exception:                                   # keep the loop alive; never log frame data
             log.exception("maintenance task failed")
+
+
+async def _observation_flush(app: FastAPI):
+    """Session Report observation tracking: write pending observed seconds every FLUSH_S (10 s), also when no new
+    frame arrives, so a sudden crash loses at most FLUSH_S of observation per student (app/observation.py)."""
+    while True:
+        await asyncio.sleep(observation.FLUSH_S)
+        await asyncio.to_thread(app.state.ai.flush_observations)
 
 
 def _check_summaries(app: FastAPI):
@@ -99,10 +107,12 @@ def create_app(settings=None, perception_factory=None) -> FastAPI:
         except Exception:
             log.exception("summary check failed")
         task = asyncio.create_task(_maintenance(app))
+        flusher = asyncio.create_task(_observation_flush(app))
         try:
             yield
         finally:
             task.cancel()
+            flusher.cancel()
             if loader is not None:
                 await loader                              # a model load in progress cannot be interrupted safely
             await asyncio.to_thread(app.state.workers.stop_all)

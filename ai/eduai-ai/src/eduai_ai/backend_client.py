@@ -61,11 +61,14 @@ class BackendClient:
         if statuses:
             await self._post("/api/ai/status", json={"session_id": session_id, "students": statuses})
 
-    async def heartbeat(self, session_id: str, model_status: dict, students: int, worker_id: str = ""):
-        """Returns the backend's answer ({"ok", "monitoring_active", "stop"}) or None if unreachable."""
+    async def heartbeat(self, session_id: str, model_status: dict, students: int, worker_id: str = "",
+                        student_models: Optional[dict] = None):
+        """Returns the backend's answer ({"ok", "monitoring_active", "stop"}) or None if unreachable.
+        student_models (D4): {student_id: {"models": {model: {"loaded", "reason"}}, "inference_errors": {model: n}}}."""
         return await self._post("/api/ai/heartbeat", json={"session_id": session_id, "models": model_status,
                                                            "students": students, "source": "livekit",
-                                                           "worker_id": worker_id})
+                                                           "worker_id": worker_id,
+                                                           "student_models": student_models or {}})
 
     async def aclose(self):
         await self._client.aclose()

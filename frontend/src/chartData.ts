@@ -206,7 +206,7 @@ export function reportResults(i: { total: number; valid: number; invalid: number
     { key: "lanjut", label: "Perlu tinjauan", value: i.further }, { key: "belum", label: "Belum ditinjau", value: i.unreviewed },
   ];
   const sum = sumOf(segments);
-  return { segments, total: i.total, mismatch: sum === i.total ? null : `Jumlah per status (${sum}) tidak sama dengan total indikasi dari API (${i.total}).` };
+  return { segments, total: i.total, mismatch: sum === i.total ? null : `Jumlah per status (${sum}) tidak sama dengan total kejadian dari API (${i.total}).` };
 }
 
 // ---------------------------------------------------------------- Riwayat Sesi: review result per finished session

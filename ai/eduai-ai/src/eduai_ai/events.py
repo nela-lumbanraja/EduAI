@@ -78,7 +78,8 @@ class Event:
     model_version: str = MODEL_VERSION
     config_version: str = ""
     schema_version: str = SCHEMA_VERSION
-    # audio events only: {sound_type, speech, whisper, media, mouth_movement} = peaks of the episode (no audio)
+    # audio events: {sound_type, speech, whisper, media, mouth_movement} = peaks of the episode (no audio)
+    # video events in temporal.FRAME_STATS: {stats_version, n_frames, confidence?, book_sources?, score_note?}
     details: Optional[dict] = None
 
     def __post_init__(self):

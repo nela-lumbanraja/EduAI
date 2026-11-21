@@ -171,3 +171,25 @@ evidence:
   max_frames: 12           # JPEG snapshots per indication (privacy: no audio, no full video)
   max_width: 480
   jpeg_quality: 70
+
+# Session Report (backend/app/session_summary.py; docs/DESIGN_SESSION_SUMMARY_INTERVAL.md). Read by the backend only;
+# the AI analysis does not use this section.
+#   indicator_weights: v_i in P_total = sum(v_i * P_i) / sum(v_i). Used ONLY to combine the indicators' duration
+#   scores, never to weight intervals (those use w_k = duration / 300). 1 for every indicator = plain mean (decision K5,
+#   20 Nov 2026). Other values must be decided by the Program Studi and are stored with every finalised summary.
+#   Only these indicators may be listed; weights must be >= 0. P_total is a combined duration score, NOT a probability.
+#   Indicators switched off above (enabled: false, category: info, or their model disabled) are left out of P_total
+#   with a recorded reason, never counted as 0.
+#   CHANGES APPLY ONLY AFTER THE BACKEND IS RELOADED (the config is read at start-up). Every finalised summary stores
+#   the weights it actually used and config_version "<version>;w=<weights fingerprint>", so a changed weight is
+#   visible even if `version` above was not raised.
+session_summary:
+  indicator_weights:
+    FACE_ABSENT: 1
+    MULTIPLE_PERSONS: 1
+    HEAD_TURN: 1
+    PHONE_VISIBLE: 1
+    BOOK_VISIBLE: 1
+    OTHER_VOICE: 1           # only for students with audio consent (otherwise excluded, not 0)
+    WHISPER: 1
+    BOOK_SOUND: 1

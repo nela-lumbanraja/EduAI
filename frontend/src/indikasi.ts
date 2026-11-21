@@ -68,6 +68,20 @@ export function filterCases(cases: CaseSummary[], f: Filter): CaseSummary[] {
   return cases.filter((c) => (!f.jenis || jenisOf(c.indicator) === f.jenis) && (!f.status || statusOf(c) === f.status));
 }
 
+/** Order of "Daftar kasus" (G-P1). "prioritas": the backend's neutral review order (priority_rank: unreviewed first,
+ *  rule met, still open, more occurrences, longer, newest), cases without a rank last; "terbaru": newest first. */
+export type SortKey = "prioritas" | "terbaru";
+export const SORTS: { key: SortKey; label: string }[] = [{ key: "prioritas", label: "Prioritas tinjauan" }, { key: "terbaru", label: "Terbaru" }];
+export function sortCases(cases: CaseSummary[], key: SortKey): CaseSummary[] {
+  const newest = (a: CaseSummary, b: CaseSummary) => (ms(b.last_start_ts) ?? 0) - (ms(a.last_start_ts) ?? 0);
+  if (key === "terbaru") return [...cases].sort(newest);
+  return [...cases].sort((a, b) => (a.priority_rank ?? Infinity) - (b.priority_rank ?? Infinity) || newest(a, b));
+}
+/** "belum ditinjau · aturan ringkasan terpenuhi · 3 kali · total 45 dtk" (facts only), or "" without reasons. */
+export function priorityText(c: Pick<CaseSummary, "priority_reasons">): string {
+  return (c.priority_reasons ?? []).join(" · ");
+}
+
 /** Number on each kind button: cases of that kind (status filter applied); for "tidak dapat dianalisis" the periods. */
 export function jenisCounts(cases: CaseSummary[], cannot: Pick<AIEvent, "category">[], status: StatusKey | null): Record<JenisKey | "semua", number> {
   const out = Object.fromEntries([...JENIS.map((j) => [j.key, 0]), ["semua", 0]]) as Record<JenisKey | "semua", number>;

@@ -150,6 +150,21 @@ def merge_episodes(events: List[dict], now: Optional[datetime] = None, join_s: f
     return eps
 
 
+def episodes_of(rows: Iterable[dict], now: Optional[datetime] = None) -> List[dict]:
+    """Every distinct episode in `rows`: grouped per exam, student and indicator (as group_events with gap 0),
+    then events that overlap or touch in time count once (merge_episodes). This is the ONE counting rule shared
+    by the case list, the exam summary and the session report, so their numbers agree:
+      * kejadian (event)   = one row of the events table, the unit a supervisor reviews;
+      * indikasi (episode) = the events of one student and behaviour that describe the same moment.
+    Durations come from the merged episodes, so overlapping events are never counted twice."""
+    now = now or datetime.now(timezone.utc)
+    return [ep for group in group_events(rows, 0, now) for ep in merge_episodes(group, now)]
+
+
+def episode_seconds(episodes: Iterable[dict]) -> float:
+    return round(sum(ep["duration_s"] for ep in episodes), 1)
+
+
 def rule_status(indicator: str, episodes: List[dict]) -> dict:
     """Is the product rule met? Returns min_count, window_s, met, met_at (start of the episode that
     first satisfied it) and the most episodes seen inside one window."""
@@ -169,7 +184,6 @@ def summarize(events: List[dict], now: Optional[datetime] = None) -> dict:
     """One summary row for a case. `events` must be one group from group_events()."""
     now = now or datetime.now(timezone.utc)
     first, last = events[0], events[-1]
-    durations = [max(0.0, (_end(e, now) - _t(e["start_ts"])).total_seconds()) for e in events]
     is_open = any(e["status"] == "open" for e in events)
     with_evidence = [e for e in events if e.get("evidence_id")]
     scores = [e["score"] for e in events if e.get("score") is not None]
@@ -191,7 +205,7 @@ def summarize(events: List[dict], now: Optional[datetime] = None) -> dict:
         "last_start_ts": last["start_ts"],
         "last_end_ts": None if is_open else max(e["end_ts"] or e["start_ts"] for e in events),
         "status": "open" if is_open else "closed",
-        "total_duration_s": round(sum(durations), 1),
+        "total_duration_s": episode_seconds(episodes),      # merged episodes: overlapping events count once
         "max_score": max(scores) if scores else None,
         "evidence_count": len(with_evidence),
         "latest_evidence_id": with_evidence[-1]["evidence_id"] if with_evidence else None,
@@ -200,6 +214,62 @@ def summarize(events: List[dict], now: Optional[datetime] = None) -> dict:
         "unreviewed_count": unreviewed,
         "updated_at": max(e["updated_at"] for e in events),
     }
+
+
+# ---------------------------------------------------------------- review priority (G-P1, 20 Nov 2026)
+# Neutral order in which a supervisor may look at cases: facts about the case only, no weight per kind of behaviour,
+# no model score, no "level". It says what to look at first, never how serious or likely a violation is.
+PRIORITY_ORDER = ("ada kejadian belum ditinjau", "aturan ringkasan terpenuhi", "masih berlangsung",
+                  "jumlah indikasi", "total durasi", "aktivitas terbaru")
+SORTS = ("priority", "latest")
+
+
+def _ts(iso: Optional[str]) -> float:
+    return _t(iso).timestamp() if iso else 0.0
+
+
+def priority_key(c: dict) -> tuple:
+    """Sort key of a case from summarize() (larger = earlier), in the order of PRIORITY_ORDER."""
+    return (c["unreviewed_count"] > 0, bool((c.get("rule") or {}).get("met")), c["status"] == "open",
+            c.get("episode_count") or c["event_count"], c["total_duration_s"], _ts(c["last_start_ts"]))
+
+
+def _duration_text(s: float) -> str:
+    s = int(round(s))
+    m, sec = divmod(s, 60)
+    return f"{m} mnt {sec} dtk" if m else f"{sec} dtk"
+
+
+def priority_reasons(c: dict) -> List[str]:
+    """Short facts shown next to the case, e.g. ["belum ditinjau", "aturan ringkasan terpenuhi", "3 kali", "total 45 dtk"]."""
+    out = []
+    if c["unreviewed_count"] == c["event_count"]:
+        out.append("belum ditinjau")
+    elif c["unreviewed_count"]:
+        out.append(f"{c['unreviewed_count']} kejadian baru belum ditinjau")
+    else:
+        out.append("sudah ditinjau")
+    if (c.get("rule") or {}).get("met"):
+        out.append("aturan ringkasan terpenuhi")
+    if c["status"] == "open":
+        out.append("masih berlangsung")
+    out.append(f"{c.get('episode_count') or c['event_count']} kali")
+    out.append(f"total {_duration_text(c['total_duration_s'])}")
+    return out
+
+
+def rank_and_sort(items: List[dict], sort: str = "priority") -> List[dict]:
+    """Adds priority_rank (1 = look first) and priority_reasons to every case and returns them in the requested order:
+    "priority" or "latest" (newest activity first, the order before G-P1). The rank is the same in both orders."""
+    if sort not in SORTS:
+        raise ValueError(f"sort must be one of {SORTS}")
+    by_priority = sorted(items, key=priority_key, reverse=True)
+    for i, c in enumerate(by_priority, 1):
+        c["priority_rank"] = i
+        c["priority_reasons"] = priority_reasons(c)
+    if sort == "priority":
+        return by_priority
+    return sorted(items, key=lambda c: _ts(c["last_start_ts"]), reverse=True)
 
 
 def find_case(groups: List[List[dict]], event_id: str) -> Optional[List[dict]]:

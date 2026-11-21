@@ -161,7 +161,85 @@ CREATE TABLE IF NOT EXISTS revoked_tokens (
   revoked_at TEXT NOT NULL,
   expires_at TEXT NOT NULL
 );
+-- Session Report (Phase 2, 20 Nov 2026; docs/EDUAI_SESSION_REPORT_IMPLEMENTATION_AUDIT.md section 7). Additive only.
+-- Observation tracking: which seconds of a student's exam were really analysed, per minute and frame source.
+-- Bit n of observed_mask = second n of the minute (0..59) was observed (a frame was analysed, gaps <= 2 s bridged).
+-- Masks are combined with OR, so a restart, a repeated flush or a second source never counts a second twice.
+-- *_sum / *_n: valid confidence samples (phone/book: positive detections only; CLIP: every successful run;
+-- speech/whisper/paper: audio samples sent with audio consent). No FK, like the other tables the AI writes.
+CREATE TABLE IF NOT EXISTS observation_seconds (
+  exam_id INTEGER NOT NULL, student_id INTEGER NOT NULL,
+  minute_start TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('browser','jitsi','livekit')),
+  observed_mask INTEGER NOT NULL DEFAULT 0 CHECK (observed_mask >= 0 AND observed_mask < 1152921504606846976),
+  frames INTEGER NOT NULL DEFAULT 0 CHECK (frames >= 0),
+  phone_sum REAL NOT NULL DEFAULT 0, phone_n INTEGER NOT NULL DEFAULT 0,
+  book_coco_sum REAL NOT NULL DEFAULT 0, book_coco_n INTEGER NOT NULL DEFAULT 0,
+  book_clip_sum REAL NOT NULL DEFAULT 0, book_clip_n INTEGER NOT NULL DEFAULT 0,
+  speech_sum REAL NOT NULL DEFAULT 0, speech_n INTEGER NOT NULL DEFAULT 0,
+  whisper_sum REAL NOT NULL DEFAULT 0, whisper_n INTEGER NOT NULL DEFAULT 0,
+  paper_sum REAL NOT NULL DEFAULT 0, paper_n INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (exam_id, student_id, minute_start, source)
+);
+-- Interval results per student, indicator and 300 s interval, written when the report is finalised (Phase 4).
+-- conf_source '' = the duration row; otherwise the confidence source (phone, book_coco, book_clip, speech, ...).
+CREATE TABLE IF NOT EXISTS session_interval_summary (
+  exam_id INTEGER NOT NULL REFERENCES exams(id),
+  student_id INTEGER NOT NULL REFERENCES users(id),
+  indicator TEXT NOT NULL,
+  k INTEGER NOT NULL CHECK (k >= 0),
+  conf_source TEXT NOT NULL DEFAULT '',
+  start_ts TEXT NOT NULL, end_ts TEXT NOT NULL,
+  d_s REAL NOT NULL CHECK (d_s > 0 AND d_s <= 300),
+  w REAL NOT NULL CHECK (w > 0 AND w <= 1),
+  active_s REAL CHECK (active_s IS NULL OR active_s >= 0),
+  analysable_s REAL CHECK (analysable_s IS NULL OR analysable_s >= 0),
+  coverage REAL CHECK (coverage IS NULL OR (coverage >= 0 AND coverage <= 1)),
+  duration_score REAL CHECK (duration_score IS NULL OR (duration_score >= 0 AND duration_score <= 1)),
+  conf_mean REAL CHECK (conf_mean IS NULL OR (conf_mean >= 0 AND conf_mean <= 1)),
+  conf_n INTEGER CHECK (conf_n IS NULL OR conf_n >= 0),
+  no_data_reason TEXT,
+  algo_version TEXT NOT NULL, config_version TEXT NOT NULL DEFAULT '', computed_at TEXT NOT NULL,
+  PRIMARY KEY (exam_id, student_id, indicator, k, conf_source)
+);
+-- Whole-session result per student (indicator '*' = P_total), written once when the report is finalised (Phase 4).
+-- The calibrated probability exists only with a valid calibrator (status 'calibrated'); never per indicator.
+CREATE TABLE IF NOT EXISTS session_participant_summary (
+  exam_id INTEGER NOT NULL REFERENCES exams(id),
+  student_id INTEGER NOT NULL REFERENCES users(id),
+  indicator TEXT NOT NULL,
+  duration_score REAL CHECK (duration_score IS NULL OR (duration_score >= 0 AND duration_score <= 1)),
+  coverage REAL CHECK (coverage IS NULL OR (coverage >= 0 AND coverage <= 1)),
+  sum_w REAL, n_intervals INTEGER, n_no_data INTEGER,
+  observed_s REAL, scheduled_s REAL, observation_start TEXT, observation_end TEXT,
+  conf_json TEXT, weights_json TEXT,
+  config_version TEXT NOT NULL DEFAULT '', algo_version TEXT NOT NULL,
+  calibration_status TEXT NOT NULL DEFAULT 'not_calibrated' CHECK (calibration_status IN ('not_calibrated','calibrated')),
+  calibration_version TEXT,
+  calibrated_probability REAL CHECK (calibrated_probability IS NULL OR (calibrated_probability >= 0 AND calibrated_probability <= 1)),
+  computed_at TEXT NOT NULL,
+  PRIMARY KEY (exam_id, student_id, indicator),
+  CHECK (calibration_status = 'calibrated' OR calibrated_probability IS NULL)
+);
+-- D4 (Phase 5): which AI models really ran for each student, per frame source. One row per exam, student, model and
+-- source; the status only gets worse during a session (available < inference_errors < warmup_failed < not_loaded),
+-- so a model that failed once stays recorded until the report is finalised. 'disabled' = switched off in config.
+-- Written by the backend analyser and from the OpenVidu worker's heartbeat. No FK, like the other tables the AI writes.
+CREATE TABLE IF NOT EXISTS model_availability (
+  exam_id INTEGER NOT NULL, student_id INTEGER NOT NULL,
+  model TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('browser','jitsi','livekit')),
+  status TEXT NOT NULL CHECK (status IN ('available','disabled','inference_errors','warmup_failed','not_loaded')),
+  reason TEXT NOT NULL DEFAULT '',
+  inference_errors INTEGER NOT NULL DEFAULT 0 CHECK (inference_errors >= 0),
+  first_failure_at TEXT,
+  checked_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  PRIMARY KEY (exam_id, student_id, model, source)
+);
 """
+SESSION_REPORT_TABLES = ("observation_seconds", "session_interval_summary", "session_participant_summary")
+D4_TABLES = ("model_availability",)
 
 
 def now_iso() -> str:
@@ -224,7 +302,7 @@ class Database:
         tables = self._tables()
         if "users" not in tables:
             return []                                     # brand-new database: nothing to protect
-        out = [f"table {t}" for t in ("seb_history",) if t not in tables]
+        out = [f"table {t}" for t in ("seb_history", *SESSION_REPORT_TABLES, *D4_TABLES) if t not in tables]
         cols = lambda t: [r[1] for r in self._conn.execute(f"PRAGMA table_info({t})")]   # noqa: E731
         for table, col, _ in LOCKDOWN_COLUMNS + OLDER_COLUMNS:
             if table in tables and col not in cols(table):

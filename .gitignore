@@ -13,6 +13,8 @@ e2e-screenshots/
 
 # personal camera captures and local test outputs (faces): never upload
 ai/eduai-ai/dataset_raw/
+# arsip dataset foto (asal persetujuan belum tercatat, protokol evaluasi §6.5): jangan pernah di-commit
+ai/eduai-ai/dataset_raw.zip
 ai/eduai-ai/evidence/
 ai/eduai-ai/*.csv
 ai/eduai-ai/config_st12.yaml

@@ -65,14 +65,15 @@ def test_heartbeat_sends_worker_id_and_returns_reply():
 
     c = BackendClient("http://b", "k", transport=httpx.MockTransport(handler))
     assert run(c.heartbeat("1", {}, 2, "abc"))["stop"] is False
-    assert seen == {"session_id": "1", "models": {}, "students": 2, "source": "livekit", "worker_id": "abc"}
+    assert seen == {"session_id": "1", "models": {}, "students": 2, "source": "livekit", "worker_id": "abc",
+                    "student_models": {}}                   # D4 (Phase 5): per-student model status
 
 
 class FakeBackend:
     def __init__(self, replies):
         self.replies, self.calls, self.log = list(replies), 0, []
 
-    async def heartbeat(self, session_id, model_status, students, worker_id=""):
+    async def heartbeat(self, session_id, model_status, students, worker_id="", student_models=None):
         self.calls += 1
         return self.replies.pop(0) if self.replies else None
 

@@ -12,13 +12,16 @@ from fastapi.responses import FileResponse
 
 from . import cases as casing
 from . import device, exam_status, lockdown
+from . import calibration, observation, session_summary
+from .ai_service import frame_timing
 from . import jitsi
 from . import report as reporting
 from . import report_export, seb, store, summary
 from .db import now_iso
 from .livekit_service import make_token, room_name, student_identity
 from .schemas import (ConsentIn, MeetingTokenIn, SebSettingsIn, SebVerifyIn, EventsIn, ExamIn, ExamPatch, HeartbeatIn, LoginIn, MonitoringStartIn, NoteIn,
-                      PresenceIn, ProfileIn, RegisterIn, UserCreate, UserPatch, ReviewIn, ReviewPatch, CaseReviewIn, StatusIn, AudioScoresIn)
+                      PresenceIn, ProfileIn, RegisterIn, UserCreate, UserPatch, ReviewIn, ReviewPatch, CaseReviewIn, StatusIn, AudioScoresIn,
+                      FrameStatsDetails)
 from .security import (ROLE_LABELS, STAFF, create_token, get_current_user, hash_password, public_user, require_roles,
                        require_service_key, revoke_token, verify_password)
 
@@ -205,6 +208,24 @@ def ai_health(request: Request):
             "report_frame_retention_hours": st.settings.report_frame_retention_hours,
             "evidence_encrypted": st.evidence_store.encrypted,
             "livekit_workers": [{**w, "alive": (_age_s(w["last_heartbeat"]) or 1e9) < 20} for w in workers]}
+
+
+@router.get("/ai/performance")
+def ai_performance(request: Request, user=Depends(require_roles("admin"))):
+    """Live FPS and latency per active analyser (memory only, see eduai_ai/perf.py). Admin only: unlike the public
+    /ai/health it names exams and students. Operational numbers, not an accuracy measure."""
+    st = _st(request)
+    out = st.ai.performance()
+    students = out["students"]
+    if students:                                        # names for the admin panel (Konfigurasi > Performa AI)
+        def names_of(table: str, ids: set) -> dict:     # table is a constant below; ids are bound parameters
+            marks = ",".join("?" * len(ids))
+            return {r["id"]: r["name"] for r in st.db.all(f"SELECT id, name FROM {table} WHERE id IN ({marks})", list(ids))}
+        names = names_of("users", {s["student_id"] for s in students})
+        exams = names_of("exams", {s["exam_id"] for s in students})
+        for s in students:
+            s["student_name"], s["exam_name"] = names.get(s["student_id"]), exams.get(s["exam_id"])
+    return out
 
 
 # ---------------------------------------------------------------- auth
@@ -879,9 +900,14 @@ def _analysis_down(st, exam) -> bool:
 
 @router.post("/exams/{exam_id}/frames", status_code=202)
 async def upload_frame(exam_id: int, request: Request, frame: UploadFile = File(...),
-                       user=Depends(require_roles("siswa"))):
+                       captured_at: Optional[str] = Form(None), client_age_ms: Optional[str] = Form(None),
+                       prev_rtt_ms: Optional[str] = Form(None), user=Depends(require_roles("siswa"))):
     """Browser frame path: one JPEG from the student's camera. Analysed asynchronously-safe,
-    at most one in flight per student; extra frames are dropped (accepted=false, reason=busy)."""
+    at most one in flight per student; extra frames are dropped (accepted=false, reason=busy).
+    captured_at / client_age_ms / prev_rtt_ms (optional, G-F1): timing from the browser, used ONLY as performance
+    metrics (GET /api/ai/performance). Events keep the server clock; a missing or implausible value is ignored and
+    never rejects the frame."""
+    received_at = time.time()
     st = _st(request)
     exam = _view_exam(st.db, user, exam_id)
     if exam["status"] != "Sedang Berlangsung":
@@ -903,7 +929,10 @@ async def upload_frame(exam_id: int, request: Request, frame: UploadFile = File(
     if len(data) > st.settings.frame_max_bytes:
         raise HTTPException(413, "Ukuran frame terlalu besar.")
     st.db.run("UPDATE presence SET last_seen=? WHERE exam_id=? AND student_id=?", (now_iso(), exam_id, user["id"]))
-    return await st.ai.submit_jpeg(exam_id, user["id"], data, "jitsi" if exam["analysis_source"] == "jitsi" else "browser")
+    timing = frame_timing(captured_at, client_age_ms, prev_rtt_ms, received_at)
+    return await st.ai.submit_jpeg(exam_id, user["id"], data, "jitsi" if exam["analysis_source"] == "jitsi" else "browser",
+                                   timing=timing)
+
 
 
 @router.post("/exams/{exam_id}/audio", status_code=202)
@@ -1086,7 +1115,7 @@ def _case_out(db, group: List[dict], lookup: dict) -> dict:
     return out
 
 
-def _case_list(db, user, exam_ids, gap_s, *, student_id=None, review=None) -> dict:
+def _case_list(db, user, exam_ids, gap_s, *, student_id=None, review=None, sort="priority") -> dict:
     rows = _indication_rows(db, exam_ids, user, student_id)
     lookup: dict = {}
     items = [_case_out(db, g, lookup) for g in casing.group_events(rows, gap_s)]
@@ -1094,9 +1123,9 @@ def _case_list(db, user, exam_ids, gap_s, *, student_id=None, review=None) -> di
         items = [c for c in items if c["unreviewed_count"] > 0]
     elif review:
         items = [c for c in items if c["review_status"] == review]
-    items.sort(key=lambda c: c["last_start_ts"], reverse=True)
+    items = casing.rank_and_sort(items, sort)          # G-P1: neutral review priority + reasons, or newest first
     return {"server_time": now_iso(), "gap_s": gap_s, "total_events": sum(c["event_count"] for c in items),
-            "cases": items}
+            "sort": sort, "priority_order": list(casing.PRIORITY_ORDER), "cases": items}
 
 
 def _case_for(db, user, case_id: str, gap_s):
@@ -1119,24 +1148,28 @@ def _case_detail(db, group, gap_s) -> dict:
             "events": [_event_out(db, e, with_detail=True) for e in group]}
 
 
+CASE_SORT = Query("priority", pattern="^(priority|latest)$",
+                  description="priority = urutan prioritas tinjauan (netral, G-P1); latest = terbaru dulu")
+
+
 @router.get("/cases")
 def all_cases(request: Request, review: Optional[str] = None, student_id: Optional[int] = None,
-              exam_id: Optional[int] = None, user=Depends(require_roles(*STAFF))):
+              exam_id: Optional[int] = None, sort: str = CASE_SORT, user=Depends(require_roles(*STAFF))):
     """Grouped indication cases from every exam the user may see (Indikasi page and notifications)."""
     st = _st(request)
     ids = _accessible_exam_ids(st.db, user)
     if exam_id is not None:
         _view_exam(st.db, user, exam_id)
         ids = [exam_id]
-    return _case_list(st.db, user, ids, st.settings.case_gap_s, student_id=student_id, review=review)
+    return _case_list(st.db, user, ids, st.settings.case_gap_s, student_id=student_id, review=review, sort=sort)
 
 
 @router.get("/exams/{exam_id}/cases")
 def exam_cases(exam_id: int, request: Request, review: Optional[str] = None, student_id: Optional[int] = None,
-               user=Depends(require_roles(*STAFF))):
+               sort: str = CASE_SORT, user=Depends(require_roles(*STAFF))):
     st = _st(request)
     _view_exam(st.db, user, exam_id)
-    return _case_list(st.db, user, [exam_id], st.settings.case_gap_s, student_id=student_id, review=review)
+    return _case_list(st.db, user, [exam_id], st.settings.case_gap_s, student_id=student_id, review=review, sort=sort)
 
 
 @router.get("/cases/{case_id}")
@@ -1342,19 +1375,19 @@ def evidence_frame(evidence_id: str, index: int, request: Request, user=Depends(
 
 # ---------------------------------------------------------------- reports, dashboard, audit
 def _report_summary(rows: List[dict], cannot: List[dict]) -> dict:
+    """total/valid/invalid/further/unreviewed count KEJADIAN (event rows: the unit that is reviewed and listed in
+    table IV). `episodes` counts INDIKASI with the same rule as the exam summary and the case list
+    (cases.episodes_of). Unreadable periods use that rule too: overlapping rows count once, an open one ends now."""
     count = lambda d: sum(1 for r in rows if r["review_status"] == d)   # noqa: E731
-    seconds = 0.0
-    for r in cannot:
-        if r["end_ts"]:
-            seconds += (datetime.fromisoformat(r["end_ts"]) - datetime.fromisoformat(r["start_ts"])).total_seconds()
-    return {"total": len(rows), "valid": count("Valid"), "invalid": count("Tidak Valid"),
-            "further": count("Perlu Tinjauan Lanjut"), "unreviewed": count(None),
-            "cannot_analyze": len(cannot), "cannot_analyze_s": round(seconds, 1)}
+    bad = casing.episodes_of(cannot)
+    return {"total": len(rows), "episodes": len(casing.episodes_of(rows)), "valid": count("Valid"),
+            "invalid": count("Tidak Valid"), "further": count("Perlu Tinjauan Lanjut"), "unreviewed": count(None),
+            "cannot_analyze": len(bad), "cannot_analyze_s": casing.episode_seconds(bad)}
 
 
 def _report_rows(db, user, exam_id: int):
     rows = db.all("SELECT * FROM events WHERE exam_id=? AND category='indication' ORDER BY start_ts", (exam_id,))
-    return rows, db.all("SELECT start_ts, end_ts FROM events WHERE exam_id=? AND category='cannot_analyze'", (exam_id,))
+    return rows, db.all("SELECT * FROM events WHERE exam_id=? AND category='cannot_analyze'", (exam_id,))
 
 
 def _sound_info(db, exam_id: int) -> List[dict]:
@@ -1389,6 +1422,8 @@ def _report_data(st, user, exam: dict) -> dict:
             "attendance": {"enrolled": len(enrolled), "joined": len(joined), "not_joined": len(enrolled) - len(joined)},
             "absent": [u["name"] for u in enrolled if u["id"] not in joined],
             "indications": _report_summary(rows, cannot),
+            "by_indicator": reporting.by_indicator(rows),          # PDF table IV-a, XLSX "Ringkasan indikasi"
+            "confidence_note": reporting.CONFIDENCE_NOTE,
             "events": [_report_event(st, user, r, final) for r in rows],
             "sound_info": _sound_info(db, exam_id),
             "final": {"finalized_at": final["finalized_at"], "finalized_by": final["finalized_by_name"]} if final else None,
@@ -1467,18 +1502,71 @@ def finalize_report(exam_id: int, request: Request, user=Depends(require_roles(*
         raise HTTPException(409, "Masih ada kejadian yang belum selesai dicatat. Coba lagi sebentar.")
     left = db.one("SELECT COUNT(*) n FROM events WHERE exam_id=? AND category='indication' AND review_status IS NULL", (exam_id,))["n"]
     if left:
-        raise HTTPException(409, f"Masih ada {left} indikasi yang belum ditinjau. Tinjau semuanya sebelum finalisasi.")
+        raise HTTPException(409, f"Masih ada {left} kejadian yang belum ditinjau. Tinjau semuanya sebelum finalisasi.")
+    # Session Summary snapshot (Phase 4): computed before the transaction, written INSIDE it, so the final report and
+    # its frozen summary are stored together or not at all. Invalid indicator weights stop the finalisation.
+    st.ai.flush_observations(exam_id)                     # observed seconds still in memory belong to this session
+    try:
+        result, cfg_version = _session_summary_live(st, exam, final=True)
+    except ValueError as e:
+        raise HTTPException(500, f"Konfigurasi Session Summary tidak valid, laporan belum difinalisasi: {e}")
+    summary_rows = session_summary.snapshot_statements(result, cfg_version, now_iso())
     try:
         rows = reporting.copy_frames(st, exam_id)
     except Exception:
         log.exception("copying report frames failed for exam %s", exam_id)
         raise HTTPException(500, "Gambar bukti gagal disalin, laporan belum difinalisasi. Coba lagi.")
     statements = [("INSERT INTO report_frames (event_id,exam_id,frame_id,created_at,expires_at) VALUES (?,?,?,?,?)", r) for r in rows]
+    statements += summary_rows
     statements.append(("INSERT INTO report_finals (exam_id,finalized_by,finalized_by_name,finalized_at) VALUES (?,?,?,?)",
                        (exam_id, user["id"], user["name"], now_iso())))
-    db.run_all(statements)
-    store.audit(db, user, f"Memfinalisasi laporan ({len(rows)} gambar bukti disalin)", f"exam:{exam_id}")
+    try:
+        db.run_all(statements)
+    except Exception:
+        for r in rows:                                    # the transaction rolled back: remove the copied frames too
+            st.report_frames.delete(r[2])
+        raise
+    store.audit(db, user, f"Memfinalisasi laporan ({len(rows)} gambar bukti disalin; Session Summary "
+                          f"{'disimpan' if summary_rows else 'tidak tersedia'})", f"exam:{exam_id}")
     return _report_data(st, user, _exam_or_404(db, exam_id))
+
+
+def _session_summary_live(st, exam: dict, final: bool = False):
+    """(result, config_version) computed now from the stored data; raises ValueError for invalid weights.
+    The configuration is the one loaded when the backend started (changes apply after a reload, T6);
+    config_version = '<version>;w=<weights fingerprint>' (T3)."""
+    cfg = st.ai.cfg
+    if cfg is None:
+        from eduai_ai.config import load_config
+        cfg = load_config(st.settings.ai_config)
+    weights = session_summary.load_weights(cfg)
+    cfg_version = session_summary.config_version(cfg, weights["weights"])
+    # Phase 5 Tahap 3: the approved calibrator (T3-1 + C6) and the backend's model fingerprint (C7). Without both a
+    # valid file and a matching approval every student stays not_calibrated; the probability exists only when final.
+    loaded = calibration.load(st.settings.session_calibrator, st.settings.session_calibrator_sha256)
+    result = session_summary.compute_exam(st.db, exam, st.settings.exam_timezone, weights=weights, cfg=cfg,
+                                          calibrator=loaded, config_version=cfg_version,
+                                          models_fp=st.ai.models_fingerprint(), final=final)
+    return result, cfg_version
+
+
+@router.get("/sessions/{exam_id}/session-summary")
+def session_summary_view(exam_id: int, request: Request, user=Depends(require_roles(*STAFF))):
+    """Session Summary per student: duration score per indicator and P_total (a combined duration score, NOT a
+    probability), average confidence per source (N/A without samples), coverage. A finalised report returns its frozen
+    snapshot ("final"); otherwise the values are computed now and are not stored ("sementara"). A report finalised
+    before this feature has no snapshot and is never recomputed ("tidak_tersedia")."""
+    st = _st(request)
+    exam = _view_exam(st.db, user, exam_id)
+    if reporting.final_row(st.db, exam_id):
+        snap = session_summary.read_snapshot(st.db, exam_id)
+        return snap or {"exam_id": exam_id, "source": "final", "status": "tidak_tersedia",
+                        "reason": "laporan difinalisasi tanpa data Session Summary (sesi sebelum fitur ini)", "students": []}
+    try:
+        result, cfg_version = _session_summary_live(st, exam)
+    except ValueError as e:
+        raise HTTPException(500, f"Konfigurasi Session Summary tidak valid: {e}")
+    return {**result, "source": "live", "config_version": cfg_version}
 
 
 @router.get("/sessions/{exam_id}/report.pdf")
@@ -1642,7 +1730,10 @@ def ingest_events(body: EventsIn, request: Request):
             exam_id, sid = _ingest_ids(db, ev.session_id, ev.student_id)
             if reporting.final_row(db, exam_id):
                 raise ValueError("report is final")
-            store.upsert_event(db, ev.model_dump(), exam_id, sid, "livekit")
+            data = ev.model_dump()
+            if isinstance(ev.details, FrameStatsDetails):       # frame stats: keep only what the worker sent
+                data["details"] = ev.details.model_dump(exclude_none=True)
+            store.upsert_event(db, data, exam_id, sid, "livekit")
             stored += 1
         except ValueError as e:
             rejected.append({"event_id": ev.event_id, "error": str(e)})
@@ -1682,7 +1773,8 @@ async def ingest_evidence(request: Request, meta: str = Form(...), frames: List[
 
 @router.post("/ai/status", dependencies=[Depends(require_service_key)])
 def ingest_status(body: StatusIn, request: Request):
-    db = _st(request).db
+    st = _st(request)
+    db = st.db
     n = 0
     for s in body.students:
         try:
@@ -1690,7 +1782,13 @@ def ingest_status(body: StatusIn, request: Request):
         except ValueError:
             continue
         store.upsert_status(db, exam_id, sid, s.model_dump(), "livekit")
+        # Session Report: observed seconds on the worker's clock, the same clock as its events (no worker change).
+        # The worker sends no detector scores, so confidence samples of this path are not available (documented).
+        if s.ts is not None and s.ts > 1e9:
+            st.ai.observations.frame(exam_id, sid, "livekit", s.ts, observation.is_observed(s.frame_status, s.reason))
         n += 1
+    if st.ai.observations.due():
+        st.ai.flush_observations()
     return {"updated": n}
 
 
@@ -1710,4 +1808,16 @@ def heartbeat(body: HeartbeatIn, request: Request):
                " ON CONFLICT(exam_id) DO UPDATE SET last_heartbeat=excluded.last_heartbeat,"
                " models_json=excluded.models_json, students=excluded.students",
                (exam_id, now_iso(), json.dumps(body.models)[:4000], body.students, now_iso()))
+    # D4 (Phase 5): model status per student. Recorded also from a replaced worker: it describes analysis that ran.
+    ai = _st(request).ai
+    for student, item in body.student_models.items():
+        try:
+            _, sid = _ingest_ids(db, str(exam_id), student)
+        except ValueError:
+            continue
+        try:
+            ai.availability.record_load(exam_id, sid, "livekit", item.models)
+            ai.availability.record_errors(exam_id, sid, "livekit", item.inference_errors)
+        except Exception:                                            # noqa: BLE001 - never fail the heartbeat
+            log.warning("model availability from the worker not recorded (exam %s)", exam_id)
     return {"ok": True, "monitoring_active": active, "stop": (not active) or replaced}

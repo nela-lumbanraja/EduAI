@@ -6,3 +6,6 @@ preds/
 *.jsonl
 .venv/
 __pycache__/
+
+# notebook eksperimen: output berisi foto wajah peserta dari dataset_raw
+notebooks/

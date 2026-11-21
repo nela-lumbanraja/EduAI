@@ -73,7 +73,9 @@ export type MonitoringState = {
   worker: { process_running: boolean; last_heartbeat: string | null; alive: boolean; students: number }; livekit_configured: boolean;
 };
 export type TimelineItem = { ts: string; kind: string; title: string; event_id?: string; status?: string; review_status?: string | null; reason?: string; note?: string; end_ts?: string | null; evidence_id?: string | null; time_text?: string; sound_text?: string | null };
-export type ReportSummary = { total: number; valid: number; invalid: number; further: number; unreviewed: number; cannot_analyze: number; cannot_analyze_s: number };
+// total/valid/invalid/further/unreviewed count KEJADIAN (event rows, the review unit); episodes counts INDIKASI
+// (overlapping events of one student and behaviour counted once, as in the exam summary and the PDF)
+export type ReportSummary = { total: number; episodes?: number; valid: number; invalid: number; further: number; unreviewed: number; cannot_analyze: number; cannot_analyze_s: number };
 export type ReportEvent = AIEvent & { evidence: { state: "available" | "deleted" | "none"; url: string | null } };
 export type Report = {
   exam: Exam; attendance: { enrolled: number; joined: number; not_joined: number }; absent: string[];
@@ -96,6 +98,8 @@ export type CaseSummary = {
   evidence_count: number; latest_evidence_id: string | null;
   review_status: Decision | "Campuran" | null; review_counts: Record<string, number>; unreviewed_count: number; updated_at: string;
   student: AIEvent["student"]; exam: AIEvent["exam"];
+  // G-P1: neutral review order (1 = look first) and the facts behind it; never a severity or a likelihood
+  priority_rank?: number; priority_reasons?: string[];
 };
 export type CaseEpisode = { start_ts: string; end_ts: string | null; event_ids: string[]; evidence_id: string | null; duration_s: number };
 export type CaseRule = { min_count: number; window_s: number | null; met: boolean; met_at: string | null; max_in_window: number };
@@ -134,6 +138,19 @@ export type AIHealth = {
   models: Record<string, { loaded: boolean; exists: boolean; reason: string; file: string; status?: AIModelState; name?: string; required?: boolean }>;
   active_analyzers: number; max_concurrent: number; evidence_retention_hours: number; evidence_encrypted: boolean;
   evidence_hold_days: number; report_frame_retention_hours: number;
+};
+// GET /api/ai/performance (admin only): live numbers of the analysers in the backend process, last 60 s, memory only
+export type MsSummary = { n: number; median: number; p90: number; max: number };
+export type AIPerformanceStudent = {
+  exam_id: number; student_id: number; student_name?: string | null; exam_name?: string | null; source: string;
+  frames_received: number; frames_dropped_busy: number; window_s?: number; frames?: number; frames_total?: number;
+  fps?: number | null; status?: Record<string, number>; latency_ms?: Record<string, MsSummary | null>;
+  extra_ms?: Record<string, MsSummary | null>; last_ts?: number | null;
+  capture_lag_ms?: { raw: MsSummary | null; above_min: MsSummary | null; min_raw: number } | null;
+};
+export type AIPerformance = {
+  time: string; scope: string; state: string; active_analyzers: number; max_concurrent: number;
+  frames_received: number; frames_dropped_busy: number; fps_sum: number | null; students: AIPerformanceStudent[];
 };
 export type UserRow = User & { active: boolean; created_at: string };
 
@@ -196,6 +213,7 @@ const qs = (o: Record<string, string | number | undefined | null>) => {
 export const api = {
   health: () => request<Health>("GET", "/api/health"),
   aiHealth: () => request<AIHealth>("GET", "/api/ai/health"),
+  aiPerformance: () => request<AIPerformance>("GET", "/api/ai/performance"),
   aiStatus: () => request<AIStatus>("GET", "/api/ai/status"),
   // The portal role is required: the backend refuses the login (403) when it is not the account's role.
   login: (email: string, password: string, role: RoleCode) => request<{ token: string; user: User }>("POST", "/api/auth/login", { email, password, role }),
@@ -219,7 +237,7 @@ export const api = {
   createExam: (body: { name: string; description: string; subject?: string; class_name?: string; date: string; start_time: string; duration_min: number; status: ExamStatus; supervisor_id: number; student_ids: number[] }) => request<Exam>("POST", "/api/exams", body),
   students: (examId: number) => request<StudentRow[]>("GET", `/api/exams/${examId}/students`),
   timeline: (examId: number, studentId: number) => request<TimelineItem[]>("GET", `/api/exams/${examId}/students/${studentId}/timeline`),
-  consent: (examId: number, audio = false) => request<{ ok: boolean; audio: boolean }>("POST", `/api/exams/${examId}/consent`, { accepted: true, notice_version: "2026-10-v2", audio }),
+  consent: (examId: number, audio = false, noticeVersion = "2026-10-v2") => request<{ ok: boolean; audio: boolean }>("POST", `/api/exams/${examId}/consent`, { accepted: true, notice_version: noticeVersion, audio }),
   audioScores: (examId: number, s: { speech: number; whisper: number; media: number; paper?: number }) => request<{ accepted: boolean; reason?: string }>("POST", `/api/exams/${examId}/audio`, s),
   join: (examId: number) => request<JoinInfo>("POST", `/api/exams/${examId}/join`),
   sessionState: (examId: number) => request<{ status: ExamStatus; monitoring: MonitoringInfo }>("GET", `/api/exams/${examId}/session-state`),
@@ -238,7 +256,7 @@ export const api = {
     });
   },
   leave: (examId: number) => request<{ ok: boolean }>("POST", `/api/exams/${examId}/leave`),
-  uploadFrame: (examId: number, blob: Blob, signal?: AbortSignal) => { const f = new FormData(); f.append("frame", blob, "frame.jpg"); return request<{ accepted: boolean; reason?: string }>("POST", `/api/exams/${examId}/frames`, undefined, { form: f, signal }); },
+  uploadFrame: (examId: number, blob: Blob, signal?: AbortSignal, timing: Record<string, string> = {}) => { const f = new FormData(); f.append("frame", blob, "frame.jpg"); for (const [k, v] of Object.entries(timing)) f.append(k, v); return request<{ accepted: boolean; reason?: string }>("POST", `/api/exams/${examId}/frames`, undefined, { form: f, signal }); },
   jitsiConfig: () => request<JitsiServer>("GET", "/api/jitsi/config"),
   jitsiHealth: () => request<JitsiHealth>("GET", "/api/jitsi/health"),
   jitsiMeetingToken: (room: string) => request<{ room: string; token: string | null }>("POST", "/api/jitsi/meeting-token", { room }),
@@ -250,7 +268,7 @@ export const api = {
   events: (o: { category?: string; since?: string; review?: string; limit?: number } = {}) => request<{ server_time: string; events: AIEvent[] }>("GET", `/api/events${qs(o)}`),
   event: (id: string) => request<AIEvent>("GET", `/api/events/${encodeURIComponent(id)}`),
   review: (id: string, decision: Decision, note: string) => request<AIEvent>("POST", `/api/events/${encodeURIComponent(id)}/reviews`, { decision, note }),
-  cases: (o: { review?: string; student_id?: number; exam_id?: number } = {}) => request<CaseList>("GET", `/api/cases${qs(o)}`),
+  cases: (o: { review?: string; student_id?: number; exam_id?: number; sort?: "priority" | "latest" } = {}) => request<CaseList>("GET", `/api/cases${qs(o)}`),
   caseDetail: (id: string) => request<CaseDetail>("GET", `/api/cases/${encodeURIComponent(id)}`),
   summaries: () => request<{ server_time: string; summaries: ExamSummary[] }>("GET", "/api/summaries"),
   examSummary: (examId: number) => request<ExamSummary>("GET", `/api/exams/${examId}/summary`),

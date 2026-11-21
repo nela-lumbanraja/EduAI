@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Room, RoomEvent, Track, type RemoteTrack, type RemoteParticipant } from "livekit-client";
 import { api, type MonitoringInfo } from "./api";
-import { cameraWorking, captureAttempts, detectPlatform, frameAdvanced, isInAppBrowser, mediaErrorText, retryWithSimplerRequest, type BroadcastState, type Facing } from "./mediaSupport";
+import { cameraWorking, captureAttempts, detectPlatform, frameAdvanced, frameTimingFields, isInAppBrowser, mediaErrorText, retryWithSimplerRequest, type BroadcastState, type Facing } from "./mediaSupport";
 
 export type StudentMedia = {
   stream: MediaStream;               // the one capture: preview, frame uploader and live broadcast
@@ -150,6 +150,7 @@ export class FrameUploader {
   sent = 0;
   skipped = 0;
   lastError = "";
+  private lastRttMs: number | null = null;     // round trip of the previous successful upload (timing metric only)
 
   constructor(private examId: number, private video: HTMLVideoElement, private cameraOn: () => boolean) {}
 
@@ -176,16 +177,21 @@ export class FrameUploader {
     this.canvas.height = Math.round(v.videoHeight * scale);
     const ctx = this.canvas.getContext("2d");
     if (!ctx) return;
+    const capturedAt = Date.now(), capturePerf = performance.now();
     ctx.drawImage(v, 0, 0, this.canvas.width, this.canvas.height);
     const blob = await new Promise<Blob | null>((r) => this.canvas.toBlob(r, "image/jpeg", cfg.jpeg_quality || 0.8));
     if (!blob) return;
     this.inFlight = true;
     this.abort = new AbortController();
+    const sendPerf = performance.now();
     try {
-      const r = await api.uploadFrame(this.examId, blob, this.abort.signal);
+      const timing = frameTimingFields(capturedAt, capturePerf, sendPerf, this.lastRttMs);
+      const r = await api.uploadFrame(this.examId, blob, this.abort.signal, timing);
+      this.lastRttMs = performance.now() - sendPerf;
       if (r.accepted) this.sent++; else this.skipped++;
       this.lastError = "";
     } catch (e) {
+      this.lastRttMs = null;
       if ((e as Error).name !== "AbortError") this.lastError = (e as Error).message;
     } finally {
       this.inFlight = false;

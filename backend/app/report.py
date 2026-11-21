@@ -7,6 +7,7 @@ Retention rules (README, "Privasi & keamanan"):
     EDUAI_REPORT_FRAME_RETENTION_HOURS after finalisation, and the deletion is audited.
 """
 import hashlib
+import json
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -148,6 +149,74 @@ def run_retention(state):
     sync_holds(state.db, state.evidence_store, s.exam_timezone, s.evidence_hold_days)
     store.purge_expired_evidence(state.db, state.evidence_store)
     purge_report_frames(state.db, state.report_frames)
+
+
+# ---------------------------------------------------------------- summary per indicator (G-R1)
+CONFIDENCE_NOTE = ("Rata-rata confidence deteksi = rata-rata skor keyakinan model pendeteksi pada frame saat objek "
+                   "terdeteksi selama indikasi, dibobot jumlah frame. Angka ini bukan peluang pelanggaran dan bukan "
+                   "akurasi sistem. Jumlah indikasi menghitung kejadian yang waktunya bertumpuk satu kali (sama dengan "
+                   "ringkasan pengawas); status tinjauan dihitung per kejadian.")
+NO_MODEL_SCORE = ("FACE_ABSENT", "MULTIPLE_PERSONS", "HEAD_TURN", "HEAD_TURN_REPEATED")
+SOURCE_NAMES = {"phone": "EfficientDet-Lite0", "coco": "COCO", "clip": "CLIP"}
+REVIEW_KEYS = (("Valid", "valid"), ("Tidak Valid", "invalid"), ("Perlu Tinjauan Lanjut", "further"), (None, "unreviewed"))
+
+
+def _details(row) -> dict:
+    d = row.get("details")
+    if isinstance(d, str):
+        try:
+            d = json.loads(d)
+        except ValueError:
+            return {}
+    return d if isinstance(d, dict) else {}
+
+
+def _pool(parts) -> Optional[dict]:
+    """Frame-weighted mean and the peak of several per-episode {mean, peak, n}."""
+    parts = [p for p in parts if p and p.get("n")]
+    n = sum(int(p["n"]) for p in parts)
+    if not n:
+        return None
+    return {"mean": round(sum(float(p["mean"]) * int(p["n"]) for p in parts) / n, 3),
+            "peak": round(max(float(p["peak"]) for p in parts), 3), "n_frames": n}
+
+
+def by_indicator(rows, now: Optional[datetime] = None) -> list:
+    """One row per indicator of the session's indication events: episodes (cases.episodes_of, the rule of the exam
+    summary), events, review status per event, and the detection confidence from events.details (stats_version 1).
+    Confidence is never invented: events recorded without frame statistics are counted as such, never as 0."""
+    from . import cases as casing                       # local import: cases does not depend on report
+    groups = {}
+    for r in rows:
+        groups.setdefault(r["indicator"], []).append(r)
+    out = []
+    for ind, evs in groups.items():
+        stats = [d for d in (_details(e) for e in evs) if d.get("stats_version")]
+        sources = []
+        if ind == "PHONE_VISIBLE":
+            pooled = _pool(d.get("confidence") for d in stats)
+            if pooled:
+                sources.append({"source": SOURCE_NAMES["phone"], **pooled})
+        elif ind == "BOOK_VISIBLE":
+            for key in ("clip", "coco"):
+                pooled = _pool((d.get("book_sources") or {}).get(key) for d in stats)
+                if pooled:
+                    sources.append({"source": SOURCE_NAMES[key], **pooled})
+        if sources:
+            reason = None
+        elif ind in NO_MODEL_SCORE:
+            reason = "indikasi ini tidak memakai skor model"
+        elif ind in ("PHONE_VISIBLE", "BOOK_VISIBLE"):
+            reason = "kejadian tercatat tanpa statistik frame (sebelum 20 Nov 2026)"
+        else:
+            reason = "tidak ada statistik frame untuk indikasi ini"
+        review = {key: sum(1 for e in evs if e.get("review_status") == status) for status, key in REVIEW_KEYS}
+        out.append({"indicator": ind, "label": next((e["label"] for e in evs if e.get("label")), None) or ind,
+                    "episodes": len(casing.episodes_of(evs, now)), "events": len(evs), "review": review,
+                    "confidence": {"sources": sources, "events_with_stats": len(stats) if sources else 0,
+                                   "reason": reason}})
+    out.sort(key=lambda r: (-r["episodes"], r["indicator"]))
+    return out
 
 
 # ---------------------------------------------------------------- display helpers

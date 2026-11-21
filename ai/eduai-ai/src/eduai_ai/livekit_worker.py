@@ -60,7 +60,9 @@ class LiveKitAIWorker:
         self.tasks: dict = {}           # identity -> asyncio.Task
         self.analyzers: dict = {}       # identity -> StudentAnalyzer
         self.stop_event = asyncio.Event()
-        self.model_status: dict = {}
+        self.model_status: dict = {}    # model status of the LAST analyser (kept for the admin view)
+        self._errors_sent: dict = {}    # D4: identity -> {model: inference errors already accepted by the backend}
+        self._finished: dict = {}       # D4: student_id -> final report of an analyser that has stopped
 
     @staticmethod
     def student_id(identity: str):
@@ -114,8 +116,11 @@ class LiveKitAIWorker:
     async def _heartbeat_loop(self, interval: float = HEARTBEAT_S, max_missed: int = MAX_MISSED_HEARTBEATS):
         missed = 0
         while not self.stop_event.is_set():
+            report, commit = self.student_models()
             reply = await self.backend.heartbeat(self.session_id, self.model_status, len(self.analyzers),
-                                                 self.worker_id)
+                                                 self.worker_id, report)
+            if reply is not None:
+                self._commit(commit)                        # only an accepted report counts as sent
             if reply is None:
                 missed += 1
                 if missed >= max_missed:
@@ -132,6 +137,66 @@ class LiveKitAIWorker:
                 await asyncio.wait_for(self.stop_event.wait(), timeout=interval)
             except asyncio.TimeoutError:
                 pass
+
+    @staticmethod
+    def _plain_status(status: dict) -> dict:
+        """{model: {"loaded", "reason"}}: no file paths leave the worker."""
+        return {m: {"loaded": bool(s.get("loaded")), "reason": str(s.get("reason") or "")} for m, s in (status or {}).items()}
+
+    def _new_errors(self, identity: str, analyzer) -> tuple:
+        total = analyzer.inference_errors()
+        sent = self._errors_sent.get(identity, {})
+        return {m: n - sent.get(m, 0) for m, n in total.items() if n > sent.get(m, 0)}, total
+
+    def student_models(self) -> tuple:
+        """D4 report per student: model status of its analyser and inference errors not yet accepted by the backend.
+        Returns (report, commit); commit is applied by _commit() once the backend accepted the heartbeat."""
+        report = {sid: {"models": dict(v["models"]), "inference_errors": dict(v["inference_errors"])}
+                  for sid, v in self._finished.items()}
+        commit = {"finished": {sid: dict(v["inference_errors"]) for sid, v in self._finished.items()}, "sent": {}}
+        for identity, analyzer in list(self.analyzers.items()):
+            sid = self.student_id(identity)
+            if sid is None:
+                continue
+            new, total = self._new_errors(identity, analyzer)
+            item = report.setdefault(sid, {"models": {}, "inference_errors": {}})
+            item["models"].update(self._plain_status(analyzer.model_status()))
+            for m, n in new.items():
+                item["inference_errors"][m] = item["inference_errors"].get(m, 0) + n
+            commit["sent"][identity] = (sid, new, total)
+        return report, commit
+
+    def _commit(self, commit: dict):
+        """The backend accepted the report: forget what it now has, so nothing is counted twice."""
+        for sid, sent in commit["finished"].items():
+            self._subtract_finished(sid, sent)
+        for identity, (sid, new, total) in commit["sent"].items():
+            if identity in self.analyzers:
+                self._errors_sent[identity] = total
+            else:                                           # stopped while the heartbeat was on its way
+                self._subtract_finished(sid, new)
+
+    def _subtract_finished(self, sid: str, sent: dict):
+        f = self._finished.get(sid)
+        if f is None:
+            return
+        for m, n in sent.items():
+            left = f["inference_errors"].get(m, 0) - n
+            if left > 0:
+                f["inference_errors"][m] = left
+            else:
+                f["inference_errors"].pop(m, None)
+        if not f["inference_errors"]:                       # its model status went out with this report too
+            self._finished.pop(sid, None)
+
+    def _finish(self, identity: str, student_id: str, analyzer):
+        """The analyser stops: keep its final model status and unsent errors for the next heartbeat."""
+        new, _ = self._new_errors(identity, analyzer)
+        item = self._finished.setdefault(student_id, {"models": {}, "inference_errors": {}})
+        item["models"].update(self._plain_status(analyzer.model_status()))
+        for m, n in new.items():
+            item["inference_errors"][m] = item["inference_errors"].get(m, 0) + n
+        self._errors_sent.pop(identity, None)
 
     async def _consume(self, track, identity: str, student_id: str):
         rtc = self.rtc
@@ -159,6 +224,7 @@ class LiveKitAIWorker:
             result = await asyncio.to_thread(analyzer.stop)
             await self._send(student_id, result, state_override="no_data")
             self.analyzers.pop(identity, None)
+            self._finish(identity, student_id, analyzer)
 
     async def _send(self, student_id: str, result, state_override=None):
         await self.backend.send_events(result.events)

@@ -13,6 +13,7 @@ from typing import Callable, List, Optional
 
 from .events import INDICATION, Event
 from .evidence import EvidenceBuffer, EvidencePackage
+from .perf import PerfStats
 from .signals import FrameSignals
 from .temporal import EventEngine
 
@@ -42,6 +43,7 @@ class StudentAnalyzer:
                                        ev.get("max_width", 480), ev.get("jpeg_quality", 70))
         self.frames_seen = 0
         self.last_frame_ts: Optional[float] = None
+        self.perf = PerfStats()                  # FPS and latency of this student's analysis (memory only)
 
     def process(self, frame_bgr, ts: float) -> AnalysisResult:
         t0 = time.perf_counter()
@@ -54,8 +56,9 @@ class StudentAnalyzer:
         for e in events:
             if e.category == INDICATION and e.status == "open":
                 self.evidence.start(e.event_id, e.start_ts, ts)
-        return AnalysisResult(sig, events, packages, self.engine.analysis_state(),
-                              (time.perf_counter() - t0) * 1000.0)
+        latency_ms = (time.perf_counter() - t0) * 1000.0
+        self.perf.record(ts, sig.status, latency_ms, (sig.metrics or {}).get("timing_ms"))
+        return AnalysisResult(sig, events, packages, self.engine.analysis_state(), latency_ms)
 
     def update_audio(self, ts: float, speech: float, whisper: float, media: float, paper: float = 0.0):
         """Speech-sound scores computed on the student's device (no audio reaches this module)."""
@@ -74,3 +77,11 @@ class StudentAnalyzer:
 
     def model_status(self) -> dict:
         return getattr(self.perception, "status", {})
+
+    def inference_errors(self) -> dict:
+        """{model: failures since this analyser started} (D4). Perceptions without the counter report none."""
+        return dict(getattr(self.perception, "inference_errors", None) or {})
+
+    def warmup_result(self) -> Optional[dict]:
+        """Warm-up result of this model set when one ran before it was handed out (the backend's spare set)."""
+        return getattr(self.perception, "warmup", None)

@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AIEvent, CaseSummary } from "../src/api.ts";
 import {
-  activityFeed, axisTicks, drawerCases, drawerTitle, examProgress, filterCases, filterQuery, JENIS, jenisCounts, jenisOf, kindBars, kindSlices, kpi7, parseFilter, sinceIso,
-  statusOf, statusSummary, supervisorLoad, unreadableByExam,
+  activityFeed, axisTicks, drawerCases, drawerTitle, examProgress, filterCases, filterQuery, JENIS, jenisCounts, jenisOf, kindBars, kindSlices, kpi7, parseFilter, priorityText, sinceIso,
+  sortCases, SORTS, statusOf, statusSummary, supervisorLoad, unreadableByExam,
 } from "../src/indikasi.ts";
 import { opensIndications } from "../src/routes.ts";
 
@@ -186,4 +186,22 @@ test("lockdown lost (Safe Exam Browser) is its own kind and joins the device par
   const slices = kindSlices([kase("LOCKDOWN_LOST"), kase("CAMERA_OFF")]);
   assert.equal(slices.find((s) => s.key === "perangkat")?.value, 2);
   assert.ok(slices.length <= 8);                                   // still at most 8 hues
+});
+
+// ---------------------------------------------------------------- G-P1: review order
+test("'Prioritas tinjauan' follows the backend rank; cases without a rank go last, newest first", () => {
+  const a = kase("PHONE_VISIBLE", null, 1, { priority_rank: 2, last_start_ts: ago(3) });
+  const b = kase("HEAD_TURN", null, 1, { priority_rank: 1, last_start_ts: ago(5) });
+  const c = kase("FACE_ABSENT", null, 1, { last_start_ts: ago(1) });
+  const d = kase("FACE_ABSENT", null, 1, { last_start_ts: ago(0.5) });
+  assert.deepEqual(sortCases([a, b, c, d], "prioritas").map((x) => x.case_id), [b.case_id, a.case_id, d.case_id, c.case_id]);
+  assert.deepEqual(sortCases([a, b, c, d], "terbaru").map((x) => x.case_id), [d.case_id, c.case_id, a.case_id, b.case_id]);
+  assert.equal(SORTS[0].key, "prioritas");                        // default order
+});
+
+test("priority text lists facts only, never a level or a likelihood", () => {
+  const c = kase("PHONE_VISIBLE", null, 1, { priority_reasons: ["belum ditinjau", "aturan ringkasan terpenuhi", "3 kali"] });
+  assert.equal(priorityText(c), "belum ditinjau · aturan ringkasan terpenuhi · 3 kali");
+  assert.equal(priorityText(kase("PHONE_VISIBLE")), "");
+  assert.ok(!/tinggi|sedang|rendah|risiko|curang|%/i.test(SORTS.map((s) => s.label).join(" ")));
 });

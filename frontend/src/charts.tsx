@@ -147,9 +147,9 @@ function SessionColumns({ data, title, stepMin: fixed, note }: { data: TimelineD
   const { stepMin, bins } = sessionBins(data, phone && !fixed ? 12 : 24, fixed);
   const kinds = KINDS.map((k) => ({ ...k, n: data.points.filter((p) => p.kind === k.key).length })).filter((k) => k.n);
   const peak = bins.reduce((best, b, i) => (b.total > (bins[best]?.total ?? -1) ? i : best), 0);
-  const alt = `${title} dari ${data.startLabel} sampai ${data.endLabel}: ${data.points.length} indikasi. Per ${stepMin} menit, ${kinds.map((k) => `${k.label} ${k.n}`).join(", ")}.`
+  const alt = `${title} dari ${data.startLabel} sampai ${data.endLabel}: ${data.points.length} kejadian. Per ${stepMin} menit, ${kinds.map((k) => `${k.label} ${k.n}`).join(", ")}.`
     + (data.points.length ? ` Terbanyak ${bins[peak].range} (${bins[peak].total}).` : "");
-  if (!data.points.length) return <><Placeholder shape="line" />{data.outside > 0 && <p className="mt-2 text-xs text-[#7d8794]">{data.outside} indikasi di luar jadwal sesi tidak digambar.</p>}</>;
+  if (!data.points.length) return <><Placeholder shape="line" />{data.outside > 0 && <p className="mt-2 text-xs text-[#7d8794]">{data.outside} kejadian di luar jadwal sesi tidak digambar.</p>}</>;
   const w = Math.max(width, 260), H = phone ? 180 : 200, top = 12, bottom = 26, left = 30, right = 4;
   const plotW = w - left - right, plotH = H - top - bottom;
   const max = Math.max(1, ...bins.map((b) => b.total));
@@ -200,16 +200,16 @@ function SessionColumns({ data, title, stepMin: fixed, note }: { data: TimelineD
       style={{ left: Math.min(Math.max(left + slot * (hover! + 0.5) - 110, 0), Math.max(w - 220, 0)) }}>
       <b className="block text-navy">{hb.range}</b>
       {hb.total ? <>
-        <span className="block text-[#687382]">{hb.total} indikasi</span>
+        <span className="block text-[#687382]">{hb.total} kejadian</span>
         <ul className="mt-1 space-y-0.5">{KINDS.filter((k) => hb.byKind[k.key]).map((k) => <li key={k.key} className="flex items-center justify-between gap-2"><span className="flex items-center gap-1.5"><KindBadge kind={k.key} size={18} />{k.label}</span><b className="text-navy">{hb.byKind[k.key]}</b></li>)}</ul>
         <span className="mt-1 block border-t border-[#e5e7e9] pt-1 text-[#687382]">Mahasiswa: {hb.students.slice(0, 3).join(", ")}{hb.students.length > 3 ? ` +${hb.students.length - 3}` : ""}</span>
-      </> : <span className="block text-[#687382]">Tidak ada indikasi</span>}
+      </> : <span className="block text-[#687382]">Tidak ada kejadian</span>}
     </div>}
-    {phone ? <ul aria-label="Keterangan jenis indikasi" className="mt-4 grid grid-cols-2 gap-x-3 gap-y-2.5 border-t border-[#eef0f2] pt-3 text-xs text-[#334054]">{kinds.map((k) => <li key={k.key} data-kind-legend={k.key} title={`${k.label}: ${k.n} indikasi`}
+    {phone ? <ul aria-label="Keterangan jenis indikasi" className="mt-4 grid grid-cols-2 gap-x-3 gap-y-2.5 border-t border-[#eef0f2] pt-3 text-xs text-[#334054]">{kinds.map((k) => <li key={k.key} data-kind-legend={k.key} title={`${k.label}: ${k.n} kejadian`}
       className="flex min-w-0 items-center gap-1.5"><KindBadge kind={k.key} size={20} /><span data-legend-label className="min-w-0 flex-1 leading-tight">{k.label}</span><b className="tabular-nums text-navy">{k.n}</b></li>)}</ul>
-    : <ul aria-label="Keterangan jenis indikasi" className="mt-3 flex flex-wrap gap-x-3 gap-y-2 text-xs text-[#334054]">{kinds.map((k) => <li key={k.key} data-kind-legend={k.key} title={`${k.label}: ${k.n} indikasi`}
+    : <ul aria-label="Keterangan jenis indikasi" className="mt-3 flex flex-wrap gap-x-3 gap-y-2 text-xs text-[#334054]">{kinds.map((k) => <li key={k.key} data-kind-legend={k.key} title={`${k.label}: ${k.n} kejadian`}
       className="flex items-center gap-1.5 rounded-full border border-[#e5e7e9] py-0.5 pl-0.5 pr-2.5"><KindBadge kind={k.key} /><span data-legend-label>{k.label}</span><b className="tabular-nums text-navy">{k.n}</b></li>)}</ul>}
-    {data.outside > 0 && !fixed && <p className="mt-2 text-xs text-[#7d8794]">{data.outside} indikasi di luar jadwal sesi tidak digambar.</p>}
+    {data.outside > 0 && !fixed && <p className="mt-2 text-xs text-[#7d8794]">{data.outside} kejadian di luar jadwal sesi tidak digambar.</p>}
     {note && <p className="mt-2 text-xs text-[#7d8794]">{note}</p>}
     <SrTable caption={title} head={["Waktu (WIB)", "Jumlah", "Jenis", "Mahasiswa"]}
       rows={bins.filter((b) => b.total).map((b) => [b.range, b.total, KINDS.filter((k) => b.byKind[k.key]).map((k) => `${k.label} ${b.byKind[k.key]}`).join(", "), b.students.join(", ")])} />
@@ -294,19 +294,19 @@ export function HistoryChart({ data }: { data: ReturnType<typeof historyRows> | 
   const sums = data ? HISTORY_PARTS.map((p) => ({ key: p.key, label: p.label, value: data.rows.reduce((a, r) => a + r.parts[p.key], 0), color: HISTORY_COLOR[p.key] })) : null;
   const reviewed = data ? data.total - data.open : 0;
   return <div className="grid gap-[18px] lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
-    <Card title="Hasil tinjauan semua sesi" sub="Indikasi dari semua sesi yang sudah selesai, menurut hasil tinjauan.">
-      {data && sums ? <Donut segments={sums} total={data.total} unit="indikasi" caption="Hasil tinjauan semua sesi"
-        alt={`Hasil tinjauan semua sesi: total ${data.total} indikasi. ${sums.map((x) => `${x.label} ${x.value}`).join(", ")}.`} /> : loadingText}
+    <Card title="Hasil tinjauan semua sesi" sub="Kejadian dari semua sesi yang sudah selesai, menurut hasil tinjauan.">
+      {data && sums ? <Donut segments={sums} total={data.total} unit="kejadian" caption="Hasil tinjauan semua sesi"
+        alt={`Hasil tinjauan semua sesi: total ${data.total} kejadian. ${sums.map((x) => `${x.label} ${x.value}`).join(", ")}.`} /> : loadingText}
     </Card>
     <Card title="Ringkasan riwayat" sub="Sesi yang pernah ditugaskan kepada Anda dan sudah selesai.">
       {data ? <div className="flex flex-1 flex-col justify-center gap-5" data-history-summary>
         <dl className="grid grid-cols-3 gap-3 text-xs text-[#687382]">
           <div className="max-md:flex max-md:flex-col-reverse max-md:justify-end"><dt className="max-md:mt-1.5 max-md:leading-snug">Sesi selesai</dt><dd className="mt-1 text-[26px] font-bold tabular-nums leading-none text-navy">{data.sessions}</dd></div>
           <div className="max-md:flex max-md:flex-col-reverse max-md:justify-end"><dt className="max-md:mt-1.5 max-md:leading-snug">Sesi dengan indikasi</dt><dd className="mt-1 text-[26px] font-bold tabular-nums leading-none text-navy">{data.rows.filter((r) => r.total > 0).length}</dd></div>
-          <div className="max-md:flex max-md:flex-col-reverse max-md:justify-end"><dt className="max-md:mt-1.5 max-md:leading-snug">Total indikasi</dt><dd className="mt-1 text-[26px] font-bold tabular-nums leading-none text-navy">{data.total}</dd></div>
+          <div className="max-md:flex max-md:flex-col-reverse max-md:justify-end"><dt className="max-md:mt-1.5 max-md:leading-snug">Total kejadian</dt><dd className="mt-1 text-[26px] font-bold tabular-nums leading-none text-navy">{data.total}</dd></div>
         </dl>
-        <Progress label={<>Sudah ditinjau <b className="text-navy">{reviewed}</b> dari {data.total} indikasi</>} done={reviewed} total={data.total} />
-        {data.open > 0 && <p className="text-xs text-[#8c621a]">{data.open} indikasi masih menunggu tinjauan. Buka sesinya lewat "Lihat Detail" di tabel.</p>}
+        <Progress label={<>Sudah ditinjau <b className="text-navy">{reviewed}</b> dari {data.total} kejadian</>} done={reviewed} total={data.total} />
+        {data.open > 0 && <p className="text-xs text-[#8c621a]">{data.open} kejadian masih menunggu tinjauan. Buka sesinya lewat "Lihat Detail" di tabel.</p>}
       </div> : loadingText}
     </Card>
   </div>;
@@ -318,7 +318,7 @@ export function MonitoringCharts({ status, timeline }: { status: { segments: (Se
       {status ? <Donut segments={status.segments.map((s) => ({ ...s, color: MONITOR_COLOR[s.key] }))} total={status.total} unit="mahasiswa" caption="Status mahasiswa"
         alt={`Status mahasiswa, total ${status.total}: ${status.segments.map((s) => `${s.label} ${s.value}`).join(", ")}.`} /> : loadingText}
     </Card>
-    <Card title="Indikasi sesi ini" sub="Jumlah indikasi per selang waktu sepanjang jadwal ujian (WIB), ditumpuk per jenis.">
+    <Card title="Indikasi sesi ini" sub="Jumlah kejadian per selang waktu sepanjang jadwal ujian (WIB), ditumpuk per jenis.">
       {timeline ? <SessionColumns data={timeline} title="Indikasi sesi ini" /> : loadingText}
     </Card>
   </div>;
@@ -342,7 +342,7 @@ export function ReportAttendance({ attendance, unreadable }: { attendance: { seg
 }
 
 export function ReportResults({ results }: { results: { segments: Segment[]; total: number; mismatch: string | null } }) {
-  return <StackedBar segments={results.segments.map((s) => ({ ...s, color: RES_COLOR[s.key] }))} total={results.total} height={32} unit="indikasi" caption="Hasil indikasi" mismatch={results.mismatch}
-    alt={`Hasil indikasi, total ${results.total}: ${results.segments.map((s) => `${s.label} ${s.value}`).join(", ")}. Valid berarti dikonfirmasi pengawas, bukan bukti dari AI.`} />;
+  return <StackedBar segments={results.segments.map((s) => ({ ...s, color: RES_COLOR[s.key] }))} total={results.total} height={32} unit="kejadian" caption="Hasil tinjauan kejadian" mismatch={results.mismatch}
+    alt={`Hasil tinjauan kejadian, total ${results.total}: ${results.segments.map((s) => `${s.label} ${s.value}`).join(", ")}. Valid berarti dikonfirmasi pengawas, bukan bukti dari AI.`} />;
 }
 

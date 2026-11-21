@@ -76,7 +76,8 @@ def test_summary_counts_and_patch_updates_them(client):
     client.post("/api/exams/1/join", headers=hs)
 
     rep = report(client, hp)
-    assert rep["indications"] == {"total": 3, "valid": 0, "invalid": 0, "further": 0, "unreviewed": 3,
+    # the three events start in the same second for the same student and behaviour: 3 kejadian, 1 indikasi
+    assert rep["indications"] == {"total": 3, "episodes": 1, "valid": 0, "invalid": 0, "further": 0, "unreviewed": 3,
                                   "cannot_analyze": 1, "cannot_analyze_s": 0.0}
     assert rep["attendance"]["joined"] == 1 and rep["attendance"]["not_joined"] == rep["attendance"]["enrolled"] - 1
     assert len(rep["absent"]) == rep["attendance"]["not_joined"]
@@ -213,7 +214,7 @@ def test_finalize_refused_until_everything_is_reviewed(client):
     hp = login(client, "pengawas1@gmail.com")
     a, b = add_event(client), add_event(client)
     r = client.post("/api/sessions/1/finalize", headers=hp)
-    assert r.status_code == 409 and "2 indikasi" in r.json()["detail"]
+    assert r.status_code == 409 and "2 kejadian" in r.json()["detail"]      # review unit = kejadian (event rows)
     client.patch(f"/api/events/{a}/review", headers=hp, json=DECIDED)
     client.patch(f"/api/events/{b}/review", headers=hp, json={"decision": "Perlu Tinjauan Lanjut"})
     client.app.state.db.run("UPDATE exams SET monitoring_active=1 WHERE id=1")

@@ -38,6 +38,12 @@ test("donut: a 'Campuran' case or a different API total is reported, never force
   assert.match(caseStatusBreakdown([kase("Valid")], 3).mismatch ?? "", /Daftar kasus berisi 1 kasus/);
 });
 
+test("report results count kejadian (event rows), and say so when the parts do not add up", () => {
+  const ok = reportResults({ total: 4, valid: 1, invalid: 1, further: 1, unreviewed: 1 });
+  assert.equal(ok.mismatch, null);
+  assert.match(reportResults({ total: 5, valid: 1, invalid: 1, further: 1, unreviewed: 1 }).mismatch ?? "", /total kejadian dari API \(5\)/);
+});
+
 test("attendance donut: present + absent = enrolled; a mismatch is reported", () => {
   const a = attendanceParts({ enrolled: 6, joined: 4, not_joined: 2 });
   assert.equal(sum(a.segments), a.total);

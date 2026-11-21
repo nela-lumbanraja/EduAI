@@ -35,6 +35,7 @@ DOTS = "." * 104
 BODY = ParagraphStyle("body", fontName="Helvetica", fontSize=10.5, leading=15, spaceAfter=6, alignment=TA_LEFT)
 CELL = ParagraphStyle("cell", parent=BODY, fontSize=9.5, leading=12.5, spaceAfter=0)
 CELL_HEAD = ParagraphStyle("cellhead", parent=CELL, textColor=GREY)
+NOTE = ParagraphStyle("note", parent=CELL, fontSize=8.5, leading=11, textColor=GREY)
 H1 = ParagraphStyle("h1", fontName="Times-Roman", fontSize=23, leading=28, spaceBefore=6, spaceAfter=10)
 H2 = ParagraphStyle("h2", fontName="Times-Roman", fontSize=15.5, leading=20, spaceBefore=14, spaceAfter=8, keepWithNext=1)
 
@@ -121,6 +122,36 @@ def sound_info_text(data: dict) -> str:
     return "Catatan suara (info, bukan indikasi; tanpa gambar bukti): " + ", ".join(parts) + "."
 
 
+def _num(x) -> str:
+    return f"{float(x):.2f}".replace(".", ",")
+
+
+def confidence_text(item: dict) -> str:
+    """'0,72 (puncak 0,90; 9 frame)' per source, or 'Tidak tersedia: <reason>'. Never a percentage."""
+    c = item["confidence"]
+    if not c["sources"]:
+        return f"Tidak tersedia: {c['reason']}"
+    parts = [f"{s['source']} {_num(s['mean'])} (puncak {_num(s['peak'])}; {s['n_frames']} frame)" for s in c["sources"]]
+    cover = "" if c["events_with_stats"] == item["events"] else (
+        f" · dari {c['events_with_stats']} dari {item['events']} kejadian; sisanya tanpa statistik frame")
+    return "; ".join(parts) + cover
+
+
+def review_text(review: dict) -> str:
+    names = (("valid", "Valid"), ("invalid", "Tidak Valid"), ("further", "Perlu Tinjauan Lanjut"),
+             ("unreviewed", "Belum ditinjau"))
+    return ", ".join(f"{label} {review[k]}" for k, label in names if review.get(k)) or "—"
+
+
+def indicator_table(data: dict):
+    items = data.get("by_indicator") or []
+    rows = [["Indikasi", "Jumlah indikasi", "Kejadian tercatat", "Rata-rata confidence deteksi", "Status tinjauan (per kejadian)"]]
+    rows += [[i["label"], str(i["episodes"]), str(i["events"]), confidence_text(i), review_text(i["review"])] for i in items]
+    if not items:
+        rows.append(["Tidak ada indikasi tercatat", "0", "0", "—", "—"])
+    return _table(rows, [104, 52, 52, 140, 116])
+
+
 def image_note(e, data: dict) -> str:
     state = e["evidence"]["state"]
     if state == "deleted":
@@ -165,7 +196,11 @@ def build_pdf(data: dict, frames: Dict[str, bytes], settings) -> bytes:
           _p("IV. Catatan Pemantauan", H2)]
     reviewed = "Setiap kejadian sudah ditinjau oleh pengawas dengan hasil sebagai berikut." if final else (
         f"Dokumen ini masih draf: {ind['unreviewed']} kejadian belum ditinjau pengawas.")
-    s.append(_p(f"Selama ujian, sistem pemantauan mencatat {ind['total']} kejadian yang perlu diperiksa. {reviewed}"))
+    episodes = ind.get("episodes", ind["total"])
+    merged = "" if episodes == ind["total"] else (
+        f" Indikasi dihitung seperti pada ringkasan pengawas: {ind['total']} kejadian di tabel rincian, kejadian "
+        "dengan mahasiswa dan perilaku yang sama yang waktunya bertumpuk dihitung satu indikasi.")
+    s.append(_p(f"Selama ujian, sistem pemantauan mencatat {episodes} indikasi yang perlu diperiksa.{merged} {reviewed}"))
     rows = [["No", "Nama peserta", "Waktu", "Kejadian yang tercatat", "Hasil peninjauan pengawas", "Keterangan"]]
     rows += [[str(i), (e.get("student") or {}).get("name") or "", time_of(e["start_ts"]), event_label(e),
               e.get("review_status") or "Belum ditinjau", (e.get("last_review") or {}).get("note") or ""]
@@ -174,6 +209,8 @@ def build_pdf(data: dict, frames: Dict[str, bytes], settings) -> bytes:
         rows.append(["—", "Tidak ada kejadian tercatat", "", "", "", ""])
     s += [_table(rows, [30, 92, 50, 100, 92, 100]), Spacer(1, 8),
           _p("Hasil peninjauan diisi salah satu: Valid, Tidak Valid, atau Perlu Tinjauan Lanjut."), _p(TEMPLATE_NOTICE), PageBreak(),
+          _p("Ringkasan per indikasi (lanjutan bagian IV):"), indicator_table(data), Spacer(1, 3),
+          _p(data.get("confidence_note") or "", NOTE), Spacer(1, 6),
           _p(f"Waktu video tidak dapat dianalisis (gelap, buram, atau kamera mati): {ind['cannot_analyze']} kali, "
              f"total sekitar {round(ind.get('cannot_analyze_s', 0) / 60)} menit."),
           _p(sound_info_text(data)),
@@ -205,6 +242,34 @@ def build_pdf(data: dict, frames: Dict[str, bytes], settings) -> bytes:
     return out.getvalue()
 
 
+SUMMARY_HEAD = ["Indikasi", "Kode", "Jumlah indikasi", "Kejadian tercatat", "Sumber skor", "Rata-rata confidence deteksi",
+                "Puncak", "Frame", "Kejadian dengan statistik frame", "Keterangan", "Valid", "Tidak Valid",
+                "Perlu Tinjauan Lanjut", "Belum ditinjau"]
+
+
+def summary_sheet(wb, data: dict):
+    """Sheet "Ringkasan indikasi": the same numbers as PDF table IV, one row per score source (book: CLIP and COCO).
+    Numbers stay numbers; an unavailable confidence is an empty cell with the reason, never 0."""
+    ws = wb.create_sheet("Ringkasan indikasi")
+    ws.append(SUMMARY_HEAD)
+    for i in data.get("by_indicator") or []:
+        rv, c = i["review"], i["confidence"]
+        tail = [rv["valid"], rv["invalid"], rv["further"], rv["unreviewed"]]
+        head = [i["label"], i["indicator"], i["episodes"], i["events"]]
+        if c["sources"]:
+            for s in c["sources"]:
+                ws.append(head + [s["source"], s["mean"], s["peak"], s["n_frames"], c["events_with_stats"], ""] + tail)
+        else:
+            ws.append(head + ["", None, None, None, 0, f"Tidak tersedia: {c['reason']}"] + tail)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill("solid", fgColor="F3F1EC")
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+    for col, width in zip("ABCDEFGHIJKLMN", (28, 18, 10, 10, 14, 14, 9, 9, 14, 44, 8, 10, 12, 10)):
+        ws.column_dimensions[col].width = width
+    ws.freeze_panes = "A2"
+
+
 def build_xlsx(data: dict, settings) -> bytes:
     wb = Workbook()
     ws = wb.active
@@ -232,9 +297,10 @@ def build_xlsx(data: dict, settings) -> bytes:
     for col, width in zip("ABCDEFGHIJ", (5, 26, 12, 28, 20, 20, 24, 36, 20, 28)):
         ws.column_dimensions[col].width = width
     ws.freeze_panes = "A2"
+    summary_sheet(wb, data)
     note = wb.create_sheet("Catatan")
     for line in (data["exam"]["name"], "Status laporan: " + ("Final" if data["final"] else "Draf"), AI_NOTICE,
-                 sound_info_text(data)):
+                 sound_info_text(data), data.get("confidence_note") or ""):
         note.append([line])
     note.column_dimensions["A"].width = 100
     out = io.BytesIO()

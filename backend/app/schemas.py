@@ -1,5 +1,5 @@
 """Request bodies and the AI event contract (mirrors eduai_ai.events.Event.to_dict, schema 1.0)."""
-from typing import List, Literal, Optional, Union
+from typing import Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -195,6 +195,29 @@ class SoundDetails(BaseModel):
     paper: Optional[float] = Field(default=None, ge=0, le=1)
 
 
+class ConfidenceStats(BaseModel):
+    """Peak and mean of one model score over the frames of an episode (PHONE_VISIBLE). Not a cheating probability."""
+    model_config = ConfigDict(extra="forbid")
+    source: str = Field(max_length=80)
+    peak: float = Field(ge=0, le=1)
+    mean: float = Field(ge=0, le=1)
+    n: int = Field(ge=1)
+
+
+class BookSourceStats(ConfidenceStats):
+    passed: int = Field(ge=0)          # frames on which this source passed its own threshold
+
+
+class FrameStatsDetails(BaseModel):
+    """Frame statistics of a video episode (eduai_ai.temporal.FRAME_STATS, stats_version 1)."""
+    model_config = ConfigDict(extra="forbid")
+    stats_version: int = Field(ge=1, le=99)
+    n_frames: int = Field(ge=0)
+    confidence: Optional[ConfidenceStats] = None
+    book_sources: Optional[Dict[Literal["coco", "clip"], BookSourceStats]] = None
+    score_note: Optional[str] = Field(default=None, max_length=300)
+
+
 class EventIn(BaseModel):
     event_id: str = Field(min_length=8, max_length=64, pattern=r"^[A-Za-z0-9-]+$")
     session_id: str = Field(max_length=64)
@@ -211,7 +234,7 @@ class EventIn(BaseModel):
     config_version: str = Field(default="", max_length=64)
     schema_version: str = Field(default="1.0", max_length=16)
     label: Optional[str] = Field(default=None, max_length=120)
-    details: Optional[SoundDetails] = None
+    details: Optional[Union[SoundDetails, FrameStatsDetails]] = None
 
     @field_validator("category")
     @classmethod
@@ -241,12 +264,27 @@ class StatusIn(BaseModel):
     students: List[StatusItem] = Field(max_length=500)
 
 
+class StudentModelsIn(BaseModel):
+    """D4 (Phase 5): one student's model set in the worker. models = {model: {"loaded", "reason"}};
+    inference_errors = NEW failures per model since the previous accepted heartbeat (a delta)."""
+    models: Dict[str, dict] = Field(default_factory=dict)
+    inference_errors: Dict[str, int] = Field(default_factory=dict)
+
+
 class HeartbeatIn(BaseModel):
     session_id: str
     models: dict = {}
     students: int = 0
     source: str = "livekit"
     worker_id: str = Field(default="", max_length=64)     # EDUAI_WORKER_ID; "" from older workers
+    student_models: Dict[str, StudentModelsIn] = Field(default_factory=dict)   # per student; {} from older workers
+
+    @field_validator("student_models")
+    @classmethod
+    def _few_students(cls, v):
+        if len(v) > 500:
+            raise ValueError("terlalu banyak peserta dalam satu heartbeat")
+        return v
 
 
 class MeetingTokenIn(BaseModel):

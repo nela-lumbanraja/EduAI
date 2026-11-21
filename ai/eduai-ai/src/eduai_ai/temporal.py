@@ -35,6 +35,20 @@ class SustainedIndicator:
         self.inactive_since: Optional[float] = None
         self.last_emit_ts: Optional[float] = None
         self.peak: Optional[float] = None
+        # Per-episode frame statistics, reset together with `peak` (from the first active frame of the candidate
+        # to the close): frames where the signal was active, and how many of them carried a value (and its sum).
+        self.n_active = 0
+        self.n_valued = 0
+        self.value_sum = 0.0
+        self.closed_stats: Optional[dict] = None      # stats of the episode that the last "close" ended
+
+    def stats(self) -> dict:
+        return {"n_active": self.n_active, "n_valued": self.n_valued, "value_sum": self.value_sum, "peak": self.peak}
+
+    def _reset_stats(self):
+        self.peak = None
+        self.n_active = self.n_valued = 0
+        self.value_sum = 0.0
 
     @property
     def is_open(self) -> bool:
@@ -49,8 +63,11 @@ class SustainedIndicator:
         out = []
         if active:
             self.inactive_since = None
+            self.n_active += 1
             if value is not None:
                 self.peak = value if self.peak is None else max(self.peak, value)
+                self.n_valued += 1
+                self.value_sum += float(value)
             if self.is_open:
                 return out
             if self.candidate_start is None:
@@ -67,7 +84,7 @@ class SustainedIndicator:
         # inactive or unknown: unknown can close an event but never open one
         self.candidate_start = None
         if not self.is_open:
-            self.peak = None
+            self._reset_stats()
             return out
         if self.inactive_since is None:
             self.inactive_since = ts
@@ -77,10 +94,11 @@ class SustainedIndicator:
 
     def _close(self, end_ts):
         out = [] if self.suppressed else [("close", self.open_start, end_ts, self.peak)]
+        self.closed_stats = self.stats()
         self.open_start = None
         self.suppressed = False
         self.inactive_since = None
-        self.peak = None
+        self._reset_stats()
         return out
 
     def flush(self, end_ts: float):
@@ -166,6 +184,22 @@ class Baseline:
 BOOK_DEFAULTS = {"enabled": False, "min_score": 0.5, "clip_min_score": 0.6, "min_duration_s": 3.0, "release_s": 2.0,
                  "cooldown_s": 60.0}
 
+# Frame statistics in Event.details (stats_version 1, since 20 Nov 2026). Only for these indicators:
+#   n_frames    analysed frames in which the signal was active during the episode (candidate time included;
+#               for PHONE_VISIBLE / BOOK_VISIBLE only frames on which the detector actually ran)
+#   confidence  PHONE_VISIBLE only: peak and mean of the detector score over those frames (n = frames with a score)
+#   book_sources BOOK_VISIBLE only: COCO and CLIP kept apart (different scales), each from frames it ran on
+# FACE_ABSENT, MULTIPLE_PERSONS, HEAD_TURN, CANNOT_ANALYZE get n_frames only: no model confidence exists for them
+# (the HEAD_TURN value is an angle and the MULTIPLE_PERSONS value a count, not a confidence). Sound labels keep
+# their own details unchanged: their scores arrive at another rate than video frames and one audio sample is reused
+# by several frames, so a per-frame mean would be biased. HEAD_TURN_REPEATED is an instant event without frames.
+STATS_VERSION = 1
+FRAME_STATS = ("FACE_ABSENT", "MULTIPLE_PERSONS", "HEAD_TURN", "PHONE_VISIBLE", "BOOK_VISIBLE", "CANNOT_ANALYZE")
+PHONE_SOURCE = "EfficientDet-Lite0 COCO 'cell phone'"
+BOOK_SOURCES = {"coco": "EfficientDet-Lite0 COCO 'book'", "clip": "CLIP ViT-B/32 zero-shot P(buku)"}
+BOOK_SCORE_NOTE = ("score = nilai tertinggi dari sinyal yang lolos ambangnya; skala COCO dan CLIP berbeda, "
+                   "lihat book_sources")
+
 
 # OTHER_VOICE defaults, used when a config file has no OTHER_VOICE section (older configs keep working).
 VOICE_DEFAULTS = {
@@ -236,6 +270,7 @@ class EventEngine:
         # BOOK_VISIBLE: optional section; a config without it keeps the indicator off.
         self.book = {**BOOK_DEFAULTS, **(ind.get("BOOK_VISIBLE") or {})}
         self._book_last: dict = {}                     # last COCO / CLIP book score (see _book_state)
+        self._book_acc: dict = {}                      # per-source stats of the current book episode (book_sources)
         self.trackers["BOOK_VISIBLE"] = SustainedIndicator(
             self.book["min_duration_s"], self.book["release_s"], self.book["cooldown_s"])
         self.voice = {**VOICE_DEFAULTS, **(ind.get("OTHER_VOICE") or {})}
@@ -264,13 +299,38 @@ class EventEngine:
         return Event(self.session_id, self.student_id, indicator, category, status, start, end,
                      score, reason, config_version=self.config_version)
 
+    @staticmethod
+    def _score_of(name):
+        """Event.score: the episode peak of a model score (phone, book, sound labels); None for the others."""
+        if name in ("PHONE_VISIBLE", "BOOK_VISIBLE") or name in SOUND_NAMES:
+            return lambda p: round(p, 2) if p is not None else None
+        return lambda p: None
+
+    def _with_stats(self, name, details, st):
+        """details + frame statistics of the episode (see FRAME_STATS). Other indicators: details unchanged."""
+        if name not in FRAME_STATS or st is None:
+            return details
+        d = dict(details or {})
+        d["stats_version"] = STATS_VERSION
+        d["n_frames"] = st["n_active"]
+        if name == "PHONE_VISIBLE" and st["n_valued"]:
+            d["confidence"] = {"source": PHONE_SOURCE, "peak": round(st["peak"], 3),
+                               "mean": round(st["value_sum"] / st["n_valued"], 3), "n": st["n_valued"]}
+        if name == "BOOK_VISIBLE":
+            d["book_sources"] = {k: {"source": BOOK_SOURCES[k], "n": a["n"], "passed": a["passed"],
+                                     "peak": round(a["peak"], 3), "mean": round(a["sum"] / a["n"], 3)}
+                                 for k, a in self._book_acc.items() if a["n"]}
+            d["score_note"] = BOOK_SCORE_NOTE
+        return d
+
     def _emit(self, name, outputs, category, reason_fn, score_fn=lambda p: None, details_fn=lambda: None):
         events = []
+        tracker = self.trackers.get(name)
         for o in outputs:
             if o[0] == "open":
                 _, start, peak = o
                 e = self._event(name, category, "open", start, score=score_fn(peak), reason=reason_fn(peak, None))
-                e.details = details_fn()
+                e.details = self._with_stats(name, details_fn(), tracker.stats() if tracker else None)
                 self.open_events[name] = e
                 events.append(e)
             elif o[0] == "close":
@@ -278,7 +338,7 @@ class EventEngine:
                 opened = self.open_events.pop(name, None)
                 e = self._event(name, category, "closed", start, end, score=score_fn(peak),
                                 reason=reason_fn(peak, end - start))
-                e.details = details_fn()
+                e.details = self._with_stats(name, details_fn(), tracker.closed_stats if tracker else None)
                 if opened is not None:
                     e.event_id = opened.event_id       # same id: the backend updates the row
                     e.evidence_id = opened.evidence_id
@@ -427,10 +487,22 @@ class EventEngine:
         # 4b. book-like object visible: COCO "book" (detector pass) OR CLIP P(book); frames with neither are skipped
         if self.book["enabled"] and (s.book_score is not None or s.book_clip_score is not None or not analyzed):
             book_active, book_peak = self._book_state(s, analyzed)
+            if book_active:                          # per-source stats: only values measured on THIS frame
+                for key, v, th in (("coco", s.book_score, self.book["min_score"]),
+                                   ("clip", s.book_clip_score, self.book["clip_min_score"])):
+                    if v is not None:
+                        a = self._book_acc.setdefault(key, {"n": 0, "passed": 0, "sum": 0.0, "peak": 0.0})
+                        a["n"] += 1
+                        a["passed"] += int(v >= th)
+                        a["sum"] += float(v)
+                        a["peak"] = max(a["peak"], float(v))
+            book = self.trackers["BOOK_VISIBLE"]
             events += self._emit(
-                "BOOK_VISIBLE", self.trackers["BOOK_VISIBLE"].update(s.ts, book_active, book_peak),
+                "BOOK_VISIBLE", book.update(s.ts, book_active, book_peak),
                 INDICATION, lambda p, d: "Objek menyerupai buku terlihat" + self._dur(d),
                 score_fn=lambda p: round(p, 2) if p is not None else None)
+            if not book.is_open and book_active is not True:
+                self._book_acc = {}                  # episode over (or never opened): the next one starts fresh
 
         # 5. sound labels (scores come from the student's device; no audio here)
         for name, (active, peak) in self._sound_signals(s, analyzed).items():
@@ -450,10 +522,14 @@ class EventEngine:
         events = []
         for name, tracker in self.trackers.items():
             cat = CAT_CANNOT if name == "CANNOT_ANALYZE" else self.category.get(name, INDICATION)
+            # score_fn: the closing update carries the true episode peak (before 20 Nov 2026 it sent None, so the
+            # backend kept the smaller peak from the moment the event opened)
             events += self._emit(name, tracker.flush(self.last_ts), cat,
                                  lambda p, d, n=name: INDICATORS[n] + self._dur(d) + " (pemantauan berakhir)",
+                                 score_fn=self._score_of(name),
                                  details_fn=lambda n=name: self._details(n) if n in SOUND_OF else None)
         self._peaks.clear()
+        self._book_acc = {}
         return events
 
     def analysis_state(self) -> str:
